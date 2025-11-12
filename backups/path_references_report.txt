@@ -1,0 +1,227 @@
+# Path References Report - Fri Nov  7 02:49:49 AM PST 2025
+
+==> scripts/date_management/create_download_list.py: Local imports
+7:import sys
+8:import re
+9:import json
+
+==> scripts/date_management/create_download_list.py: Local from imports
+10:from pathlib import Path
+11:from datetime import datetime
+
+==> scripts/date_management/create_download_list.py: File open operations
+42:    with open(missing_dates_file, 'r') as f:
+53:    with open(archive_cache_file, 'r') as f:
+81:    with open(output_file, 'w') as f:
+
+==> scripts/date_management/create_download_list.py: Path objects
+37:    missing_dates_file = Path(args.missing_dates)
+48:    archive_cache_file = Path(args.archive_cache)
+80:    output_file = Path(args.output)
+
+==> scripts/date_management/create_download_list.py: Text file references
+31:    parser.add_argument('--output', default='download_list.txt',
+32:                       help='Output file with YouTube URLs (default: download_list.txt)')
+77:    print(f"[INFO] Could not find {len(missing_dates) - len(matched_videos)} dates in temp.txt")
+
+==> scripts/date_management/create_download_list.py: JSON file references
+30:    parser.add_argument('archive_cache', help='archive_metadata_cache.json file')
+
+==> scripts/date_management/create_download_list.py: TSV file references
+
+==> scripts/date_management/create_download_list.py: Hardcoded cuts_exact paths
+
+==> scripts/date_management/create_download_list.py: Hardcoded voice_filtered paths
+
+==> scripts/date_management/extract_and_compare_dates.py: Local imports
+2:import re
+3:import subprocess
+4:import json
+
+==> scripts/date_management/extract_and_compare_dates.py: Local from imports
+5:from pathlib import Path
+6:from datetime import datetime
+7:from collections import defaultdict
+
+==> scripts/date_management/extract_and_compare_dates.py: File open operations
+51:        with open(cache_file, 'r') as f:
+55:    with open(archive_file, 'r') as f:
+81:                    with open(cache_file, 'w') as f:
+93:    with open(cache_file, 'w') as f:
+132:    with open("date_comparison.txt", 'w') as f:
+
+==> scripts/date_management/extract_and_compare_dates.py: Path objects
+28:    pull_dir = Path(directory) / "pull"
+45:    cache_file = Path(archive_file).parent / "archive_metadata_cache.json"
+
+==> scripts/date_management/extract_and_compare_dates.py: Text file references
+101:    archive_file = "/mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/Vods 2023 to 2025 fixed/original_scripts/.clips-download-archive.txt"
+132:    with open("date_comparison.txt", 'w') as f:
+143:    print(f"\n[DONE] Results written to date_comparison.txt")
+
+==> scripts/date_management/extract_and_compare_dates.py: JSON file references
+45:    cache_file = Path(archive_file).parent / "archive_metadata_cache.json"
+
+==> scripts/date_management/extract_and_compare_dates.py: TSV file references
+
+==> scripts/date_management/extract_and_compare_dates.py: Hardcoded cuts_exact paths
+
+==> scripts/date_management/extract_and_compare_dates.py: Hardcoded voice_filtered paths
+
+==> scripts/date_management/find_missing_dates.py: Local imports
+6:import sys
+7:import re
+
+==> scripts/date_management/find_missing_dates.py: Local from imports
+8:from pathlib import Path
+9:from datetime import datetime
+
+==> scripts/date_management/find_missing_dates.py: File open operations
+40:    with open(dates_file, 'r') as f:
+72:    with open(output_file, 'w') as f:
+
+==> scripts/date_management/find_missing_dates.py: Path objects
+39:    dates_file = Path(args.dates_file)
+53:    source_dir = Path(args.source_dir)
+71:    output_file = Path(args.output)
+
+==> scripts/date_management/find_missing_dates.py: Text file references
+33:    parser.add_argument('--output', default='missing_dates.txt',
+34:                       help='Output file for missing dates (default: missing_dates.txt)')
+
+==> scripts/date_management/find_missing_dates.py: JSON file references
+
+==> scripts/date_management/find_missing_dates.py: TSV file references
+
+==> scripts/date_management/find_missing_dates.py: Hardcoded cuts_exact paths
+
+==> scripts/date_management/find_missing_dates.py: Hardcoded voice_filtered paths
+
+==> scripts/date_management/move_files_by_date.py: Local imports
+7:import sys
+8:import re
+11:import shutil
+
+==> scripts/date_management/move_files_by_date.py: Local from imports
+9:from pathlib import Path
+10:from datetime import datetime
+
+==> scripts/date_management/move_files_by_date.py: File open operations
+50:    with open(dates_file, 'r') as f:
+
+==> scripts/date_management/move_files_by_date.py: Path objects
+45:    dates_file = Path(args.dates_file)
+64:    source_dir = Path(args.source_dir)
+70:        dest_dir = Path(args.dest_dir)
+
+==> scripts/date_management/move_files_by_date.py: Text file references
+
+==> scripts/date_management/move_files_by_date.py: JSON file references
+3:Move .opus files (and their .json files) whose title dates match a list.
+97:        # Find corresponding .json files
+98:        json_pattern = opus_file.stem + "*.json"
+120:        print(f"  Would move {len(matched_files)} .opus files and their .json files")
+122:        print(f"  Moved {moved_count} files ({len(matched_files)} .opus + {moved_count - len(matched_files)} .json)")
+
+==> scripts/date_management/move_files_by_date.py: TSV file references
+
+==> scripts/date_management/move_files_by_date.py: Hardcoded cuts_exact paths
+
+==> scripts/date_management/move_files_by_date.py: Hardcoded voice_filtered paths
+
+==> scripts/utilities/find_word_hits.py: Local imports
+2:import sys, re, csv, pathlib
+
+==> scripts/utilities/find_word_hits.py: Local from imports
+
+==> scripts/utilities/find_word_hits.py: File open operations
+35:    with open(words_path, encoding="utf-8") as f:
+
+==> scripts/utilities/find_word_hits.py: Path objects
+14:for words_path in pathlib.Path(".").rglob("*.words.tsv"):
+
+==> scripts/utilities/find_word_hits.py: Text file references
+
+==> scripts/utilities/find_word_hits.py: JSON file references
+26:    src = base.with_suffix(".src.json")
+
+==> scripts/utilities/find_word_hits.py: TSV file references
+14:for words_path in pathlib.Path(".").rglob("*.words.tsv"):
+15:    base = words_path.with_suffix("")                   # strip .tsv
+
+==> scripts/utilities/find_word_hits.py: Hardcoded cuts_exact paths
+
+==> scripts/utilities/find_word_hits.py: Hardcoded voice_filtered paths
+
+==> scripts/utilities/quality_report.py: Local imports
+17:import sys
+18:import glob
+21:import json
+
+==> scripts/utilities/quality_report.py: Local from imports
+19:from pathlib import Path
+20:from collections import defaultdict
+
+==> scripts/utilities/quality_report.py: File open operations
+27:        with open(filepath, 'r', encoding='utf-8') as f:
+197:    with open(report_file, 'w') as f:
+
+==> scripts/utilities/quality_report.py: Path objects
+103:    files = list(Path(search_dir).glob("**/*.words.tsv"))
+196:    report_file = Path(search_dir) / "quality_report.json"
+
+==> scripts/utilities/quality_report.py: Text file references
+
+==> scripts/utilities/quality_report.py: JSON file references
+196:    report_file = Path(search_dir) / "quality_report.json"
+
+==> scripts/utilities/quality_report.py: TSV file references
+5:Analyzes all .words.tsv files to provide quality insights:
+14:    directory: Path to search for .words.tsv files (default: generated/)
+24:    """Load a words.tsv file and return list of word dicts"""
+48:    """Analyze a single .words.tsv file"""
+61:        'file': filepath.name.replace('.words.tsv', ''),
+101:    pattern = f"{search_dir}/**/*.words.tsv"
+103:    files = list(Path(search_dir).glob("**/*.words.tsv"))
+105:        print(f"No .words.tsv files found in {search_dir}/")
+
+==> scripts/utilities/quality_report.py: Hardcoded cuts_exact paths
+
+==> scripts/utilities/quality_report.py: Hardcoded voice_filtered paths
+
+==> scripts/utilities/sort_clips.py: Local imports
+2:import sys
+3:import re
+
+==> scripts/utilities/sort_clips.py: Local from imports
+
+==> scripts/utilities/sort_clips.py: File open operations
+
+==> scripts/utilities/sort_clips.py: Path objects
+
+==> scripts/utilities/sort_clips.py: Text file references
+
+==> scripts/utilities/sort_clips.py: JSON file references
+
+==> scripts/utilities/sort_clips.py: TSV file references
+
+==> scripts/utilities/sort_clips.py: Hardcoded cuts_exact paths
+
+==> scripts/utilities/sort_clips.py: Hardcoded voice_filtered paths
+
+==> scripts/voice_filtering/filter_hasan_voice_batched.py: Local imports
+7:import sys
+8:import os
+10:import numpy as np
+11:import json
+12:import warnings
+13:import torch
+
+==> scripts/voice_filtering/filter_hasan_voice_batched.py: Local from imports
+9:from pathlib import Path
+14:from concurrent.futures import ThreadPoolExecutor, as_completed
+
+==> scripts/voice_filtering/filter_hasan_voice_batched.py: TSV file references
+
+==> scripts/voice_filtering/filter_hasan_voice_batched.py: Hardcoded cuts_exact paths
+

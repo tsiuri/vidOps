@@ -1,0 +1,240 @@
+VOICE RECOGNITION:
+  python3 filter_hasan_voice_parallel_chunked.py \
+    --clips-dir /path/to/clips \
+    --reference-dir /path/to/reference_clips \
+    --output hasan_voice_results.json \
+    --threshold 0.65 \
+    --chunk-size 200 \
+    --workers 23
+
+  Using the regular parallel version (faster but may hit GPU memory limits):
+
+  python3 filter_hasan_voice_parallel.py \
+    --clips-dir /path/to/clips \
+    --reference-dir /path/to/reference_clips \
+    --output hasan_voice_results.json \
+    --threshold 0.65 \
+    --workers 23
+
+  To view results and create a list of matching clips:
+
+  # Extract clips where Hasan is speaking to a text file
+  python3 -c "
+  import json
+  with open('hasan_voice_results.json') as f:
+      data = json.load(f)
+  with open('voice_filtered/hasan_clips.txt', 'w') as out:
+      for clip in data['results']:
+          if clip['is_hasan']:
+              out.write(f\"{clip['clip_path']}\n\")
+  "
+
+  The scripts use:
+  - --threshold 0.65: Similarity threshold (0-1, higher = stricter)
+  - --chunk-size 200: Process 200 clips at a time (for chunked version)
+  - --workers 23: Use 23 CPU cores for parallel preprocessing
+
+  The output JSON contains similarity scores and is_hasan boolean for each clip.
+
+
+
+
+
+
+=====================
+
+
+
+● Here's readme-style documentation for the other commands we used:
+
+  ---
+  Move Files by Date
+
+  Move .opus files and their corresponding .json files based on a date list:
+
+  python3 move_files_by_date.py \
+    --dates-file dates_to_pull_from_2024and5.txt \
+    --source-dir "/path/to/source/folder" \
+    --dest-dir "selected_dates"
+
+  What it does:
+  - Reads dates in YYYY-MM-DD format from the dates file
+  - Converts to text format ("January 5, 2024") to match filenames
+  - Extracts dates from filenames like "HasanAbi January 5, 2024 – Title.opus"
+  - Moves matching .opus files AND their .json companions to destination folder
+
+  Example:
+  python3 move_files_by_date.py \
+    --dates-file dates_to_pull_from_2024and5.txt \
+    --source-dir "/mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/Vods 2023 to 2025 fixed/" \
+    --dest-dir "selected_dates"
+
+  ---
+  Find Missing Dates
+
+  Identify which dates from your list don't have corresponding files:
+
+  python3 find_missing_dates.py \
+    --dates-file dates_to_pull_from_2024and5.txt \
+    --search-dir "selected_dates" \
+    --output missing_dates.txt
+
+  What it does:
+  - Reads requested dates from dates file
+  - Scans directory for .opus files
+  - Extracts dates from filenames
+  - Reports which dates are missing
+  - Writes missing dates to output file
+
+  Output:
+  - Console: "Found 233 dates, Missing 270 dates"
+  - File: missing_dates.txt (YYYY-MM-DD format, one per line)
+
+  ---
+  Create Download List
+
+  Generate YouTube URLs for missing dates using archive metadata:
+
+  python3 create_download_list.py \
+    missing_dates.txt \
+    /path/to/archive_metadata_cache.json
+
+  What it does:
+  - Reads missing dates (YYYY-MM-DD format)
+  - Loads archive metadata cache (video_id → title mappings)
+  - Extracts dates from titles
+  - Matches missing dates to video IDs
+  - Outputs YouTube URLs
+
+  Output:
+  - Creates download_list.txt with YouTube URLs
+  - Format: https://www.youtube.com/watch?v={video_id}
+
+  Usage with clips.sh:
+  # Download all at once
+  while read url; do ./clips.sh pull "$url"; done < download_list.txt
+
+  # Download one at a time
+  ./clips.sh pull "$(head -1 download_list.txt)"
+
+  ---
+  Move Filtered Clips
+
+  Move clips identified by voice filtering to a subfolder:
+
+  cd "/path/to/working/directory"
+
+  # Create destination folder
+  mkdir -p cuts_exact_tmp/confirmedPiker1
+
+  # Move all clips from the list
+  count=0
+  while IFS= read -r filepath; do
+      mv "$filepath" "cuts_exact_tmp/confirmedPiker1/" && ((count++))
+      if ((count % 500 == 0)); then echo "Moved $count files..."; fi
+  done < voice_filtered/hasan_clips.txt
+
+  echo "Total moved: $count files"
+
+  What it does:
+  - Reads file paths from hasan_clips.txt
+  - Moves each clip to confirmedPiker1 subfolder
+  - Shows progress every 500 files
+
+
+
+=====================
+  ---
+  Stitch Videos Together
+
+  Option 1: Batched Approach (Most Reliable)
+
+  Concatenates in batches to avoid timestamp issues:
+
+  ./stitch_videos_batched.sh \
+    cuts_exact_tmp/confirmedPiker1/ \
+    cuts_exact_tmp/confirmedPiker1/3kvideo_output.mp4 \
+    date_timestamp
+
+  What it does:
+  - Processes clips in batches of 100
+  - Each batch: forced 60fps CFR, re-encodes with proper timestamps
+  - Stage 2: Merges ~30 batch files with stream copy
+  - Takes ~10-15 minutes
+
+  Option 2: CFR Force (Faster but may have issues)
+
+  ./stitch_videos_cfr.sh \
+    cuts_exact_tmp/confirmedPiker1/ \
+    cuts_exact_tmp/confirmedPiker1/3kvideo_output.mp4 \
+    date_timestamp
+
+  What it does:
+  - Forces constant 60fps frame rate
+  - Uses fps filter + setpts to reset timestamps
+  - Single-pass concatenation
+  - Takes ~5 minutes
+
+  Option 3: Simple Re-encode (Original)
+
+  ./stitch_videos.sh \
+    cuts_exact_tmp/confirmedPiker1/ \
+    cuts_exact_tmp/confirmedPiker1/3kvideo_output.mp4 \
+    date_timestamp \
+    1
+
+  Parameters:
+  1. Input directory
+  2. Output file
+  3. Sort method (date_timestamp, name, time, or timestamp)
+  4. Re-encode flag (0=copy, 1=re-encode)
+
+  Sort methods:
+  - date_timestamp: Sort by date in title, then timestamp (recommended)
+  - timestamp: Sort by timestamp in filename (_NNNN.NN-NNNN.NN)
+  - time: Sort by file modification time
+  - name: Sort alphabetically
+
+  ---
+==========================  ---
+
+
+
+  3. Added cmd_transcribe() function - Simple wrapper that passes all arguments to
+  scripts/transcription/dual_gpu_transcribe.sh
+  4. Updated main dispatcher - Added transcribe|trans case to route commands
+  5. Updated tab completion - Added transcribe to command list and common option completions
+
+  Usage
+
+  # First-time setup (creates venvs, installs packages)
+  ./workspace.sh transcribe --setup-venvs
+
+  # Regular transcription (transcribes all files in pull/)
+  ./workspace.sh transcribe
+
+  # With specific model
+  ./workspace.sh transcribe --model large
+
+  # Force re-transcribe with SRT output
+  ./workspace.sh transcribe --force --outfmt srt
+
+  # With CPU worker enabled
+  ENABLE_CPU=1 ./workspace.sh transcribe
+
+  # Get help
+  ./workspace.sh help transcribe
+
+  The script will:
+  - Look for media files in pull/ directory (workspace-level)
+  - Output transcriptions to generated/ directory
+  - Log to logs/nv.log and logs/amd.log
+
+  All tests pass ✓
+
+
+
+======================================
+
+
+

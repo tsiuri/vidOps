@@ -1,0 +1,50 @@
+# Script Compatibility Test - Fri Nov  7 02:53:01 AM PST 2025
+
+[PASS] sort_clips.py help
+  Script: scripts/utilities/sort_clips.py
+  Command: python3 scripts/utilities/sort_clips.py --help
+
+[PASS] find_missing_dates.py help
+  Script: scripts/date_management/find_missing_dates.py
+  Command: python3 scripts/date_management/find_missing_dates.py --help
+
+[PASS] create_download_list.py help
+  Script: scripts/date_management/create_download_list.py
+  Command: python3 scripts/date_management/create_download_list.py --help
+
+[PASS] move_files_by_date.py help
+  Script: scripts/date_management/move_files_by_date.py
+  Command: python3 scripts/date_management/move_files_by_date.py --help
+
+[PASS] filter_hasan_voice.py help
+  Script: scripts/voice_filtering/filter_hasan_voice.py
+  Command: python3 scripts/voice_filtering/filter_hasan_voice.py --help
+
+[PASS] stitch_videos.sh syntax check
+  Script: scripts/video_processing/stitch_videos.sh
+  Command: bash -n scripts/video_processing/stitch_videos.sh
+
+[PASS] stitch_videos_batched.sh syntax check
+  Script: scripts/video_processing/stitch_videos_batched.sh
+  Command: bash -n scripts/video_processing/stitch_videos_batched.sh
+
+[PASS] clips.sh syntax check
+  Script: scripts/utilities/clips.sh
+  Command: bash -n scripts/utilities/clips.sh
+
+[PASS] clips.sh wrapper syntax check
+  Script: clips.sh wrapper
+  Command: bash -n clips.sh
+
+[PASS] stitch_videos.sh wrapper syntax check
+  Script: stitch_videos.sh wrapper
+  Command: bash -n stitch_videos.sh
+
+[PASS] stitch_videos.sh has correct sort_clips.py path
+[PASS] Directory exists: scripts/
+[PASS] Directory exists: data/
+[PASS] Directory exists: results/
+[PASS] Directory exists: media/
+[PASS] Directory exists: logs/
+[PASS] Directory exists: config/
+[PASS] Directory exists: docs/

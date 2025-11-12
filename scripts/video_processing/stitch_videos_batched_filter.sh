@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Concatenate MP4 files in batches using concat FILTER per batch, then merge
+
+set -euo pipefail
+shopt -s nullglob
+
+INDIR="${1:-cuts_exact}"
+OUTFILE="${2:-stitched_output.mp4}"
+SORT_METHOD="${3:-date_timestamp}"
+
+# Tunables via env
+BATCH_SIZE=${BATCH_SIZE:-50}
+FINAL_REENCODE=${FINAL_REENCODE:-1}
+
+echo "==> Stitching videos from: $INDIR"
+echo "==> Output file: $OUTFILE"
+echo "==> Sort method: $SORT_METHOD"
+echo "==> Using batched concat FILTER (robust)"
+
+abs_in="$(realpath "$INDIR")"
+abs_out="$(realpath -m "$OUTFILE")"
+
+echo "==> Building file list..."
+
+case "$SORT_METHOD" in
+  name)
+    find "$abs_in" -name "*.mp4" -type f | sort > /tmp/files.txt
+    ;;
+  time)
+    find "$abs_in" -name "*.mp4" -type f -printf "%T@ %p\n" | sort -n | cut -d' ' -f2- > /tmp/files.txt
+    ;;
+  timestamp)
+    find "$abs_in" -name "*.mp4" -type f | \
+      awk '{ match($0, /_([0-9]+\.[0-9]+)-([0-9]+\.[0-9]+)\.mp4$/, arr); if (arr[1] != "") print arr[1], $0; }' | \
+      sort -n | cut -d' ' -f2- > /tmp/files.txt
+    ;;
+  date_timestamp)
+    find "$abs_in" -name "*.mp4" -type f | python3 /mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/the 2021 2021 vods bak folder b4 cleanup/scripts/utilities/sort_clips.py > /tmp/files.txt
+    ;;
+  *)
+    echo "Unknown sort method: $SORT_METHOD"; exit 1 ;;
+esac
+
+# Remove output file from the list if present
+grep -v -F -- "$abs_out" /tmp/files.txt > /tmp/files.tmp && mv /tmp/files.tmp /tmp/files.txt
+
+FILE_COUNT=$(wc -l < /tmp/files.txt)
+echo "==> Found $FILE_COUNT MP4 files"
+BATCH_COUNT=$(( (FILE_COUNT + BATCH_SIZE - 1) / BATCH_SIZE ))
+echo "==> Will process in $BATCH_COUNT batches of $BATCH_SIZE"
+
+if [[ $FILE_COUNT -eq 0 ]]; then echo "!! No MP4 files found in $INDIR"; exit 1; fi
+
+echo "==> First 5 files:"; head -5 /tmp/files.txt
+echo "..."; echo "==> Last 5 files:"; tail -5 /tmp/files.txt; echo
+
+# Create temp directory for batch outputs
+BATCH_DIR=$(mktemp -d)
+if [[ "${KEEP_BATCH:-0}" == "1" ]]; then
+  echo "==> KEEP_BATCH=1; batch dir: $BATCH_DIR (will not be removed)"; trap ':' EXIT
+else
+  trap "rm -rf '$BATCH_DIR'" EXIT
+fi
+
+echo "==> Stage 1: Concatenating batches with concat FILTER..."
+
+batch_num=0
+set +e
+while IFS= read -r file; do
+  batch_idx=$((batch_num / BATCH_SIZE))
+  # For filter-based concat, we can write raw absolute paths per line
+  echo "$file" >> "$BATCH_DIR/batch_${batch_idx}.txt"
+  ((batch_num++))
+done < /tmp/files.txt
+set -e
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  echo "==> DRY_RUN=1; created batch list files in $BATCH_DIR"; ls -lh "$BATCH_DIR"/batch_*.txt | head -n 5; exit 0
+fi
+
+batch_lists=("$BATCH_DIR"/batch_*.txt)
+echo "  Created ${#batch_lists[@]} batch list files in $BATCH_DIR"
+
+for batch_file in "$BATCH_DIR"/batch_*.txt; do
+  batch_name=$(basename "$batch_file" .txt)
+  batch_output="$BATCH_DIR/${batch_name}.mp4"
+  echo "  Processing $batch_name ($(wc -l < "$batch_file") files)..."
+  FPS_EXPR=${FPS_EXPR:-fps=60000/1001} VSYNC_ARGS='-vsync cfr -r 60000/1001' "$(pwd)/concat_filter_from_list.sh" "$batch_file" "$batch_output"
+done
+
+if [[ "${STOP_AFTER_STAGE1:-0}" == "1" ]]; then
+  echo "==> STOP_AFTER_STAGE1=1 set; stopping before merge. Batch dir: $BATCH_DIR"; ls -lh "$BATCH_DIR"/*.mp4 || true; exit 0
+fi
+
+echo "==> Stage 2: Merging batches into final output..."
+
+FINAL_LIST="$BATCH_DIR/final.txt"
+if [[ "${USE_FILTER_MERGE:-1}" == "1" ]]; then
+  # Raw list for filter-based merge
+  : > "$FINAL_LIST"
+  for batch_output in "$BATCH_DIR"/batch_*.mp4; do
+    echo "$batch_output" >> "$FINAL_LIST"
+  done
+  sort -V "$FINAL_LIST" -o "$FINAL_LIST"
+else
+  for batch_output in "$BATCH_DIR"/batch_*.mp4; do
+    escaped=$(echo "$batch_output" | sed "s/'/'\\''/g")
+    echo "file '$escaped'" >> "$FINAL_LIST"
+  done
+  sort -V "$FINAL_LIST" -o "$FINAL_LIST"
+fi
+
+if [[ "${USE_FILTER_MERGE:-1}" == "1" ]]; then
+  echo "==> Final merge with concat FILTER (re-encode)"
+  FPS_EXPR=${FPS_EXPR:-fps=60000/1001} VSYNC_ARGS='-vsync cfr -r 60000/1001' "$(pwd)/concat_filter_from_list.sh" "$FINAL_LIST" "$OUTFILE"
+else
+  if [[ "$FINAL_REENCODE" == "1" ]]; then
+    ffmpeg -hide_banner -loglevel info -f concat -safe 0 -i "$FINAL_LIST" \
+      -vf "settb=AVTB,setpts=PTS-STARTPTS,fps=60" -af "aresample=async=1:first_pts=0" \
+      -c:v libx264 -preset veryfast -crf 18 -c:a aac -b:a 192k -vsync cfr -r 60 -movflags +faststart \
+      "$OUTFILE"
+  else
+    ffmpeg -hide_banner -loglevel info -f concat -safe 0 -i "$FINAL_LIST" -c copy "$OUTFILE"
+  fi
+fi
+
+echo "==> Done! Output: $OUTFILE"; ls -lh "$OUTFILE"

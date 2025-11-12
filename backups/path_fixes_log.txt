@@ -1,0 +1,24 @@
+# Path Fixes Log - Fri Nov  7 02:51:30 AM PST 2025
+  scripts/video_processing/stitch_videos_batched_filter.sh: Updated sort_clips.py path
+  scripts/video_processing/stitch_videos_batched.sh: Updated sort_clips.py path
+  scripts/video_processing/stitch_videos_cfr.sh: Updated sort_clips.py path
+  scripts/video_processing/stitch_videos_concat_filter.sh: Updated sort_clips.py path
+  scripts/video_processing/stitch_videos.sh: Updated sort_clips.py path
+  scripts/utilities/clips.sh: Updated COMP_DIR to clips_templates
+  Created clips.sh wrapper
+  Created filter_hasan_voice_batched.py wrapper
+  Created filter_hasan_voice_parallel.py wrapper
+  Created filter_hasan_voice.py wrapper
+  Created filter_hasan_voice_parallel_chunked.py wrapper
+  Created stitch_videos.sh wrapper
+  Created stitch_videos_batched.sh wrapper
+  Created stitch_videos_concat_filter.sh wrapper
+  Created stitch_videos_cfr.sh wrapper
+  Created stitch_videos_batched_filter.sh wrapper
+  Created concat_filter_from_list.sh wrapper
+  Created find_missing_dates.py wrapper
+  Created create_download_list.py wrapper
+  Created move_files_by_date.py wrapper
+  Created extract_and_compare_dates.py wrapper
+  Updated default output paths
+  Created set_paths.sh environment helper
