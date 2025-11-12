@@ -1,0 +1,10 @@
+#ignores all these
+logs/
+generated/
+.clips-download-archive.txt
+pull/
+media/
+*.log
+*.pyc
+__pycache__/
+.DS_Store
