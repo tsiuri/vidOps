@@ -3,7 +3,7 @@
 # Usage: ./workspace.sh <command> [options]
 
 set -euo pipefail
-
+#
 # Ensure we're running from workspace root
 WORKSPACE_ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$WORKSPACE_ROOT" || exit 1

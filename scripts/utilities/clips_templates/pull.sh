@@ -343,7 +343,7 @@ PY
   if [[ "$COOKIES_FIRST" -eq 1 && ${#COOKIE_ARG[@]} -gt 0 ]]; then
     # cookies-first: broader client set, include cookies
     yargs1+=(
-      --concurrent-fragments 1
+      --concurrent-fragments "${CONCURRENT_FRAGMENTS:-1}"
       --sleep-requests "$sleep_req"
       --sleep-interval "$sleep_interval"
       --max-sleep-interval "$sleep_max"
@@ -364,7 +364,7 @@ PY
     # default: no-cookies first
     yargs1+=(
       --no-cookies
-      --concurrent-fragments 1
+      --concurrent-fragments "${CONCURRENT_FRAGMENTS:-1}"
       --sleep-requests "$sleep_req"
       --sleep-interval "$sleep_interval"
       --max-sleep-interval "$sleep_max"
@@ -404,7 +404,7 @@ PY
       yargs2+=(--download-archive "$archive")
     fi
     yargs2+=(
-      --concurrent-fragments 1
+      --concurrent-fragments "${CONCURRENT_FRAGMENTS:-1}"
       --sleep-requests "$sleep_req"
       --sleep-interval "$sleep_interval"
       --max-sleep-interval "$sleep_max"
