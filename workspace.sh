@@ -28,6 +28,7 @@ COMMANDS
   transcripts <action>        Download auto-generated subtitles/captions
   voice <action>              Voice filtering operations
   transcribe [options]        Dual-GPU transcription with Whisper
+  analyze <transcripts...>    AI-powered transcript analysis
   stitch <method>             Stitch videos together
   dates <action>              Date-based file management
   gpu <action>                GPU binding management (requires sudo)
@@ -350,6 +351,76 @@ NOTE
   ./scripts/transcription/dual_gpu_transcribe.sh --help
 EOF
             ;;
+        analyze)
+            cat <<'EOF'
+ANALYZE - AI-Powered Transcript Analysis
+
+USAGE
+  ./workspace.sh analyze <file|dir> [file|dir ...] [options]
+
+DESCRIPTION
+  Analyzes VTT transcript files using local AI (Ollama) to extract:
+  - People mentioned with frequency counts
+  - Main topics and themes
+  - Sentiment and mood analysis
+  - Key points and notable quotes
+  - Content categorization
+
+  Outputs JSON data and human-readable markdown reports to analyzed/
+
+COMMON OPTIONS
+  --output <dir>              Output directory [default: analyzed/]
+  --model <name>              Ollama model to use [default: llama3.2]
+  --chunk-size <words>        Words per chunk [default: 1000]
+  --overlap <words>           Overlap between chunks [default: 150]
+  --ollama-url <url>          Ollama API URL [default: http://localhost:11434]
+  --no-summaries              Skip generating multiple summary variants
+  --quality <q>               Quality profile: fast|balanced|thorough [default: balanced]
+  --temperature <float>       Sampling temperature (override profile)
+  --top-p <float>             Top-p nucleus sampling (override profile)
+  --top-k <int>               Top-k sampling (override profile)
+  --num-predict <int>         Max tokens to generate (override profile)
+  --num-ctx <int>             Context window in tokens (override profile)
+  --repeat-penalty <float>    Repetition penalty (override profile)
+
+EXAMPLES
+  # Analyze a single transcript
+  ./workspace.sh analyze pull/VIDEO_ID__*.transcript.en.vtt
+
+  # Analyze multiple at once (shell expands globs)
+  ./workspace.sh analyze pull/*.transcript.en.vtt generated/*.vtt
+
+  # Analyze a directory (auto-detects *.transcript.en.vtt, falls back to *.vtt)
+  ./workspace.sh analyze pull/ generated/
+
+  # Higher quality with more generation budget
+  ./workspace.sh analyze pull/*.vtt \
+    --quality thorough --num-predict 1500 --num-ctx 8192 --temperature 0.2
+
+  # Use a different model
+  ./workspace.sh analyze pull/VIDEO_ID__*.transcript.en.vtt --model llama3
+
+  # Custom output directory
+  ./workspace.sh analyze pull/VIDEO_ID__*.transcript.en.vtt --output reports/
+
+OUTPUT
+  Creates two files per transcript in analyzed/:
+  - VIDEO_ID_analysis.json  (structured data)
+  - VIDEO_ID_analysis.md    (human-readable report with Summaries section)
+
+REQUIREMENTS
+  - Ollama installed and running (https://ollama.com)
+  - Python 3 with 'requests' library
+  - Model downloaded: ollama pull llama3.2
+
+NOTE
+  First time setup:
+    1. Install Ollama: curl -fsSL https://ollama.com/install.sh | sh
+    2. Pull model: ollama pull llama3.2
+    3. Start service: ollama serve (runs in background)
+    4. Install Python deps: pip install -r scripts/analysis/requirements.txt
+EOF
+            ;;
         info)
             cat <<'EOF'
 INFO - Show workspace information
@@ -532,6 +603,10 @@ print(f\"Extracted to: $output_file\")
 
 cmd_transcribe() {
     scripts/transcription/dual_gpu_transcribe.sh "$@"
+}
+
+cmd_analyze() {
+    python3 scripts/analysis/analyze_transcript.py "$@"
 }
 
 cmd_stitch() {
@@ -768,6 +843,9 @@ main() {
             ;;
         transcribe|trans)
             cmd_transcribe "$@"
+            ;;
+        analyze)
+            cmd_analyze "$@"
             ;;
         stitch|concat)
             cmd_stitch "$@"
