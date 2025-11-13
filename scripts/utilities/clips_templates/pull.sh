@@ -53,7 +53,7 @@ for raw in lines:
         if not item:
             continue
         vid = item.get('id')
-        url = item.get('url') or item.get('webpage_url')
+        url = item.get('webpage_url') or item.get('url')
         if not vid or not url:
             continue
         sig = (vid, url)
@@ -83,8 +83,8 @@ check_file_completeness(){
     [[ -f "$f" ]] && has_video=1 && break
   done
 
-  # Check for transcript
-  for f in pull/${vid}__*.transcript.en.vtt; do
+  # Check for transcript (both .transcript.en.vtt and .en.vtt patterns)
+  for f in pull/${vid}__*.transcript.en.vtt pull/${vid}__*.en.vtt; do
     [[ -f "$f" ]] && has_transcript=1 && break
   done
 
@@ -123,7 +123,7 @@ try:
 except json.JSONDecodeError:
     sys.exit(0)
 vid = data.get('id')
-url = data.get('original_url') or data.get('webpage_url') or data.get('url')
+url = data.get('webpage_url') or data.get('original_url') or data.get('url')
 if not (vid and url):
     sys.exit(0)
 extractor = norm_extractor(data.get('extractor') or data.get('extractor_key'), url)
@@ -221,7 +221,7 @@ cmd_pull(){
       ((++complete))
     else
       ((++incomplete))
-      INCOMPLETE_ENTRIES+=("${vid}\t${entry_url}\t${extractor}\t${title}\t${needs_video}\t${needs_transcript}\t${needs_info}")
+      INCOMPLETE_ENTRIES+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$vid" "$entry_url" "$extractor" "$title" "$needs_video" "$needs_transcript" "$needs_info")")
     fi
   done
 
@@ -291,6 +291,19 @@ PY
     IFS=$'\t' read -r vid entry_url extractor title needs_video needs_transcript needs_info <<<"$entry" || true
     MISSING_URLS+=("$entry_url")
   done
+
+  # Remove incomplete entries from archive so yt-dlp will re-download them
+  if [[ ${#INCOMPLETE_ENTRIES[@]} -gt 0 && -f "$archive" ]]; then
+    local temp_archive; temp_archive="$(mktemp)"
+    for entry in "${INCOMPLETE_ENTRIES[@]}"; do
+      IFS=$'\t' read -r vid entry_url extractor title needs_video needs_transcript needs_info <<<"$entry" || true
+      local key="${extractor:-youtube} ${vid}"
+      # Remove lines matching this video ID from archive
+      grep -vF "$key" "$archive" > "$temp_archive" 2>/dev/null || true
+      mv "$temp_archive" "$archive"
+    done
+    rm -f "$temp_archive"
+  fi
 
   # Ensure dirs and log base exist
   mkdir -p pull logs/pull 2>/dev/null || true
@@ -429,15 +442,33 @@ PY
   fi
   c_ok "yt-dlp finished successfully."
 
-  # --- Post-run logging: derive failed from pending; ok is whatever mark_success recorded ---
+  # Rename subtitle files to match transcript naming convention
+  shopt -s nullglob
+  for subtitle in pull/*.en.vtt; do
+    [[ -f "$subtitle" ]] || continue
+    # Skip if already has .transcript in name
+    [[ "$subtitle" == *.transcript.en.vtt ]] && continue
+    local newname="${subtitle%.en.vtt}.transcript.en.vtt"
+    mv "$subtitle" "$newname" 2>/dev/null || true
+  done
+
+  # --- Post-run logging: derive failed from requested minus successful ---
   : > "$fail_tsv"; : > "$fail_urls"
-  if [[ -s "$pending_tsv" ]]; then
-    cp "$pending_tsv" "$fail_tsv" 2>/dev/null || true
-    # extract urls (2nd field)
-    awk -F '\t' 'NF>=2 { print $2 }' "$pending_tsv" > "$fail_urls" 2>/dev/null || true
-  fi
-  # Ensure ok_tsv exists
   touch "$ok_tsv"
+  # Compute failures: items in req_tsv but not in ok_tsv
+  if [[ -s "$req_tsv" ]]; then
+    # Extract video IDs from ok_tsv into a temporary file
+    local ok_ids; ok_ids="$(mktemp)"
+    awk -F '\t' '{print $1}' "$ok_tsv" | sort -u > "$ok_ids" 2>/dev/null || true
+    # For each requested item, check if it's NOT in ok_ids
+    while IFS=$'\t' read -r vid url ex title; do
+      if ! grep -qxF "$vid" "$ok_ids"; then
+        printf '%s\t%s\t%s\t%s\n' "$vid" "$url" "$ex" "$title" >> "$fail_tsv"
+        printf '%s\n' "$url" >> "$fail_urls"
+      fi
+    done < "$req_tsv"
+    rm -f "$ok_ids"
+  fi
   c_ok "Wrote pull logs: $req_tsv, $ok_tsv, $fail_tsv, $fail_urls"
 
   # regenerate provenance for anything lacking it in pull directory
