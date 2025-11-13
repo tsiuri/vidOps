@@ -97,6 +97,25 @@ check_file_completeness(){
   echo "$((1-has_video)) $((1-has_transcript)) $((1-has_info))"
 }
 
+is_transcript_unavailable(){
+  # Check if a video ID is in the no-transcripts list
+  local vid="$1"
+  local no_trans_file="logs/no_transcripts_available.txt"
+  [[ -f "$no_trans_file" ]] && grep -qxF "$vid" "$no_trans_file"
+}
+
+mark_transcript_unavailable(){
+  # Add a video ID to the no-transcripts list
+  local vid="$1"
+  local no_trans_file="logs/no_transcripts_available.txt"
+  mkdir -p logs 2>/dev/null || true
+  # Only add if not already present
+  if [[ -f "$no_trans_file" ]]; then
+    grep -qxF "$vid" "$no_trans_file" && return 0
+  fi
+  echo "$vid" >> "$no_trans_file"
+}
+
 fallback_single_entry(){
   local url="$1"
   yt-dlp --dump-json --no-warnings --ignore-no-formats-error "$url" 2>/dev/null | python3 <<'PY'
@@ -159,6 +178,10 @@ cmd_pull(){
   # If we extracted a video ID and it's not forced, check if files are already complete
   if [[ -n "$direct_vid_id" && $force_download -eq 0 ]]; then
     read -r needs_video needs_transcript needs_info < <(check_file_completeness "$direct_vid_id")
+    # If transcript is known to be unavailable, don't require it
+    if is_transcript_unavailable "$direct_vid_id"; then
+      needs_transcript=0
+    fi
     if [[ $needs_video -eq 0 && $needs_transcript -eq 0 && $needs_info -eq 0 ]]; then
       c_ok "Files already complete for $direct_vid_id, skipping."
       return 0
@@ -208,6 +231,11 @@ cmd_pull(){
 
     # Check what files exist for this video
     read -r needs_video needs_transcript needs_info < <(check_file_completeness "$vid")
+
+    # If transcript is known to be unavailable, don't require it
+    if is_transcript_unavailable "$vid"; then
+      needs_transcript=0
+    fi
 
     # If --force, re-download everything
     if [[ $force_download -eq 1 ]]; then
@@ -450,6 +478,27 @@ PY
     [[ "$subtitle" == *.transcript.en.vtt ]] && continue
     local newname="${subtitle%.en.vtt}.transcript.en.vtt"
     mv "$subtitle" "$newname" 2>/dev/null || true
+  done
+
+  # Detect and log videos that have no transcripts available
+  c_do "Checking for videos without available transcripts..."
+  for entry in "${INCOMPLETE_ENTRIES[@]}"; do
+    IFS=$'\t' read -r vid entry_url extractor title needs_video needs_transcript needs_info <<<"$entry" || true
+    # Skip if we weren't looking for a transcript for this video
+    [[ "$needs_transcript" -eq 0 ]] && continue
+    # Check if video was downloaded but transcript wasn't
+    local has_video=0 has_transcript=0
+    for f in pull/${vid}__*.{webm,opus,m4a,mp3,mp4,mkv,mka}; do
+      [[ -f "$f" ]] && has_video=1 && break
+    done
+    for f in pull/${vid}__*.transcript.en.vtt pull/${vid}__*.en.vtt; do
+      [[ -f "$f" ]] && has_transcript=1 && break
+    done
+    # If we have video but no transcript, mark transcript as unavailable
+    if [[ $has_video -eq 1 && $has_transcript -eq 0 ]]; then
+      mark_transcript_unavailable "$vid"
+      c_wr "No transcript available for $vid"
+    fi
   done
 
   # --- Post-run logging: derive failed from requested minus successful ---
