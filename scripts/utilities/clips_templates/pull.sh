@@ -68,6 +68,35 @@ for raw in lines:
 PY
 }
 
+check_file_completeness(){
+  # Check what files exist for a given video ID
+  # Returns: needs_video needs_transcript needs_info
+  local vid="$1"
+  local has_video=0
+  local has_transcript=0
+  local has_info=0
+
+  shopt -s nullglob
+
+  # Check for video file
+  for f in pull/${vid}__*.{webm,opus,m4a,mp3,mp4,mkv,mka}; do
+    [[ -f "$f" ]] && has_video=1 && break
+  done
+
+  # Check for transcript
+  for f in pull/${vid}__*.transcript.en.vtt; do
+    [[ -f "$f" ]] && has_transcript=1 && break
+  done
+
+  # Check for info.json
+  for f in pull/${vid}__*.info.json; do
+    [[ -f "$f" ]] && has_info=1 && break
+  done
+
+  # Return: 0=needs it, 1=has it
+  echo "$((1-has_video)) $((1-has_transcript)) $((1-has_info))"
+}
+
 fallback_single_entry(){
   local url="$1"
   yt-dlp --dump-json --no-warnings --ignore-no-formats-error "$url" 2>/dev/null | python3 <<'PY'
@@ -118,10 +147,22 @@ cmd_pull(){
   done
 
   local archive; archive="$(clips_archive_file)"
-  c_do "Syncing download archive: $archive"
-  if ! sync_archive_from_media "$archive"; then
-    c_er "Initial archive sync failed."
-    return 1
+
+  # Try to extract video ID directly from URL (YouTube format: v=XXXXX or youtu.be/XXXXX)
+  local direct_vid_id=""
+  if [[ "$URL" =~ v=([a-zA-Z0-9_-]{11}) ]]; then
+    direct_vid_id="${BASH_REMATCH[1]}"
+  elif [[ "$URL" =~ youtu\.be/([a-zA-Z0-9_-]{11}) ]]; then
+    direct_vid_id="${BASH_REMATCH[1]}"
+  fi
+
+  # If we extracted a video ID and it's not forced, check if files are already complete
+  if [[ -n "$direct_vid_id" && $force_download -eq 0 ]]; then
+    read -r needs_video needs_transcript needs_info < <(check_file_completeness "$direct_vid_id")
+    if [[ $needs_video -eq 0 && $needs_transcript -eq 0 && $needs_info -eq 0 ]]; then
+      c_ok "Files already complete for $direct_vid_id, skipping."
+      return 0
+    fi
   fi
 
   c_do "Discovering entries for: $URL"
@@ -147,76 +188,47 @@ cmd_pull(){
 
   c_ok "Discovered ${#ENTRIES[@]} entries."
 
-  declare -A ARCHIVE_SEEN=()
-  if [[ -f "$archive" ]]; then
-    while IFS= read -r line; do
-      [[ -z "$line" ]] && continue
-      ARCHIVE_SEEN["$line"]=1
-    done < "$archive"
-  fi
-  c_do "Archive currently tracks ${#ARCHIVE_SEEN[@]} entries."
-
+  # Skip archive sync - we'll check actual files instead
   declare -A PENDING_KEYS=()
-  declare -a MISSING_URLS=()
+  declare -a INCOMPLETE_ENTRIES=()  # entries: vid\turl\textractor\ttitle\tneeds_video\tneeds_transcript\tneeds_info
   local total="${#ENTRIES[@]}"
-  local skipped=0
+  local complete=0
+  local incomplete=0
 
-  if [[ $force_download -eq 1 ]]; then
-    # Force mode: download everything, skip archive filtering
-    c_do "Force download enabled - bypassing archive check"
-    for entry in "${ENTRIES[@]}"; do
-      IFS=$'\t' read -r vid entry_url extractor title <<<"$entry" || true
-      [[ -n "$vid" && -n "$entry_url" ]] || continue
-      local key="${extractor:-youtube} ${vid}"
-      if [[ -n "${PENDING_KEYS[$key]+x}" ]]; then
-        continue
-      fi
-      PENDING_KEYS["$key"]=1
-      MISSING_URLS+=("$entry_url")
-    done
-  else
-    # Normal mode: filter against archive
-    for entry in "${ENTRIES[@]}"; do
-      IFS=$'\t' read -r vid entry_url extractor title <<<"$entry" || true
-      [[ -n "$vid" && -n "$entry_url" ]] || continue
-      local key="${extractor:-youtube} ${vid}"
-      if [[ -n "${ARCHIVE_SEEN[$key]+x}" ]]; then
-        ((++skipped))
-        continue
-      fi
-      if [[ -n "${PENDING_KEYS[$key]+x}" ]]; then
-        continue
-      fi
-      PENDING_KEYS["$key"]=1
-      MISSING_URLS+=("$entry_url")
-    done
-  fi
-  c_do "After filtering, ${#MISSING_URLS[@]} entries remain to download (skipped $skipped)."
+  c_do "Checking file completeness..."
 
-  # Prepare logging of requested/succeeded/failed
-  # Build mapping from URL -> (vid, extractor, title) for the ones we will attempt
-  declare -A REQ_META_URL=()   # url -> $vid\t$extractor\t$title
-  declare -a REQ_LIST=()       # lines: vid\turl\textractor\ttitle
-  # helper to lookup meta by URL from ENTRIES list (tab-separated fields)
   for entry in "${ENTRIES[@]}"; do
-    IFS=$'\t' read -r e_vid e_url e_extractor e_title <<<"$entry" || true
-    [[ -n "$e_vid" && -n "$e_url" ]] || continue
-    REQ_META_URL["$e_url"]="${e_vid}\t${e_extractor}\t${e_title}"
-  done
-  for u in "${MISSING_URLS[@]}"; do
-    meta="${REQ_META_URL[$u]:-}"
-    if [[ -n "$meta" ]]; then
-      IFS=$'\t' read -r m_vid m_ex m_title <<<"$meta" || true
-      REQ_LIST+=("${m_vid}\t${u}\t${m_ex}\t${m_title}")
+    IFS=$'\t' read -r vid entry_url extractor title <<<"$entry" || true
+    [[ -n "$vid" && -n "$entry_url" ]] || continue
+    local key="${extractor:-youtube} ${vid}"
+    if [[ -n "${PENDING_KEYS[$key]+x}" ]]; then
+      continue
+    fi
+    PENDING_KEYS["$key"]=1
+
+    # Check what files exist for this video
+    read -r needs_video needs_transcript needs_info < <(check_file_completeness "$vid")
+
+    # If --force, re-download everything
+    if [[ $force_download -eq 1 ]]; then
+      needs_video=1
+      needs_transcript=1
+      needs_info=1
+    fi
+
+    # Check if complete (has video + all expected metadata)
+    if [[ $needs_video -eq 0 && $needs_transcript -eq 0 && $needs_info -eq 0 ]]; then
+      ((++complete))
     else
-      # Fallback: try to derive id from URL, minimal fields
-      local _id; _id="$(id_from_url "$u")"
-      REQ_LIST+=("${_id}\t${u}\t\t")
+      ((++incomplete))
+      INCOMPLETE_ENTRIES+=("${vid}\t${entry_url}\t${extractor}\t${title}\t${needs_video}\t${needs_transcript}\t${needs_info}")
     fi
   done
 
-  if [[ ${#MISSING_URLS[@]} -eq 0 ]]; then
-    c_ok "Archive up to date. Skipped $skipped of $total entries."
+  c_do "File check complete: $complete complete, $incomplete incomplete."
+
+  if [[ $incomplete -eq 0 ]]; then
+    c_ok "All files complete. Nothing to download. (Complete: $complete)"
     # Emit requested/ok (likely empty) and compute a convenience failed_urls list
     local TS APPEND
     TS="$(date -u '+%Y%m%d_%H%M%SZ')"
@@ -271,7 +283,14 @@ PY
     return 0
   fi
 
-  c_do "Need to download ${#MISSING_URLS[@]} new entries (skipped $skipped / $total)."
+  c_do "Need to download/complete $incomplete entries (complete: $complete / $total)."
+
+  # Build URLs list from incomplete entries (extract just the URL for yt-dlp)
+  declare -a MISSING_URLS=()
+  for entry in "${INCOMPLETE_ENTRIES[@]}"; do
+    IFS=$'\t' read -r vid entry_url extractor title needs_video needs_transcript needs_info <<<"$entry" || true
+    MISSING_URLS+=("$entry_url")
+  done
 
   # Ensure dirs and log base exist
   mkdir -p pull logs/pull 2>/dev/null || true
@@ -284,36 +303,16 @@ PY
     base="logs/pull/${TS}"
     APPEND=0
   fi
-  local planned_tsv="${base}.planned.tsv"
-  local pending_tsv="${base}.pending.tsv"
   local req_tsv="${base}.requested.tsv"
   local ok_tsv="${base}.succeeded.tsv"
   local fail_tsv="${base}.failed.tsv"
   local fail_urls="${base}.failed_urls.txt"
-  # Initialize planned/pending/requested; do not pre-create failed files
-  : > "$planned_tsv"; : > "$pending_tsv"; : > "$req_tsv"
+  # Initialize requested file
+  : > "$req_tsv"
   local line
-  for line in "${REQ_LIST[@]}"; do
-    printf '%s\n' "$line" >> "$planned_tsv"
-    printf '%s\n' "$line" >> "$pending_tsv"
-    printf '%s\n' "$line" >> "$req_tsv"
-  done
-  # Pre-mark already-present media as succeeded and remove from pending
-  has_media_for_id(){
-    local vid="$1"
-    if find pull -maxdepth 1 -type f \
-         \( -iname "${vid}__*.opus" -o -iname "${vid}__*.m4a" -o -iname "${vid}__*.mp3" -o -iname "${vid}__*.mp4" -o -iname "${vid}__*.mkv" -o -iname "${vid}__*.webm" -o -iname "${vid}__*.mka" \) \
-         -print -quit >/dev/null 2>&1; then
-      return 0
-    fi
-    return 1
-  }
-  local vid url ex title
-  for line in "${REQ_LIST[@]}"; do
-    IFS=$'\t' read -r vid url ex title <<<"$line" || true
-    if [[ -n "$vid" ]] && has_media_for_id "$vid"; then
-      bash scripts/utilities/mark_success.sh "$vid" "$base" || true
-    fi
+  for entry in "${INCOMPLETE_ENTRIES[@]}"; do
+    IFS=$'\t' read -r vid url ex title needs_video needs_transcript needs_info <<<"$entry" || true
+    printf '%s\t%s\t%s\t%s\n' "$vid" "$url" "$ex" "$title" >> "$req_tsv"
   done
 
   local sleep_req="${YT_PULL_SLEEP_REQUESTS:-$YT_SLEEP_REQUESTS}"
