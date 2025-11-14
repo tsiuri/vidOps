@@ -238,9 +238,84 @@ PY
     done < <(find generated -type f -name '*.tslog.txt' -print0 2>/dev/null || find . -type f -name '*.tslog.txt' -print0)
   fi
 
-  # header + unique rows
-  awk -F'\t' 'BEGIN{print "url\tstart\tend\tlabel\tsource_caption"}
-NR>1{key=$1 FS $2 FS $3 FS $4;if(!seen[key]++){print}}' "$tmp" > "$OUT"
+  # Merge overlapping clips
+  python3 - "$tmp" "$OUT" <<'PYMERGE'
+import sys, csv
+from collections import defaultdict
+
+infile = sys.argv[1]
+outfile = sys.argv[2]
+
+# Read all clips
+clips_by_url = defaultdict(list)
+with open(infile, 'r', encoding='utf-8') as f:
+    reader = csv.DictReader(f, delimiter='\t')
+    for row in reader:
+        url = row['url']
+        try:
+            start = float(row['start'])
+            end = float(row['end'])
+            label = row['label']
+            source = row.get('source_caption', '')
+            clips_by_url[url].append({
+                'start': start,
+                'end': end,
+                'label': label,
+                'source': source
+            })
+        except (ValueError, KeyError):
+            continue
+
+# Merge overlapping clips for each URL
+merged = []
+for url, clips in clips_by_url.items():
+    # Sort by start time
+    clips.sort(key=lambda c: c['start'])
+
+    # Merge overlapping intervals
+    if not clips:
+        continue
+
+    current = clips[0].copy()
+    current_labels = [current['label']]
+    current_sources = [current['source']]
+
+    for clip in clips[1:]:
+        # Check if clips overlap (current.end >= clip.start means they touch or overlap)
+        if current['end'] >= clip['start']:
+            # Merge: extend end, combine labels
+            current['end'] = max(current['end'], clip['end'])
+            if clip['label'] not in current_labels:
+                current_labels.append(clip['label'])
+            if clip['source'] and clip['source'] not in current_sources:
+                current_sources.append(clip['source'])
+        else:
+            # No overlap, save current and start new
+            current['label'] = ', '.join(current_labels)
+            current['source'] = current_sources[0] if current_sources else ''
+            merged.append((url, current))
+            current = clip.copy()
+            current_labels = [current['label']]
+            current_sources = [current['source']]
+
+    # Don't forget last clip
+    current['label'] = ', '.join(current_labels)
+    current['source'] = current_sources[0] if current_sources else ''
+    merged.append((url, current))
+
+# Write output
+with open(outfile, 'w', encoding='utf-8', newline='') as f:
+    writer = csv.writer(f, delimiter='\t')
+    writer.writerow(['url', 'start', 'end', 'label', 'source_caption'])
+    for url, clip in merged:
+        writer.writerow([
+            url,
+            f"{clip['start']:.3f}",
+            f"{clip['end']:.3f}",
+            clip['label'],
+            clip['source']
+        ])
+PYMERGE
   rm -f "$tmp"
-  c_ok "Wrote $OUT"
+  c_ok "Wrote $OUT (overlapping clips merged)"
 }

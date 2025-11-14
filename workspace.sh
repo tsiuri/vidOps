@@ -319,6 +319,8 @@ COMMON OPTIONS
   --language <code>           Force language (en, es, etc) or empty for auto [default: en]
   --force                     Re-transcribe even if .txt already exists
   --outfmt <format>           Output format: vtt|srt|both [default: vtt]
+  --filelist <file>           Read media paths from file (one per line, bypasses directory search)
+  --batch-retry               Process retry manifests (re-transcribe low-confidence segments)
   --follow / --no-follow      Live-tail logs [default: --follow]
   --setup-venvs               Create/update virtual environments (first-time setup)
 
@@ -329,26 +331,39 @@ EXAMPLES
   # Regular transcription (uses files in pull/)
   ./workspace.sh transcribe
 
+  # Transcribe specific files from a list
+  ./workspace.sh transcribe --filelist my_videos.txt
+
   # Use larger model for better accuracy
   ./workspace.sh transcribe --model large
 
   # Force re-transcribe with SRT format
   ./workspace.sh transcribe --force --outfmt srt
 
+  # Process retry manifests to fix low-confidence segments
+  ./workspace.sh transcribe --batch-retry
+
+  # Dry run to see what would be retried
+  ./workspace.sh transcribe --batch-retry --dry-run
+
   # Enable CPU worker alongside GPUs
   ENABLE_CPU=1 ./workspace.sh transcribe
 
 INPUT
   Searches for media in: pull/ (or current dir if pull/ doesn't exist)
+  Or use --filelist to specify exact files to transcribe
   Supported formats: mp4, mkv, mov, avi, mp3, wav, m4a, opus
 
 OUTPUT
   Transcriptions go to: generated/
   Logs go to: logs/nv.log, logs/amd.log
+  Retry manifests: generated/*.retry_manifest.tsv (low-confidence segments)
 
 NOTE
   Requires GPU access. For NVIDIA/AMD setup, see the script help:
   ./scripts/transcription/dual_gpu_transcribe.sh --help
+
+  To re-transcribe low-confidence segments, use --batch-retry after transcription
 EOF
             ;;
         analyze)
@@ -602,6 +617,14 @@ print(f\"Extracted to: $output_file\")
 }
 
 cmd_transcribe() {
+    # Check if --batch-retry is requested
+    for arg in "$@"; do
+        if [[ "$arg" == "--batch-retry" ]]; then
+            scripts/transcription/batch_retry.sh "$@"
+            return
+        fi
+    done
+    # Normal transcription
     scripts/transcription/dual_gpu_transcribe.sh "$@"
 }
 

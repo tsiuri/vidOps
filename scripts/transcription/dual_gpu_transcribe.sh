@@ -8,6 +8,7 @@ set -euo pipefail
 : "${LANGUAGE:=en}"                       # en=English (use empty string for auto-detect)
 : "${FORCE:=0}"
 : "${OUTFMT:=vtt}"                        # vtt|srt|both
+: "${INPUT_FILELIST:=}"                   # path to file containing list of media files (one per line)
 EXTENSIONS=("mp4" "mkv" "mov" "avi" "mp3" "wav" "m4a" "opus")
 
 : "${MIN_TS_INTERVAL:=10}"                # seconds between tslog timestamps
@@ -278,6 +279,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift;;
     --outfmt) OUTFMT="${2:-$OUTFMT}"; shift 2;;
     --ext) IFS=' ' read -r -a EXTENSIONS <<< "${2:-}"; shift 2;;
+    --filelist) INPUT_FILELIST="${2:-}"; shift 2;;
     --follow) FOLLOW=1; shift;;
     --no-follow) FOLLOW=0; shift;;
     --setup-venvs) SETUP_VENVS=1; shift;;
@@ -295,6 +297,8 @@ BASIC OPTIONS:
   --outfmt vtt|srt|both      Subtitle output format (default: vtt)
   --ext 'e1 e2 ...'          Space-separated extensions to scan (default:
                              mp4 mkv mov avi mp3 wav m4a opus)
+  --filelist FILE            Read media file paths from FILE (one per line)
+                             Bypasses directory search; supports # comments
   --follow | --no-follow     Live-tail logs to terminal (default: --follow)
   --setup-venvs              Create/update venvs and install packages (slow)
   -h, --help                 Show this help and exit
@@ -364,6 +368,9 @@ EXAMPLES:
   # Regular runs (GPUs only, default):
   ./dual_gpu_transcribe.sh
 
+  # Transcribe specific files from a list:
+  ./dual_gpu_transcribe.sh --filelist my_videos.txt
+
   # Enable CPU worker alongside GPUs:
   ENABLE_CPU=1 ./dual_gpu_transcribe.sh
 
@@ -382,14 +389,37 @@ log "MIN_TS_INTERVAL: ${MIN_TS_INTERVAL}s"
 echo
 
 ########### discover + de-dupe ###########
-# Search for media in pull/ directory; fall back to current dir if pull/ doesn't exist
-SEARCH_DIR="pull"
-[[ -d "$SEARCH_DIR" ]] || SEARCH_DIR="."
+RAW_FILELIST="$(mktemp)"
 
-ARGS=( -type f "(" ); for ext in "${EXTENSIONS[@]}"; do ARGS+=( -iname "*.${ext}" -o ); done
-unset 'ARGS[${#ARGS[@]}-1]'; ARGS+=( ")" -print0 )
-RAW_FILELIST="$(mktemp)"; find "$SEARCH_DIR" "${ARGS[@]}" > "${RAW_FILELIST}"
+if [[ -n "$INPUT_FILELIST" ]]; then
+  # Use provided filelist
+  [[ -f "$INPUT_FILELIST" ]] || { warn "Filelist not found: $INPUT_FILELIST"; exit 1; }
+  log "Using filelist: $INPUT_FILELIST"
 
+  # Read newline-delimited paths and convert to null-delimited
+  while IFS= read -r line; do
+    # Skip empty lines and comments
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    # Expand path and validate
+    line="${line/#\~/$HOME}"  # Expand ~
+    if [[ -f "$line" ]]; then
+      printf '%s\0' "$line" >> "$RAW_FILELIST"
+    else
+      warn "File not found (skipping): $line"
+    fi
+  done < "$INPUT_FILELIST"
+else
+  # Search for media in pull/ directory; fall back to current dir if pull/ doesn't exist
+  SEARCH_DIR="pull"
+  [[ -d "$SEARCH_DIR" ]] || SEARCH_DIR="."
+  log "Searching for media in: $SEARCH_DIR"
+
+  ARGS=( -type f "(" ); for ext in "${EXTENSIONS[@]}"; do ARGS+=( -iname "*.${ext}" -o ); done
+  unset 'ARGS[${#ARGS[@]}-1]'; ARGS+=( ")" -print0 )
+  find "$SEARCH_DIR" "${ARGS[@]}" > "$RAW_FILELIST"
+fi
+
+# De-duplicate by inode
 FILELIST="$(mktemp)"
 declare -A SEEN
 while IFS= read -r -d '' f; do

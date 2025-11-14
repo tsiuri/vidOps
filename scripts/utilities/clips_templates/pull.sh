@@ -101,7 +101,7 @@ is_transcript_unavailable(){
   # Check if a video ID is in the no-transcripts list
   local vid="$1"
   local no_trans_file="logs/no_transcripts_available.txt"
-  [[ -f "$no_trans_file" ]] && grep -qxF "$vid" "$no_trans_file"
+  [[ -f "$no_trans_file" ]] && grep -qxF -- "$vid" "$no_trans_file"
 }
 
 mark_transcript_unavailable(){
@@ -111,7 +111,7 @@ mark_transcript_unavailable(){
   mkdir -p logs 2>/dev/null || true
   # Only add if not already present
   if [[ -f "$no_trans_file" ]]; then
-    grep -qxF "$vid" "$no_trans_file" && return 0
+    grep -qxF -- "$vid" "$no_trans_file" && return 0
   fi
   echo "$vid" >> "$no_trans_file"
 }
@@ -511,7 +511,7 @@ PY
     awk -F '\t' '{print $1}' "$ok_tsv" | sort -u > "$ok_ids" 2>/dev/null || true
     # For each requested item, check if it's NOT in ok_ids
     while IFS=$'\t' read -r vid url ex title; do
-      if ! grep -qxF "$vid" "$ok_ids"; then
+      if ! grep -qxF -- "$vid" "$ok_ids"; then
         printf '%s\t%s\t%s\t%s\n' "$vid" "$url" "$ex" "$title" >> "$fail_tsv"
         printf '%s\n' "$url" >> "$fail_urls"
       fi
