@@ -16,11 +16,11 @@ cmd_hits(){
         EXACT=1; shift;;
       -h|--help) cat <<E
 Usage: clips.sh hits [-q "dog,prong collar"] [-w SECONDS] [-o wanted_clips.tsv] [--words] [--exact]
-Find hits either from legacy *.tslog.txt or precise *.words.tsv files. With --exact, use exact word timestamps from words.tsv.
+Find hits from *.words.tsv or *.tslog.txt files. With --exact, use exact word timestamps from words(.yt).tsv.
 
 Sources
-  auto (default): prefer *.words.tsv when present, else *.tslog.txt
-  words: use per-word timestamps from files named *words.tsv or words.tsv
+  auto (default): per video ID, prefer *.words.tsv, then *.tslog.txt, then *.words.yt.tsv
+  words: use per-word timestamps from files named *words.tsv, *words.yt.tsv, or words.tsv
   tslog: use transcript logs (*.tslog.txt) with [HH:MM:SS] lines
 
 Windows
@@ -29,25 +29,16 @@ Windows
 
 Exact (words source only)
   --exact: instead of centering a fixed window, use the exact start→end span
-           from words.tsv for the matched word, then apply PAD_START/PAD_END.
+           from words(.yt).tsv for the matched word, then apply PAD_START/PAD_END.
            If 'end' is missing for a token, use start as both bounds (plus padding).
 E
         return 0;;
       *) c_er "hits: unknown arg $1"; exit 1;;
     esac
   done
-  # Determine source and default window
-  local HAVE_WORDS=0
-  if find generated -type f \( -name '*words.tsv' -o -name 'words.tsv' \) -print -quit 2>/dev/null | grep -q .; then
-    HAVE_WORDS=1
-  elif find . -type f \( -name '*words.tsv' -o -name 'words.tsv' \) -print -quit 2>/dev/null | grep -q .; then
-    HAVE_WORDS=1
-  fi
-  if [[ "$SOURCE" == "auto" ]]; then
-    if [[ $HAVE_WORDS -eq 1 ]]; then SOURCE="words"; else SOURCE="tslog"; fi
-  fi
+  # Set default window if not specified
   if [[ -z "$WIN" ]]; then
-    if [[ "$SOURCE" == "words" ]]; then WIN="1"; else WIN="7"; fi
+    if [[ "$SOURCE" == "words" || "$SOURCE" == "auto" ]]; then WIN="1"; else WIN="7"; fi
   fi
 
   if [[ $EXACT -eq 1 && "$SOURCE" != "words" ]]; then
@@ -60,54 +51,146 @@ E
   else
     WDESC="${WIN}s"
   fi
-  c_do "Finding hits (source: $SOURCE | terms: $TERMS | window: ${WDESC}) → $OUT"
-  local tmp; tmp="$(mktemp)"
 
-  echo -e "url\tstart\tend\tlabel\tsource_caption" > "$tmp"
+  if [[ "$SOURCE" == "auto" ]]; then
+    c_do "Finding hits (source: auto-detect per video | terms: $TERMS | window: ${WDESC}) → $OUT"
+  else
+    c_do "Finding hits (source: $SOURCE | terms: $TERMS | window: ${WDESC}) → $OUT"
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  echo -e "url\tstart\tend\tlabel\tsource_caption\tsource_type" > "$tmp"
   IFS=',' read -r -a ARR <<< "$TERMS"
 
-  if [[ "$SOURCE" == "words" ]]; then
-    # Parse *.words.tsv files (flexible columns). Case-insensitive term match.
-    # Accepted columns (any of): word|token|term, start|start_sec|time|ts, end|end_sec, id|ytid|video_id, url|webpage_url
-    HITS_TERMS="$TERMS" EXACT="$EXACT" python3 - "$WIN" "$PAD_START" "$PAD_END" "$OUT" >> "$tmp" <<'PY'
+  # Universal Python processor that handles words, tslog, and auto sources (VTT removed)
+  HITS_TERMS="$TERMS" EXACT="$EXACT" HITS_SOURCE="$SOURCE" python3 - "$WIN" "$PAD_START" "$PAD_END" "$OUT" >> "$tmp" <<'PY'
 import sys, os, csv, re
-csv.field_size_limit(10 * 1024 * 1024)  # Increase limit to 10MB to handle large fields
-WIN=float(sys.argv[1]); PAD_START=float(sys.argv[2]); PAD_END=float(sys.argv[3])
-terms = [t.strip() for t in os.environ.get('HITS_TERMS','').split(',') if t.strip()]
+from collections import defaultdict
+csv.field_size_limit(10 * 1024 * 1024)
+
+WIN = float(sys.argv[1])
+PAD_START = float(sys.argv[2])
+PAD_END = float(sys.argv[3])
+terms = [t.strip() for t in os.environ.get('HITS_TERMS', '').split(',') if t.strip()]
 terms_lower = [t.lower() for t in terms]
-EXACT = int(os.environ.get('EXACT','0') or 0)
+EXACT = int(os.environ.get('EXACT', '0') or 0)
+SOURCE = os.environ.get('HITS_SOURCE', 'auto')
+
+def guess_id_from_path(path):
+    """Extract YouTube video ID from filename (11 char alphanumeric)"""
+    base = os.path.basename(path)
+    m = re.match(r'([A-Za-z0-9_-]{11})__', base)
+    if m:
+        return m.group(1)
+    m = re.match(r'([A-Za-z0-9_-]{11})__', os.path.basename(os.path.dirname(path)))
+    if m:
+        return m.group(1)
+    return ''
+
+def emit(url, start, end, label, source, source_type):
+    """Output a hit in TSV format"""
+    sys.stdout.write(f"{url}\t{start:.3f}\t{end:.3f}\t{label}\t{source}\t{source_type}\n")
+
+def vtt_time_to_seconds(time_str):
+    """Convert VTT timestamp (HH:MM:SS.mmm or MM:SS.mmm) to seconds"""
+    parts = time_str.strip().split(':')
+    if len(parts) == 3:  # HH:MM:SS.mmm
+        h, m, s = parts
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    elif len(parts) == 2:  # MM:SS.mmm
+        m, s = parts
+        return int(m) * 60 + float(s)
+    else:
+        return 0.0
+
+def process_vtt_file(path, vid):
+    """Parse VTT file and emit hits"""
+    url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
+    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        # Look for timestamp line: HH:MM:SS.mmm --> HH:MM:SS.mmm
+        if '-->' in line:
+            try:
+                start_str, end_str = line.split('-->')
+                timestamp_start = vtt_time_to_seconds(start_str)
+                timestamp_end = vtt_time_to_seconds(end_str)
+
+                # Next line(s) contain caption text
+                caption_lines = []
+                i += 1
+                while i < len(lines) and lines[i].strip() and '-->' not in lines[i]:
+                    caption_lines.append(lines[i].strip())
+                    i += 1
+                caption = ' '.join(caption_lines)
+
+                # Check if any term matches
+                if not terms_lower or any(t in caption.lower() for t in terms_lower):
+                    # Use midpoint of caption timestamp for window
+                    center = (timestamp_start + timestamp_end) / 2.0
+                    start = max(0.0, center - WIN/2.0 - PAD_START)
+                    end = center + WIN/2.0 + PAD_END
+
+                    # Label is the first matching term, or the caption snippet
+                    label = terms[0] if terms else 'hit'
+                    for term in terms:
+                        if term.lower() in caption.lower():
+                            label = term
+                            break
+
+                    emit(url, start, end, label, caption, 'vtt')
+                continue
+            except Exception:
+                pass
+        i += 1
+
+def process_tslog_file(path, vid):
+    """Parse legacy tslog format [HH:MM:SS] caption"""
+    url = f"https://www.youtube.com/watch?v={vid}" if vid else ""
+    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            # Match: [HH:MM:SS] caption text
+            m = re.match(r'\[(\d{2}):(\d{2}):(\d{2})\]\s+(.*)$', line)
+            if not m:
+                continue
+            h, m_min, s, caption = m.groups()
+            sec = int(h) * 3600 + int(m_min) * 60 + int(s)
+
+            # Check if any term matches
+            if not terms_lower or any(t in caption.lower() for t in terms_lower):
+                start = max(0.0, sec - WIN/2.0 - PAD_START)
+                end = sec + WIN/2.0 + PAD_END
+
+                label = terms[0] if terms else 'hit'
+                for term in terms:
+                    if term.lower() in caption.lower():
+                        label = term
+                        break
+
+                emit(url, start, end, label, caption, 'tslog')
 
 def find_cols(header):
-    h=[c.strip().lower() for c in header]
+    """Find column indices in TSV header (flexible names)"""
+    h = [c.strip().lower() for c in header]
     def pick(*names):
         for n in names:
             if n in h:
                 return h.index(n)
         return -1
     return {
-        'word': pick('word','token','term'),
-        'start': pick('start','start_sec','time','ts','offset'),
-        'end': pick('end','end_sec','stop','to'),
-        'id': pick('ytid','video_id','id'),
-        'url': pick('url','webpage_url'),
+        'word': pick('word', 'token', 'term'),
+        'start': pick('start', 'start_sec', 'time', 'ts', 'offset'),
+        'end': pick('end', 'end_sec', 'stop', 'to'),
+        'id': pick('ytid', 'video_id', 'id'),
+        'url': pick('url', 'webpage_url'),
     }
 
-def guess_id_from_path(path):
-    base=os.path.basename(path)
-    m=re.match(r'([A-Za-z0-9_-]{11})__', base)
-    if m:
-        return m.group(1)
-    # try parent dir
-    m=re.match(r'([A-Za-z0-9_-]{11})__', os.path.basename(os.path.dirname(path)))
-    if m:
-        return m.group(1)
-    return ''
-
-def emit(url, start, end, label, source):
-    sys.stdout.write(f"{url}\t{start:.3f}\t{end:.3f}\t{label}\t{source}\n")
-
-def iter_word_rows(path):
-    with open(path,'r',encoding='utf-8',errors='ignore',newline='') as fh:
+def process_words_file(path):
+    """Parse words.tsv file with per-word timestamps, supporting phrase matching"""
+    with open(path, 'r', encoding='utf-8', errors='ignore', newline='') as fh:
         sniffer = csv.Sniffer()
         sample = fh.read(4096)
         fh.seek(0)
@@ -116,127 +199,218 @@ def iter_word_rows(path):
             dialect = sniffer.sniff(sample, delimiters='\t,')
         except Exception:
             pass
-        # Disable quoting for TSV files to handle literal quotes in data
         reader = csv.reader(fh, dialect, quoting=csv.QUOTE_NONE)
         try:
             header = next(reader)
         except StopIteration:
             return
+
         cols = find_cols(header)
+
+        # Read all rows into memory for phrase matching
+        all_words = []
         for row in reader:
             if not row:
                 continue
             def get(idx, default=''):
-                if 0 <= idx < len(row):
-                    return row[idx]
-                return default
-            w = get(cols['word']).strip() if cols['word']!=-1 else ''
-            if w and terms_lower and all(t not in w.lower() for t in terms_lower):
+                return row[idx] if 0 <= idx < len(row) else default
+
+            w = get(cols['word']).strip() if cols['word'] != -1 else ''
+            if not w:
                 continue
-            s_txt = get(cols['start'])
-            e_txt = get(cols['end'])
+
             try:
-                s = float(s_txt)
+                s = float(get(cols['start']))
             except Exception:
                 continue
-            e = None
+
             try:
-                e = float(e_txt)
+                e = float(get(cols['end'])) if cols['end'] != -1 and get(cols['end']) else None
             except Exception:
                 e = None
+
             vid = get(cols['id']).strip()
             url = get(cols['url']).strip()
             if not url and not vid:
                 vid = guess_id_from_path(path)
             if not url and vid:
                 url = f"https://www.youtube.com/watch?v={vid}"
-            if EXACT:
-                # Use exact token span with small padding
-                start = max(0.0, s - PAD_START)
-                end = (e if e is not None else s) + PAD_END
-            else:
-                # Build fixed window centered on midpoint (or at time if no end)
-                if e is None:
-                    center = s
-                else:
-                    center = (s + e) / 2.0
-                start = max(0.0, center - WIN/2.0 - PAD_START)
-                end = center + WIN/2.0 + PAD_END
-            label = w or (terms[0] if terms else 'hit')
-            source = w or ''
-            emit(url, start, end, label, source)
 
-def find_files():
-    roots = ['generated', '.']
-    seen=set()
-    for r in roots:
-        for dirpath,_,files in os.walk(r):
-            for name in files:
-                if name == 'words.tsv' or name.endswith('words.tsv'):
-                    p=os.path.join(dirpath,name)
-                    if p in seen: continue
-                    seen.add(p)
-                    yield p
+            all_words.append({
+                'word': w,
+                'start': s,
+                'end': e,
+                'url': url,
+                'vid': vid
+            })
 
-for p in find_files():
-    iter_word_rows(p)
-PY
-  else
-    # Legacy tslog search
-    while IFS= read -r -d '' ts; do
-      local stem="${ts%.tslog.txt}"
-      local id=""
-      if [[ "$(basename "$stem")" =~ ^([A-Za-z0-9_-]{11})__ ]]; then id="${BASH_REMATCH[1]}"; fi
-      local url=""; [[ -n "$id" ]] && url="$(src_url_for_id "$id")"
+        # For each search term, find matching phrases
+        for term in terms:
+            term_words = term.strip().split()  # Split phrase into words
+            term_words_lower = [tw.lower() for tw in term_words]
 
-      for term in "${ARR[@]}"; do
-        local t; t="$(echo "$term" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        [[ -z "$t" ]] && continue
+            # Sliding window to find phrase matches
+            for i in range(len(all_words) - len(term_words) + 1):
+                # Check if the next N words match the phrase (substring matching)
+                window_words = [all_words[i + j]['word'].lower() for j in range(len(term_words))]
 
-        if have rg; then
-          rg -n --fixed-strings "$t" "$ts" | while IFS=: read -r ln _; do
-            local line; line="$(sed -n "${ln}p" "$ts")"
-            [[ "$line" =~ \[([0-9]{2}):([0-9]{2}):([0-9]{2})\]\ (.*)$ ]] || continue
-            local h="${BASH_REMATCH[1]}"; local m="${BASH_REMATCH[2]}"; local s="${BASH_REMATCH[3]}"
-            local cap="${BASH_REMATCH[4]}"
-            local sec=$((10#$h*3600 + 10#$m*60 + 10#$s))
-            local start end
-            start=$(python3 - <<PY "$sec" "$WIN" "$PAD_START"
-import sys; sec=float(sys.argv[1]); win=float(sys.argv[2]); pad=float(sys.argv[3])
-print(max(0.0, sec - win/2.0 - pad))
+                # Match if search term is contained in the word (like old behavior)
+                match = all(term_words_lower[j] in window_words[j] for j in range(len(term_words)))
+
+                if match:
+                    # Found a match! Get the span of the entire phrase
+                    first_word = all_words[i]
+                    last_word = all_words[i + len(term_words) - 1]
+
+                    phrase_start = first_word['start']
+                    phrase_end = last_word['end'] if last_word['end'] is not None else last_word['start']
+
+                    url = first_word['url']
+
+                    if EXACT:
+                        start = max(0.0, phrase_start - PAD_START)
+                        end = phrase_end + PAD_END
+                    else:
+                        center = (phrase_start + phrase_end) / 2.0
+                        start = max(0.0, center - WIN/2.0 - PAD_START)
+                        end = center + WIN/2.0 + PAD_END
+
+                    label = term
+                    source = ' '.join([all_words[i + j]['word'] for j in range(len(term_words))])
+                    emit(url, start, end, label, source, 'words')
+
+def discover_video_ids():
+    """Discover all video IDs from media files in pull/"""
+    ids = set()
+    # Supported media extensions (from transcribe command)
+    media_exts = ('.opus', '.mp4', '.mkv', '.mov', '.avi', '.mp3', '.wav', '.m4a',
+                  '.webm', '.flv', '.ogg', '.ogv', '.3gp')
+
+    if os.path.isdir('pull'):
+        for fname in os.listdir('pull'):
+            # Check if it's a media file
+            if any(fname.endswith(ext) for ext in media_exts):
+                vid = guess_id_from_path(fname)
+                if vid:
+                    ids.add(vid)
+
+    # Also check generated/ for any video IDs we might have transcribed
+    if os.path.isdir('generated'):
+        for fname in os.listdir('generated'):
+            vid = guess_id_from_path(fname)
+            if vid:
+                ids.add(vid)
+
+    return ids
+
+def find_best_source_for_video(vid):
+    """For a video ID, return (source_type, path) in priority order"""
+    # Priority 1: words.tsv in generated/ (excluding .yt.tsv)
+    for root in ['generated', '.']:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, files in os.walk(root):
+            for fname in files:
+                if (fname == 'words.tsv' or (fname.endswith('.words.tsv') and not fname.endswith('.words.yt.tsv'))) and vid in fname:
+                    return ('words', os.path.join(dirpath, fname))
+
+    # Priority 2: tslog.txt in generated/
+    for root in ['generated', '.']:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, files in os.walk(root):
+            for fname in files:
+                if fname.endswith('.tslog.txt') and vid in fname:
+                    return ('tslog', os.path.join(dirpath, fname))
+
+    # Priority 3: words.yt.tsv (generated by convert-captions)
+    for root in ['generated', '.']:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, files in os.walk(root):
+            for fname in files:
+                if (fname == 'words.yt.tsv' or fname.endswith('words.yt.tsv')) and vid in fname:
+                    return ('words', os.path.join(dirpath, fname))
+
+    return (None, None)
+
+def find_all_files_by_source(source_type):
+    """Find all files of a specific type"""
+    files = []
+    seen_base_names = set()
+
+    if source_type == 'words':
+        # Collect all candidates first
+        candidates = []
+        for root in ['generated', '.']:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _, fnames in os.walk(root):
+                for fname in fnames:
+                    if fname == 'words.tsv' or fname.endswith('.words.tsv') or fname.endswith('.words.yt.tsv'):
+                        full_path = os.path.join(dirpath, fname)
+                        # Extract base name (remove .words.tsv or .words.yt.tsv)
+                        if fname.endswith('.words.yt.tsv'):
+                            base = fname[:-len('.words.yt.tsv')]
+                            priority = 2
+                        elif fname.endswith('.words.tsv'):
+                            base = fname[:-len('.words.tsv')]
+                            priority = 1
+                        else:
+                            base = fname
+                            priority = 1
+                        candidates.append((priority, base, full_path))
+
+        # Sort by base name and priority (lower priority number = higher precedence)
+        candidates.sort(key=lambda x: (x[1], x[0]))
+
+        # Deduplicate: for each base name, only take the highest priority file
+        for priority, base, full_path in candidates:
+            if base not in seen_base_names:
+                seen_base_names.add(base)
+                files.append(full_path)
+
+    elif source_type == 'tslog':
+        for root in ['generated', '.']:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _, fnames in os.walk(root):
+                for fname in fnames:
+                    if fname.endswith('.tslog.txt'):
+                        files.append(os.path.join(dirpath, fname))
+
+    # VTT source removed
+
+    return files
+
+# Main processing logic
+if SOURCE == 'auto':
+    # Auto-detect: discover video IDs and pick best source for each
+    video_ids = discover_video_ids()
+    for vid in video_ids:
+        source_type, path = find_best_source_for_video(vid)
+        if not source_type:
+            continue
+
+        if source_type == 'words':
+            process_words_file(path)
+        elif source_type == 'tslog':
+            process_tslog_file(path, vid)
+        # words source covers both words.tsv and words.yt.tsv
+
+elif SOURCE == 'words':
+    for path in find_all_files_by_source('words'):
+        process_words_file(path)
+
+elif SOURCE == 'tslog':
+    for path in find_all_files_by_source('tslog'):
+        vid = guess_id_from_path(path)
+        process_tslog_file(path, vid)
+
+elif SOURCE == 'vtt':
+    # Backward compatibility message
+    sys.stderr.write('VTT source support has been removed. Use convert-captions then --words.\n')
 PY
-)
-            end=$(python3 - <<PY "$sec" "$WIN" "$PAD_END"
-import sys; sec=float(sys.argv[1]); win=float(sys.argv[2]); pad=float(sys.argv[3])
-print(sec + win/2.0 + pad)
-PY
-)
-            printf "%s\t%.3f\t%.3f\t%s\t%s\n" "${url:-}" "$start" "$end" "$t" "$cap" >> "$tmp"
-          done
-        else
-          grep -n -F "$t" "$ts" | while IFS=: read -r ln _; do
-            local line; line="$(sed -n "${ln}p" "$ts")"
-            [[ "$line" =~ \[([0-9]{2}):([0-9]{2}):([0-9]{2})\]\ (.*)$ ]] || continue
-            local h="${BASH_REMATCH[1]}"; local m="${BASH_REMATCH[2]}"; local s="${BASH_REMATCH[3]}"
-            local cap="${BASH_REMATCH[4]}"
-            local sec=$((10#$h*3600 + 10#$m*60 + 10#$s))
-            local start end
-            start=$(python3 - <<PY "$sec" "$WIN" "$PAD_START"
-import sys; sec=float(sys.argv[1]); win=float(sys.argv[2]); pad=float(sys.argv[3])
-print(max(0.0, sec - win/2.0 - pad))
-PY
-)
-            end=$(python3 - <<PY "$sec" "$WIN" "$PAD_END"
-import sys; sec=float(sys.argv[1]); win=float(sys.argv[2]); pad=float(sys.argv[3])
-print(sec + win/2.0 + pad)
-PY
-)
-            printf "%s\t%.3f\t%.3f\t%s\t%s\n" "${url:-}" "$start" "$end" "$t" "$cap" >> "$tmp"
-          done
-        fi
-      done
-    done < <(find generated -type f -name '*.tslog.txt' -print0 2>/dev/null || find . -type f -name '*.tslog.txt' -print0)
-  fi
 
   # Merge overlapping clips
   python3 - "$tmp" "$OUT" <<'PYMERGE'
@@ -257,11 +431,13 @@ with open(infile, 'r', encoding='utf-8') as f:
             end = float(row['end'])
             label = row['label']
             source = row.get('source_caption', '')
+            source_type = row.get('source_type', '')
             clips_by_url[url].append({
                 'start': start,
                 'end': end,
                 'label': label,
-                'source': source
+                'source': source,
+                'source_type': source_type
             })
         except (ValueError, KeyError):
             continue
@@ -279,6 +455,7 @@ for url, clips in clips_by_url.items():
     current = clips[0].copy()
     current_labels = [current['label']]
     current_sources = [current['source']]
+    current_types = [current['source_type']]
 
     for clip in clips[1:]:
         # Check if clips overlap (current.end >= clip.start means they touch or overlap)
@@ -289,31 +466,37 @@ for url, clips in clips_by_url.items():
                 current_labels.append(clip['label'])
             if clip['source'] and clip['source'] not in current_sources:
                 current_sources.append(clip['source'])
+            if clip['source_type'] and clip['source_type'] not in current_types:
+                current_types.append(clip['source_type'])
         else:
             # No overlap, save current and start new
             current['label'] = ', '.join(current_labels)
             current['source'] = current_sources[0] if current_sources else ''
+            current['source_type'] = ', '.join(sorted(set(current_types)))
             merged.append((url, current))
             current = clip.copy()
             current_labels = [current['label']]
             current_sources = [current['source']]
+            current_types = [current['source_type']]
 
     # Don't forget last clip
     current['label'] = ', '.join(current_labels)
     current['source'] = current_sources[0] if current_sources else ''
+    current['source_type'] = ', '.join(sorted(set(current_types)))
     merged.append((url, current))
 
 # Write output
 with open(outfile, 'w', encoding='utf-8', newline='') as f:
     writer = csv.writer(f, delimiter='\t')
-    writer.writerow(['url', 'start', 'end', 'label', 'source_caption'])
+    writer.writerow(['url', 'start', 'end', 'label', 'source_caption', 'source_type'])
     for url, clip in merged:
         writer.writerow([
             url,
             f"{clip['start']:.3f}",
             f"{clip['end']:.3f}",
             clip['label'],
-            clip['source']
+            clip['source'],
+            clip['source_type']
         ])
 PYMERGE
   rm -f "$tmp"

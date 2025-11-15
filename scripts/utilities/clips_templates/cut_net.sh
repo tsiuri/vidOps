@@ -266,6 +266,15 @@ PY
           continue
         fi
 
+        # Per-video lock to avoid race with other workers on same OUTDIR
+        lockdir="$OUTDIR/.locks"
+        mkdir -p "$lockdir" 2>/dev/null || true
+        lockpath="$lockdir/${vid_id}.lock"
+        if ! mkdir "$lockpath" 2>/dev/null; then
+          c_wr "Lock held for $vid_id; skipping to avoid race"
+          continue
+        fi
+
         # Filter out sections that already exist
         c_do "Checking for existing clips of: $vid_title"
         local filtered_sections
@@ -273,6 +282,7 @@ PY
 
         if [[ -z "$filtered_sections" ]]; then
           c_ok "All sections already downloaded for: $vid_title"
+          rmdir "$lockpath" 2>/dev/null || true
           continue
         fi
 
@@ -340,6 +350,9 @@ PY
             c_er "Failed to fetch sections for: $URL"
           fi
         fi
+
+        # Release per-video lock after processing this URL
+        rmdir "$lockpath" 2>/dev/null || true
     done
 
   c_ok "Network section fetch complete."

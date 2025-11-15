@@ -29,6 +29,7 @@ COMMANDS
   voice <action>              Voice filtering operations
   transcribe [options]        Dual-GPU transcription with Whisper
   analyze <transcripts...>    AI-powered transcript analysis
+  convert-captions            Convert VTT captions to words.yt.tsv
   stitch <method>             Stitch videos together
   dates <action>              Date-based file management
   gpu <action>                GPU binding management (requires sudo)
@@ -436,6 +437,40 @@ NOTE
     4. Install Python deps: pip install -r scripts/analysis/requirements.txt
 EOF
             ;;
+        convert-captions)
+            cat <<'EOF'
+CONVERT-CAPTIONS - Convert VTT captions to words.yt.tsv
+
+USAGE
+  ./workspace.sh convert-captions [options] [files...]
+
+DESCRIPTION
+  Converts YouTube VTT subtitle files (pull/*.transcript.en.vtt) into the
+  words.yt.tsv format used by other tools. Each cue is split into words and
+  timestamps are distributed evenly per word. Confidence defaults to 0.0
+  unless present as a preceding "NOTE Confidence:" line in the VTT.
+
+OPTIONS
+  --source-dir <dir>     Source directory (default: pull)
+  --dest-dir <dir>       Destination directory (default: generated)
+  --overwrite            Overwrite existing *.words.yt.tsv
+  --dry-run              Show actions without writing
+
+EXAMPLES
+  # Convert all VTTs in pull/ to generated/*.words.yt.tsv
+  ./workspace.sh convert-captions
+
+  # Overwrite existing outputs
+  ./workspace.sh convert-captions --overwrite
+
+  # Convert specific files
+  ./workspace.sh convert-captions pull/VIDEO__*.transcript.en.vtt
+
+OUTPUT
+  Writes: generated/{BASE}.words.yt.tsv
+  BASE: filename without .transcript.en.vtt
+EOF
+            ;;
         info)
             cat <<'EOF'
 INFO - Show workspace information
@@ -630,6 +665,10 @@ cmd_transcribe() {
 
 cmd_analyze() {
     python3 scripts/analysis/analyze_transcript.py "$@"
+}
+
+cmd_convert_captions() {
+    scripts/utilities/convert-captions.sh "$@"
 }
 
 cmd_stitch() {
@@ -869,6 +908,9 @@ main() {
             ;;
         analyze)
             cmd_analyze "$@"
+            ;;
+        convert-captions)
+            cmd_convert_captions "$@"
             ;;
         stitch|concat)
             cmd_stitch "$@"
