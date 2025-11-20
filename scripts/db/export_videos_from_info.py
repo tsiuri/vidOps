@@ -3,7 +3,8 @@ import json, sys, re
 from pathlib import Path
 from datetime import datetime
 
-out_path = Path('logs/videos_from_info.tsv')
+out_path = Path('logs/db/videos_from_info.tsv')
+last_ytids_path = Path('logs/db/_last_exported_ytids.txt')
 pull = Path('pull')
 
 def ymd_to_date(s: str):
@@ -17,6 +18,7 @@ def main():
     if not files:
         print('No pull/*__*.info.json found', file=sys.stderr)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    ytids = []
     with out_path.open('w', encoding='utf-8') as o:
         o.write('\t'.join(['ytid','url','title','upload_date','duration_sec','channel','channel_id','extractor_key','tags_json','categories_json'])+'\n')
         for f in files:
@@ -41,8 +43,14 @@ def main():
             cats_json = json.dumps(cats, ensure_ascii=False)
             row = [ytid, url, title, upload_date, duration_s, channel, channel_id, extractor_key, tags_json, cats_json]
             o.write('\t'.join(x.replace('\n',' ').replace('\r',' ') for x in row) + '\n')
-    print(f'Wrote {out_path}')
+            if ytid:
+                ytids.append(ytid)
+    # Record the list of ytids seen in this export (for annotating upload_type)
+    last_ytids_path.parent.mkdir(parents=True, exist_ok=True)
+    with last_ytids_path.open('w', encoding='utf-8') as ly:
+        for y in sorted(set(ytids)):
+            ly.write(y + '\n')
+    print(f'Wrote {out_path} and {last_ytids_path}')
 
 if __name__ == '__main__':
     main()
-

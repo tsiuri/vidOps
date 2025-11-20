@@ -59,7 +59,8 @@ E
   fi
 
   local tmp; tmp="$(mktemp)"
-  echo -e "url\tstart\tend\tlabel\tsource_caption\tsource_type" > "$tmp"
+  # Internal tmp includes hit_start/hit_end for smarter merging
+  echo -e "url\tstart\tend\tlabel\tsource_caption\tsource_type\thit_start\thit_end" > "$tmp"
   IFS=',' read -r -a ARR <<< "$TERMS"
 
   # Universal Python processor that handles words, tslog, and auto sources (VTT removed)
@@ -87,9 +88,11 @@ def guess_id_from_path(path):
         return m.group(1)
     return ''
 
-def emit(url, start, end, label, source, source_type):
-    """Output a hit in TSV format"""
-    sys.stdout.write(f"{url}\t{start:.3f}\t{end:.3f}\t{label}\t{source}\t{source_type}\n")
+def emit(url, start, end, label, source, source_type, hit_start, hit_end):
+    """Output a hit in TSV format (with hit span)"""
+    sys.stdout.write(
+        f"{url}\t{start:.3f}\t{end:.3f}\t{label}\t{source}\t{source_type}\t{hit_start:.3f}\t{hit_end:.3f}\n"
+    )
 
 def vtt_time_to_seconds(time_str):
     """Convert VTT timestamp (HH:MM:SS.mmm or MM:SS.mmm) to seconds"""
@@ -141,7 +144,8 @@ def process_vtt_file(path, vid):
                             label = term
                             break
 
-                    emit(url, start, end, label, caption, 'vtt')
+                    # Use the actual caption span as the hit span
+                    emit(url, start, end, label, caption, 'vtt', timestamp_start, timestamp_end)
                 continue
             except Exception:
                 pass
@@ -170,7 +174,8 @@ def process_tslog_file(path, vid):
                         label = term
                         break
 
-                emit(url, start, end, label, caption, 'tslog')
+                # Hit is a point for tslog
+                emit(url, start, end, label, caption, 'tslog', sec, sec)
 
 def find_cols(header):
     """Find column indices in TSV header (flexible names)"""
@@ -277,7 +282,7 @@ def process_words_file(path):
 
                     label = term
                     source = ' '.join([all_words[i + j]['word'] for j in range(len(term_words))])
-                    emit(url, start, end, label, source, 'words')
+                    emit(url, start, end, label, source, 'words', phrase_start, phrase_end)
 
 def discover_video_ids():
     """Discover all video IDs from media files in pull/"""
@@ -420,7 +425,7 @@ from collections import defaultdict
 infile = sys.argv[1]
 outfile = sys.argv[2]
 
-# Read all clips
+# Read all clips (with hit spans)
 clips_by_url = defaultdict(list)
 with open(infile, 'r', encoding='utf-8') as f:
     reader = csv.DictReader(f, delimiter='\t')
@@ -432,12 +437,16 @@ with open(infile, 'r', encoding='utf-8') as f:
             label = row['label']
             source = row.get('source_caption', '')
             source_type = row.get('source_type', '')
+            hstart = float(row.get('hit_start', row['start']))
+            hend = float(row.get('hit_end', row['end']))
             clips_by_url[url].append({
                 'start': start,
                 'end': end,
                 'label': label,
                 'source': source,
-                'source_type': source_type
+                'source_type': source_type,
+                'hstart': hstart,
+                'hend': hend
             })
         except (ValueError, KeyError):
             continue
@@ -458,10 +467,15 @@ for url, clips in clips_by_url.items():
     current_types = [current['source_type']]
 
     for clip in clips[1:]:
-        # Check if clips overlap (current.end >= clip.start means they touch or overlap)
-        if current['end'] >= clip['start']:
+        # Overlap in window AND overlap in hit span
+        window_overlap = current['end'] >= clip['start']
+        hit_overlap = not (current['hend'] < clip['hstart'] or clip['hend'] < current['hstart'])
+        if window_overlap and hit_overlap:
             # Merge: extend end, combine labels
             current['end'] = max(current['end'], clip['end'])
+            # Union hit spans for subsequent checks
+            current['hstart'] = min(current['hstart'], clip['hstart'])
+            current['hend'] = max(current['hend'], clip['hend'])
             if clip['label'] not in current_labels:
                 current_labels.append(clip['label'])
             if clip['source'] and clip['source'] not in current_sources:
@@ -485,7 +499,7 @@ for url, clips in clips_by_url.items():
     current['source_type'] = ', '.join(sorted(set(current_types)))
     merged.append((url, current))
 
-# Write output
+# Write output (preserve original 6 columns for downstream tools)
 with open(outfile, 'w', encoding='utf-8', newline='') as f:
     writer = csv.writer(f, delimiter='\t')
     writer.writerow(['url', 'start', 'end', 'label', 'source_caption', 'source_type'])

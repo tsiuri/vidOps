@@ -7,7 +7,7 @@ CREATE TEMP TABLE title_date_tmp (
   title_date DATE
 );
 
-\copy title_date_tmp FROM 'logs/title_date_map.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+\copy title_date_tmp FROM 'logs/db/title_date_map.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
 UPDATE videos v
 SET title_date = t.title_date
@@ -16,4 +16,3 @@ WHERE v.ytid = t.ytid
   AND (v.title_date IS DISTINCT FROM t.title_date);
 
 COMMIT;
-

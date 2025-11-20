@@ -33,6 +33,7 @@ COMMANDS
   stitch <method>             Stitch videos together
   dates <action>              Date-based file management
   gpu <action>                GPU binding management (requires sudo)
+  dbupdate [database]         Full DB ingest/update pipeline (prompts)
   info                        Show workspace information
   help [command]              Show help for a command
 
@@ -196,6 +197,31 @@ EXAMPLES
 OUTPUT
   Results go to: results/voice_filtered/
   Extracted list: results/voice_filtered/hasan_clips.txt
+EOF
+            ;;
+        dbupdate)
+            cat <<'EOF'
+DBUPDATE - Full Postgres ingest/update pipeline
+
+USAGE
+  ./workspace.sh dbupdate [database]
+
+DESCRIPTION
+  Runs the end-to-end pipeline with prompts:
+    1) Export videos from pull/*__*.info.json
+    2) Load videos
+    3) Prompt to set videos.upload_type for this batch
+    4) Derive title dates from titles
+    5) Scan generated/ for transcripts (prefer Whisper words) and load
+    6) Prompt for optional hits TSV to load
+    7) Prompt to optionally load per-word timestamps (large)
+    8) ANALYZE planner stats
+
+OUTPUTS
+  Intermediate manifests under logs/db/; DB tables populated/updated.
+
+NOTE
+  You can run steps individually via scripts/db/* if you prefer.
 EOF
             ;;
         stitch)
@@ -908,6 +934,9 @@ main() {
             ;;
         analyze)
             cmd_analyze "$@"
+            ;;
+        dbupdate)
+            bash scripts/db/import_videos.sh "${1:-transcripts}"
             ;;
         convert-captions)
             cmd_convert_captions "$@"

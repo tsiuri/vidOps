@@ -17,7 +17,7 @@ CREATE TEMP TABLE videos_info_tmp (
 );
 
 -- Use a non-printable QUOTE to avoid treating JSON double-quotes as CSV quotes
-\copy videos_info_tmp FROM 'logs/videos_from_info.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true, QUOTE E'\b')
+\copy videos_info_tmp FROM 'logs/db/videos_from_info.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true, QUOTE E'\b')
 
 -- Deduplicate by ytid within this statement to avoid ON CONFLICT hitting the same row twice
 INSERT INTO videos (ytid, url, title, upload_date, duration_sec, channel, channel_id, extractor_key, tags, categories)

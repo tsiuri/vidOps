@@ -288,6 +288,11 @@ PY
 
         # Update SECTIONS to only include missing sections
         SECTIONS="$filtered_sections"
+
+        # Proactively remove any stale/invalid existing files that would block yt-dlp due to --no-overwrites.
+        # This targets files matching the section pattern that are temp, tiny, or fail duration checks.
+        prune_invalid_existing_section_files "$vid_id" "$vid_title" "$SECTIONS" "$OUTDIR"
+
         c_do "Downloading ${filtered_sections//,/ } for: $vid_title"
 
         # Base args (sleep/retry knobs from env if you set them)
@@ -302,9 +307,17 @@ PY
           --retries "${YT_RETRIES:-10}"
           --fragment-retries "${YT_FRAG_RETRIES:-10}"
           --extractor-retries "${YT_EXTRACTOR_RETRIES:-5}"
-          --ignore-no-formats-error -ciw --no-overwrites
-          -o "${OUTDIR}/%(id)s_%(title).${NAME_MAX_TITLE:-80}B_%(section_start)06.2f-%(section_end)06.2f.%(ext)s"
+          --ignore-no-formats-error -ciw
+        -o "${OUTDIR}/%(id)s_%(title).${NAME_MAX_TITLE:-80}B_%(section_start)06.2f-%(section_end)06.2f.%(ext)s"
         )
+
+        # Overwrite behavior: default is do not overwrite existing files.
+        # Set OVERWRITE_SECTIONS=1 to force overwrite instead (useful to repair corrupted files).
+        if [[ "${OVERWRITE_SECTIONS:-0}" == "1" ]]; then
+          ybase+=( --force-overwrites )
+        else
+          ybase+=( --no-overwrites )
+        fi
 
         # Optional: re-enable info.json and/or metadata embedding
         if [[ $WANT_INFOJSON -eq 1 ]]; then ybase+=( --write-info-json ); fi
@@ -444,15 +457,48 @@ filter_existing_sections(){
       # Use wildcard for title to avoid issues with spaces and special characters
       local pattern="${vid}_*_${start_fmt}-${end_fmt}.*"
 
-      # Check if any file matches this pattern
+      # Check for an already-downloaded, valid file.
+      # Ignore yt-dlp temp/unfinished files (*.part, *.ytdl) and trivially small files.
       local found=0
       shopt -s nullglob
       local matches=("$outdir"/${pattern})
       shopt -u nullglob
 
       if [[ ${#matches[@]} -gt 0 ]]; then
+        local m
+        for m in "${matches[@]}"; do
+          # Skip temp/unfinished markers
+          case "$m" in
+            *.part|*.ytdl|*.tmp|*.temp)
+              continue ;;
+          esac
+          # Require a minimal size (10 KiB) to avoid zero-byte placeholders
+          if [[ ! -s "$m" || $(stat -c%s -- "$m" 2>/dev/null || echo 0) -lt 10240 ]]; then
+            continue
+          fi
+          # Optional: verify duration with ffprobe to avoid header-only files
+          if [[ "${VERIFY_SECTION_DURATION:-0}" == "1" && -n "$(command -v ffprobe || true)" ]]; then
+            # Compute expected duration (end-start) and compare
+            local expect thresh actual
+            expect=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.3f", (e+0)-(s+0)}')
+            # Accept files that are at least fraction (default 0.6) of expected duration
+            local frac="${MIN_SECTION_DURATION_FRAC:-0.6}"
+            thresh=$(awk -v ex="$expect" -v f="$frac" 'BEGIN{printf "%.3f", (ex+0)*(f+0)}')
+            actual=$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 -- "$m" 2>/dev/null || echo 0)
+            # Some containers report decimal with many places; normalise to float compare via awk
+            if awk -v a="$actual" -v t="$thresh" 'BEGIN{exit !((a+0)>= (t+0))}'; then
+              found=1; break
+            else
+              continue
+            fi
+          else
+            found=1; break
+          fi
+        done
+      fi
+
+      if [[ $found -eq 1 ]]; then
         c_wr "  ✓ Section $sec already exists" >&2
-        found=1
       else
         c_do "  → Section $sec will be downloaded" >&2
         missing_sections+=("$sec")
@@ -467,4 +513,57 @@ filter_existing_sections(){
     local result=$(IFS=,; echo "${missing_sections[*]}")
     echo "$result"
   fi
+}
+
+# Remove invalid existing files so yt-dlp doesn't skip with "has already been downloaded".
+# Args: video_id, video_title, sections_string, outdir
+prune_invalid_existing_section_files(){
+  local vid="$1"; local title="$2"; local sections="$3"; local outdir="$4"
+  local verify=0
+  if command -v ffprobe >/dev/null 2>&1; then
+    # Default to verify with ffprobe when available unless explicitly disabled
+    if [[ "${VERIFY_SECTION_DURATION:-auto}" == "1" || "${VERIFY_SECTION_DURATION:-auto}" == "auto" ]]; then
+      verify=1
+    fi
+  fi
+  local frac="${MIN_SECTION_DURATION_FRAC:-0.6}"
+
+  IFS=',' read -r -a sec_array <<< "$sections"
+  local sec
+  for sec in "${sec_array[@]}"; do
+    sec="${sec//[[:space:]]/}"
+    [[ -z "$sec" ]] && continue
+    if [[ "$sec" =~ ^([0-9.]+)-([0-9.]+)$ ]]; then
+      local start="${BASH_REMATCH[1]}"; local end="${BASH_REMATCH[2]}"
+      local start_fmt end_fmt
+      start_fmt=$(printf "%06.2f" "$start")
+      end_fmt=$(printf "%06.2f" "$end")
+      local pattern="${vid}_*_${start_fmt}-${end_fmt}.*"
+      shopt -s nullglob
+      local matches=("$outdir"/${pattern})
+      shopt -u nullglob
+      local m
+      for m in "${matches[@]}"; do
+        case "$m" in *.part|*.ytdl|*.tmp|*.temp) c_wr "  removing temp: $m"; rm -f -- "$m"; continue;; esac
+        # Remove tiny placeholders
+        local size
+        size=$(stat -c%s -- "$m" 2>/dev/null || echo 0)
+        if [[ $size -lt 10240 ]]; then
+          c_wr "  removing tiny file (<10KiB): $m"
+          rm -f -- "$m"; continue
+        fi
+        # Optional duration check
+        if [[ $verify -eq 1 ]]; then
+          local expect actual thresh
+          expect=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.3f", (e+0)-(s+0)}')
+          thresh=$(awk -v ex="$expect" -v f="$frac" 'BEGIN{printf "%.3f", (ex+0)*(f+0)}')
+          actual=$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 -- "$m" 2>/dev/null || echo 0)
+          if ! awk -v a="$actual" -v t="$thresh" 'BEGIN{exit ((a+0) >= (t+0))}'; then
+            c_wr "  removing too-short file (dur ${actual}s < ${thresh}s expect~${expect}s): $m"
+            rm -f -- "$m"; continue
+          fi
+        fi
+      done
+    fi
+  done
 }

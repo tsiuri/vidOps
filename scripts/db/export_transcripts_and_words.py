@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path('.')
 GENERATED = ROOT / 'generated'
 PULL = ROOT / 'pull'
-LOGS = ROOT / 'logs'
+LOGS = ROOT / 'logs' / 'db'
 
 out_transcripts = LOGS / 'transcripts.tsv'
 out_words = LOGS / 'words_export.tsv'
@@ -111,4 +111,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

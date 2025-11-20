@@ -15,7 +15,7 @@ CREATE TEMP TABLE words_tmp (
 );
 
 -- Respect quotes from the exporter and treat empty strings as NULLs
-\copy words_tmp FROM 'logs/words_export.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true, NULL '')
+\copy words_tmp FROM 'logs/db/words_export.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true, NULL '')
 
 -- Lowercase word on insert; enforce bounds; upsert on (ytid, source, idx)
 INSERT INTO words (ytid, source, idx, word, start_sec, end_sec, confidence, segment_id)

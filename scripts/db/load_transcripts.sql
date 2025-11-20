@@ -12,7 +12,7 @@ CREATE TEMP TABLE transcripts_tmp (
   segment_count INTEGER
 );
 
-\copy transcripts_tmp FROM 'logs/transcripts.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true, QUOTE E'\b')
+\copy transcripts_tmp FROM 'logs/db/transcripts.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true, QUOTE E'\b')
 
 INSERT INTO transcripts (ytid, kind, lang, path, word_count, segment_count)
 SELECT ytid, kind, lang, path, word_count, segment_count
@@ -37,4 +37,3 @@ ON CONFLICT (path) DO UPDATE SET
   bytes = EXCLUDED.bytes;
 
 COMMIT;
-
