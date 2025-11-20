@@ -4,7 +4,9 @@ import os
 import re
 from pathlib import Path
 
-ROOT = Path('.')
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
+
+ROOT = PROJECT_ROOT
 GENERATED = ROOT / 'generated'
 LOGS = ROOT / 'logs' / 'db'
 out_transcripts = LOGS / 'transcripts.tsv'

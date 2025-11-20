@@ -20,7 +20,7 @@ LANGUAGE = os.environ.get("LANGUAGE", "en")
 if LANGUAGE == "auto" or LANGUAGE == "":
     LANGUAGE = None  # Auto-detect
 DRY_RUN = os.environ.get("DRY_RUN", "0") == "1"
-WORKSPACE_ROOT = Path(os.environ.get("WORKSPACE_ROOT", "."))
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
 WORKERS = int(os.environ.get("WORKERS", "1"))
 
 def log(msg):
@@ -263,7 +263,7 @@ def process_media_file(media_path: Path, segments: List[Dict]) -> bool:
     log(f"Processing {len(segments)} segments for {media_path.name}")
 
     # Determine VTT path (in generated/)
-    generated_dir = WORKSPACE_ROOT / "generated"
+    generated_dir = PROJECT_ROOT / "generated"
     base_name = media_path.stem
     vtt_path = generated_dir / f"{base_name}.vtt"
 
@@ -412,7 +412,7 @@ def main():
     # Process each media file and track success
     processed_manifests = set()
     for media_file, segments in grouped.items():
-        media_path = WORKSPACE_ROOT / media_file
+        media_path = PROJECT_ROOT / media_file
         if not media_path.exists():
             warn(f"Media file not found: {media_file}")
             continue

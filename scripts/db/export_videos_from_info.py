@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-import json, sys, re
+import json, sys, re, os
 from pathlib import Path
 from datetime import datetime
 
-out_path = Path('logs/db/videos_from_info.tsv')
-last_ytids_path = Path('logs/db/_last_exported_ytids.txt')
-pull = Path('pull')
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
+
+out_path = PROJECT_ROOT / 'logs/db/videos_from_info.tsv'
+last_ytids_path = PROJECT_ROOT / 'logs/db/_last_exported_ytids.txt'
+pull = PROJECT_ROOT / 'pull'
 
 def ymd_to_date(s: str):
     try:

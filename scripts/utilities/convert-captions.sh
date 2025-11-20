@@ -16,8 +16,10 @@
 
 set -euo pipefail
 
-SOURCE_DIR="pull"
-DEST_DIR="generated"
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+SOURCE_DIR="${PROJECT_ROOT}/pull"
+DEST_DIR="${PROJECT_ROOT}/generated"
 OUT_SUFFIX=".words.yt.tsv"
 OVERWRITE=0
 DRY_RUN=0

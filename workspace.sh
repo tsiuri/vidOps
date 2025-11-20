@@ -3,10 +3,26 @@
 # Usage: ./workspace.sh <command> [options]
 
 set -euo pipefail
-#
-# Ensure we're running from workspace root
-WORKSPACE_ROOT="$(cd "$(dirname "$0")" && pwd)"
-cd "$WORKSPACE_ROOT" || exit 1
+
+# Tool installation directory (where scripts live)
+TOOL_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# Project directory (where data lives) - current working directory
+PROJECT_ROOT="$(pwd)"
+
+# Export for child scripts
+export TOOL_ROOT
+export PROJECT_ROOT
+
+# Verify we're in a valid project directory or create structure
+if [[ ! -f "$PROJECT_ROOT/.vidops-project" ]]; then
+    echo -e "\033[1;33mInitializing VidOps project in: $PROJECT_ROOT\033[0m"
+    touch "$PROJECT_ROOT/.vidops-project"
+    mkdir -p "$PROJECT_ROOT"/{pull,generated,logs/pull,logs/db,data,results,media/{clips,final},config,cuts}
+    echo -e "\033[1;32mProject structure created.\033[0m"
+fi
+
+# Stay in project directory - don't cd to tool directory
 
 # Color output
 C_BLUE='\033[0;34m'
@@ -59,11 +75,16 @@ EXAMPLES
 For detailed help on any command, use: ./workspace.sh help <command>
 
 LOCATION
-  Workspace: $WORKSPACE_ROOT
-  Scripts:   $WORKSPACE_ROOT/scripts/
-  Data:      $WORKSPACE_ROOT/data/
-  Results:   $WORKSPACE_ROOT/results/
-  Media:     $WORKSPACE_ROOT/media/
+  Tool installed at: $TOOL_ROOT
+  Project directory: (current directory)
+
+  Project structure:
+    pull/       - Downloaded videos and metadata
+    generated/  - Transcriptions
+    logs/       - Operation logs
+    data/       - Configuration and lists
+    results/    - Processing outputs
+    media/      - Processed media files
 EOF
 }
 
@@ -513,15 +534,16 @@ EOF
 }
 
 show_info() {
-    echo -e "${C_BLUE}Workspace Information${C_RESET}"
+    echo -e "${C_BLUE}VidOps Project Information${C_RESET}"
     echo ""
-    echo "Location: $WORKSPACE_ROOT"
+    echo "Tool Location:    $TOOL_ROOT"
+    echo "Project Location: $PROJECT_ROOT"
     echo ""
     echo "Directory Status:"
 
-    for dir in pull cuts data results media logs config; do
-        if [[ -d "$dir" ]]; then
-            count=$(find "$dir" -type f 2>/dev/null | wc -l)
+    for dir in pull generated cuts data results media logs config; do
+        if [[ -d "$PROJECT_ROOT/$dir" ]]; then
+            count=$(find "$PROJECT_ROOT/$dir" -type f 2>/dev/null | wc -l)
             echo -e "  ${C_GREEN}✓${C_RESET} $dir/ ($count files)"
         else
             echo -e "  ${C_YELLOW}○${C_RESET} $dir/ (not created)"
@@ -529,10 +551,10 @@ show_info() {
     done
 
     echo ""
-    echo "Available Scripts:"
-    echo "  Voice filtering:  $(find scripts/voice_filtering -name "*.py" 2>/dev/null | wc -l) scripts"
-    echo "  Video processing: $(find scripts/video_processing -name "*.sh" 2>/dev/null | wc -l) scripts"
-    echo "  Date management:  $(find scripts/date_management -name "*.py" 2>/dev/null | wc -l) scripts"
+    echo "Available Tools:"
+    echo "  Voice filtering:  $(find "$TOOL_ROOT/scripts/voice_filtering" -name "*.py" 2>/dev/null | wc -l) scripts"
+    echo "  Video processing: $(find "$TOOL_ROOT/scripts/video_processing" -name "*.sh" 2>/dev/null | wc -l) scripts"
+    echo "  Date management:  $(find "$TOOL_ROOT/scripts/date_management" -name "*.py" 2>/dev/null | wc -l) scripts"
     echo ""
 }
 
@@ -546,10 +568,10 @@ cmd_download() {
         fi
         echo "Downloading from list: $list_file"
         # Consolidate logs across this batch using a shared prefix
-        mkdir -p logs/pull 2>/dev/null || true
+        mkdir -p "$PROJECT_ROOT/logs/pull" 2>/dev/null || true
         local ts lp
         ts="$(date -u '+%Y%m%d_%H%M%SZ')"
-        lp="logs/pull/${ts}"
+        lp="$PROJECT_ROOT/logs/pull/${ts}"
         export PULL_LOG_PREFIX="$lp"
         # Enable cookies-first for from-list when the list likely contains failed URLs
         if [[ "$list_file" == *"failed_urls.txt"* ]]; then
@@ -560,7 +582,7 @@ cmd_download() {
         while read -r url; do
             [[ -z "$url" ]] && continue
             [[ "$url" =~ ^# ]] && continue
-            ./clips.sh pull "$url" "$@"
+            "$TOOL_ROOT/clips.sh" pull "$url" "$@"
         done < "$list_file"
     elif [[ "${1:-}" == "--retry-failed" ]]; then
         shift || true
@@ -569,7 +591,7 @@ cmd_download() {
         if [[ -z "$list_file" || ! -f "$list_file" ]]; then
             # pick the latest non-empty failed_urls file
             list_file=""
-            for f in $(ls -1t logs/pull/*.failed_urls.txt 2>/dev/null || true); do
+            for f in $(ls -1t "$PROJECT_ROOT/logs/pull"/*.failed_urls.txt 2>/dev/null || true); do
                 if [[ -s "$f" ]]; then list_file="$f"; break; fi
             done
         else
@@ -584,7 +606,7 @@ cmd_download() {
             echo "Found failed list but it is empty: $list_file"
             echo "Looking for previous non-empty failed list..."
             alt=""
-            for f in $(ls -1t logs/pull/*.failed_urls.txt 2>/dev/null || true); do
+            for f in $(ls -1t "$PROJECT_ROOT/logs/pull"/*.failed_urls.txt 2>/dev/null || true); do
                 [[ "$f" == "$list_file" ]] && continue
                 if [[ -s "$f" ]]; then alt="$f"; break; fi
             done
@@ -598,10 +620,10 @@ cmd_download() {
         fi
         echo "Retrying failed URLs from: $list_file"
         # Consolidate logs across this retry batch
-        mkdir -p logs/pull 2>/dev/null || true
+        mkdir -p "$PROJECT_ROOT/logs/pull" 2>/dev/null || true
         local ts lp
         ts="$(date -u '+%Y%m%d_%H%M%SZ')"
-        lp="logs/pull/${ts}"
+        lp="$PROJECT_ROOT/logs/pull/${ts}"
         export PULL_LOG_PREFIX="$lp"
         export PULL_COOKIES_FIRST=1
         rm -f "${lp}.requested.tsv" "${lp}.succeeded.tsv" "${lp}.failed.tsv" "${lp}.failed_urls.txt" 2>/dev/null || true
@@ -609,19 +631,19 @@ cmd_download() {
             [[ -z "$url" ]] && continue
             [[ "$url" =~ ^# ]] && continue
             # Always force for retries; also forward any extra args after --retry-failed
-            ./clips.sh pull "$url" --force "$@"
+            "$TOOL_ROOT/clips.sh" pull "$url" --force "$@"
         done < "$list_file"
     else
-        ./clips.sh pull "$@"
+        "$TOOL_ROOT/clips.sh" pull "$@"
     fi
 }
 
 cmd_clips() {
-    ./clips.sh "$@"
+    "$TOOL_ROOT/clips.sh" "$@"
 }
 
 cmd_transcripts() {
-    ./clips.sh transcripts "$@"
+    "$TOOL_ROOT/clips.sh" transcripts "$@"
 }
 
 cmd_voice() {
@@ -638,24 +660,24 @@ cmd_voice() {
             choice=${choice:-3}
 
             case "$choice" in
-                1) python3 scripts/voice_filtering/filter_voice.py "$@" ;;
-                2) python3 scripts/voice_filtering/filter_voice_parallel.py "$@" ;;
-                3) python3 scripts/voice_filtering/filter_voice_parallel_chunked.py "$@" ;;
+                1) python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@" ;;
+                2) python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@" ;;
+                3) python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@" ;;
                 *) echo "Invalid choice"; exit 1 ;;
             esac
             ;;
         filter-simple)
-            python3 scripts/voice_filtering/filter_voice.py "$@"
+            python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@"
             ;;
         filter-parallel)
-            python3 scripts/voice_filtering/filter_voice_parallel.py "$@"
+            python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@"
             ;;
         filter-chunked)
-            python3 scripts/voice_filtering/filter_voice_parallel_chunked.py "$@"
+            python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@"
             ;;
         extract)
-            local results_file="${1:-results/voice_filtered/results.json}"
-            local output_file="${2:-results/voice_filtered/matched_clips.txt}"
+            local results_file="${1:-$PROJECT_ROOT/results/voice_filtered/results.json}"
+            local output_file="${2:-$PROJECT_ROOT/results/voice_filtered/matched_clips.txt}"
 
             echo "Extracting matching clips from: $results_file"
             python3 -c "
@@ -681,20 +703,20 @@ cmd_transcribe() {
     # Check if --batch-retry is requested
     for arg in "$@"; do
         if [[ "$arg" == "--batch-retry" ]]; then
-            scripts/transcription/batch_retry.sh "$@"
+            "$TOOL_ROOT/scripts/transcription/batch_retry.sh" "$@"
             return
         fi
     done
     # Normal transcription
-    scripts/transcription/dual_gpu_transcribe.sh "$@"
+    "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
 }
 
 cmd_analyze() {
-    python3 scripts/analysis/analyze_transcript.py "$@"
+    python3 "$TOOL_ROOT/scripts/analysis/analyze_transcript.py" "$@"
 }
 
 cmd_convert_captions() {
-    scripts/utilities/convert-captions.sh "$@"
+    "$TOOL_ROOT/scripts/utilities/convert-captions.sh" "$@"
 }
 
 cmd_stitch() {
@@ -703,13 +725,13 @@ cmd_stitch() {
 
     case "$method" in
         batched)
-            scripts/video_processing/stitch_videos_batched.sh "$@"
+            "$TOOL_ROOT/scripts/video_processing/stitch_videos_batched.sh" "$@"
             ;;
         cfr)
-            scripts/video_processing/stitch_videos_cfr.sh "$@"
+            "$TOOL_ROOT/scripts/video_processing/stitch_videos_cfr.sh" "$@"
             ;;
         simple)
-            scripts/video_processing/stitch_videos.sh "$@" 1
+            "$TOOL_ROOT/scripts/video_processing/stitch_videos.sh" "$@" 1
             ;;
         *)
             echo "Error: Unknown stitch method: $method"
@@ -725,16 +747,16 @@ cmd_dates() {
 
     case "$action" in
         find-missing)
-            python3 scripts/date_management/find_missing_dates.py "$@"
+            python3 "$TOOL_ROOT/scripts/date_management/find_missing_dates.py" "$@"
             ;;
         create-list)
-            python3 scripts/date_management/create_download_list.py "$@"
+            python3 "$TOOL_ROOT/scripts/date_management/create_download_list.py" "$@"
             ;;
         move)
-            python3 scripts/date_management/move_files_by_date.py "$@"
+            python3 "$TOOL_ROOT/scripts/date_management/move_files_by_date.py" "$@"
             ;;
         compare)
-            python3 scripts/date_management/extract_and_compare_dates.py "$@"
+            python3 "$TOOL_ROOT/scripts/date_management/extract_and_compare_dates.py" "$@"
             ;;
         *)
             echo "Error: Unknown dates action: $action"
@@ -750,7 +772,7 @@ cmd_gpu() {
     case "$action" in
         status)
             echo -e "${C_BLUE}Current GPU Bindings:${C_RESET}"
-            scripts/gpu_tools/gpu-bind-status.sh
+            "$TOOL_ROOT/scripts/gpu_tools/gpu-bind-status.sh"
             ;;
         to-nvidia)
             if [[ $EUID -ne 0 ]]; then
@@ -759,7 +781,7 @@ cmd_gpu() {
                 exit 1
             fi
             echo -e "${C_YELLOW}Rebinding NVIDIA GPUs to host drivers...${C_RESET}"
-            scripts/gpu_tools/gpu-to-nvidia.sh
+            "$TOOL_ROOT/scripts/gpu_tools/gpu-to-nvidia.sh"
             ;;
         to-vfio)
             if [[ $EUID -ne 0 ]]; then
@@ -767,12 +789,12 @@ cmd_gpu() {
                 echo "Run: sudo ./workspace.sh gpu to-vfio"
                 exit 1
             fi
-            if [[ ! -f scripts/gpu_tools/gpu-to-vfio.sh ]]; then
+            if [[ ! -f "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh" ]]; then
                 echo -e "${C_YELLOW}Creating gpu-to-vfio.sh...${C_RESET}"
                 create_gpu_to_vfio_script
             fi
             echo -e "${C_YELLOW}Rebinding NVIDIA GPUs to vfio-pci...${C_RESET}"
-            scripts/gpu_tools/gpu-to-vfio.sh
+            "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh"
             ;;
         *)
             echo "Error: Unknown gpu action: $action"
@@ -783,7 +805,7 @@ cmd_gpu() {
 }
 
 create_gpu_to_vfio_script() {
-    cat > scripts/gpu_tools/gpu-to-vfio.sh << 'EOFVFIO'
+    cat > "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh" << 'EOFVFIO'
 #!/usr/bin/env bash
 # gpu-to-vfio.sh — rebind NVIDIA GPU to vfio-pci (for VM passthrough)
 set -euo pipefail
@@ -883,14 +905,14 @@ main(){
 
 main "$@"
 EOFVFIO
-    chmod +x scripts/gpu_tools/gpu-to-vfio.sh
-    log "Created scripts/gpu_tools/gpu-to-vfio.sh"
+    chmod +x "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh"
+    echo -e "${C_GREEN}Created $TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh${C_RESET}"
 }
 
 # Command logging
 log_command() {
-    local logfile="logs/workspace_commands.log"
-    mkdir -p logs 2>/dev/null || true
+    local logfile="$PROJECT_ROOT/logs/workspace_commands.log"
+    mkdir -p "$PROJECT_ROOT/logs" 2>/dev/null || true
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$logfile" 2>/dev/null || true
 }
 
@@ -936,7 +958,7 @@ main() {
             cmd_analyze "$@"
             ;;
         dbupdate)
-            bash scripts/db/import_videos.sh "${1:-transcripts}"
+            bash "$TOOL_ROOT/scripts/db/import_videos.sh" "${1:-transcripts}"
             ;;
         convert-captions)
             cmd_convert_captions "$@"

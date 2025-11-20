@@ -2,9 +2,12 @@
 import re
 import subprocess
 import json
+import os
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
+
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
 
 # Parse date from Hasan video title format: "HasanAbi February 11, 2022 – ..."
 def extract_date_from_title(title):
@@ -97,7 +100,7 @@ def get_archive_dates(archive_file, use_cache=True):
 
 # Main comparison
 def main():
-    base_dir = Path.cwd()
+    base_dir = PROJECT_ROOT
     archive_file = "/mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/Vods 2023 to 2025 fixed/original_scripts/.clips-download-archive.txt"
     
     print("=" * 80)
@@ -129,7 +132,9 @@ def main():
     print(f"Only in archive: {len(only_in_archive)}")
     
     # Write results
-    with open("results/date_comparison.txt", 'w') as f:
+    output_file = PROJECT_ROOT / "results" / "date_comparison.txt"
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_file, 'w') as f:
         f.write("DATES ONLY IN PODCASTS (1022):\n")
         for date in sorted(only_in_podcasts):
             f.write(f"{date}\n")

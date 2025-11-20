@@ -29,7 +29,7 @@ EXTENSIONS=("mp4" "mkv" "mov" "avi" "mp3" "wav" "m4a" "opus")
 : "${ANTIHALLUC:=1}"                     # 1=enable thresholds; 0=disable (compat)
 
 : "${FOLLOW:=1}"                          # set 0 or --no-follow to disable inline logs
-: "${LOG_DIR:=logs}"                      # where nv.log/amd.log/cpu.log live
+: "${LOG_DIR:=${PROJECT_ROOT}/logs}"      # where nv.log/amd.log/cpu.log live
 : "${KILL_STALE_TAILS:=1}"                # try to kill leftover tails on startup
 : "${LOG_TS_FORMAT:=%Y-%m-%d %H:%M:%S}"   # strftime format for log timestamps
 
@@ -410,8 +410,8 @@ if [[ -n "$INPUT_FILELIST" ]]; then
   done < "$INPUT_FILELIST"
 else
   # Search for media in pull/ directory; fall back to current dir if pull/ doesn't exist
-  SEARCH_DIR="pull"
-  [[ -d "$SEARCH_DIR" ]] || SEARCH_DIR="."
+  SEARCH_DIR="${PROJECT_ROOT}/pull"
+  [[ -d "$SEARCH_DIR" ]] || SEARCH_DIR="${PROJECT_ROOT}"
   log "Searching for media in: $SEARCH_DIR"
 
   ARGS=( -type f "(" ); for ext in "${EXTENSIONS[@]}"; do ARGS+=( -iname "*.${ext}" -o ); done
@@ -467,7 +467,7 @@ echo
 
 ########### runners ###########
 ########### output directory ###########
-mkdir -p generated
+mkdir -p "${PROJECT_ROOT}/generated"
 
 NV_RUNNER="$(mktemp --suffix=.py)"
 cat > "$NV_RUNNER" <<'PY'
@@ -488,7 +488,8 @@ from faster_whisper import WhisperModel
 # Helper to get output path in generated/ directory
 def get_output_base(media_path: Path) -> Path:
     """Convert media path to output base in generated/ directory"""
-    output_dir = Path("generated")
+    project_root = Path(os.environ.get("PROJECT_ROOT", "."))
+    output_dir = project_root / "generated"
     output_dir.mkdir(exist_ok=True)
     # Keep just the filename, drop the pull/ prefix
     return output_dir / media_path.stem
@@ -995,7 +996,8 @@ import whisper
 # Helper to get output path in generated/ directory
 def get_output_base(media_path: Path) -> Path:
     """Convert media path to output base in generated/ directory"""
-    output_dir = Path("generated")
+    project_root = Path(os.environ.get("PROJECT_ROOT", "."))
+    output_dir = project_root / "generated"
     output_dir.mkdir(exist_ok=True)
     # Keep just the filename, drop the pull/ prefix
     return output_dir / media_path.stem
@@ -1519,7 +1521,8 @@ from faster_whisper import WhisperModel
 # Helper to get output path in generated/ directory
 def get_output_base(media_path: Path) -> Path:
     """Convert media path to output base in generated/ directory"""
-    output_dir = Path("generated")
+    project_root = Path(os.environ.get("PROJECT_ROOT", "."))
+    output_dir = project_root / "generated"
     output_dir.mkdir(exist_ok=True)
     # Keep just the filename, drop the pull/ prefix
     return output_dir / media_path.stem

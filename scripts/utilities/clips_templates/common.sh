@@ -8,9 +8,9 @@
 : "${PAD_START:=0}"                # seconds to prepend to each cut
 : "${PAD_END:=0}"                  # seconds to append to each cut
 : "${NAME_MAX_TITLE:=70}"          # title chars included in output filename
-: "${CLIPS_OUT:=cuts}"
-: "${CLIP_NET_OUT:=cuts}"        # default output dir for cut-net
-: "${CLIP_ARCHIVE_FILE:=.clips-download-archive.txt}"
+: "${CLIPS_OUT:=${PROJECT_ROOT}/cuts}"
+: "${CLIP_NET_OUT:=${PROJECT_ROOT}/cuts}"        # default output dir for cut-net
+: "${CLIP_ARCHIVE_FILE:=${PROJECT_ROOT}/.clips-download-archive.txt}"
 
 # yt-dlp pacing (safe-ish)
 : "${YT_SLEEP_REQUESTS:=0.20}"
@@ -116,9 +116,9 @@ src_url_for_id(){
   local ytid="$1"
   local f=""
   if have rg; then
-    f="$(rg -l "\"id\" *: *\"${ytid}\"" -g '**/*.src.json' pull 2>/dev/null | head -n1 || true)"
+    f="$(rg -l "\"id\" *: *\"${ytid}\"" -g '**/*.src.json' "${PROJECT_ROOT}/pull" 2>/dev/null | head -n1 || true)"
   else
-    f="$(grep -Rsl "\"id\" *: *\"${ytid}\"" -- pull/*.src.json 2>/dev/null | head -n1 || true)"
+    f="$(grep -Rsl "\"id\" *: *\"${ytid}\"" -- "${PROJECT_ROOT}/pull"/*.src.json 2>/dev/null | head -n1 || true)"
   fi
   if [[ -n "$f" && -r "$f" ]]; then
     python3 - "$f" <<'PY' || true
@@ -146,14 +146,14 @@ media_for_id(){
       *)
         ;; # unknown ext; keep scanning
     esac
-  done < <(fd_find "${ytid}__*.*" pull)
+  done < <(fd_find "${ytid}__*.*" "${PROJECT_ROOT}/pull")
 
   # Fallback: derive from a matching .src.json and pick an existing media ext
   local src=""
   if have rg; then
-    src="$(rg -l "\"id\" *: *\"${ytid}\"" -g '**/*.src.json' pull 2>/dev/null | head -n1 || true)"
+    src="$(rg -l "\"id\" *: *\"${ytid}\"" -g '**/*.src.json' "${PROJECT_ROOT}/pull" 2>/dev/null | head -n1 || true)"
   else
-    src="$(grep -Rsl "\"id\" *: *\"${ytid}\"" -- pull/*.src.json 2>/dev/null | head -n1 || true)"
+    src="$(grep -Rsl "\"id\" *: *\"${ytid}\"" -- "${PROJECT_ROOT}/pull"/*.src.json 2>/dev/null | head -n1 || true)"
   fi
   if [[ -n "$src" ]]; then
     local base="${src%.*}"
@@ -179,9 +179,9 @@ clips_archive_file(){
 collect_existing_archive_keys(){
   python3 <<'PY'
 import json, os, re, sys
-root = 'pull'
+root = os.environ.get('PROJECT_ROOT', '.') + '/pull'
 if not os.path.exists(root):
-    root = '.'
+    root = os.environ.get('PROJECT_ROOT', '.')
 emit = set()
 
 id_prefix = re.compile(r'^([A-Za-z0-9_-]{11})__')

@@ -2,10 +2,16 @@
 # batch_retry.sh - Process retry manifests and patch transcriptions
 set -euo pipefail
 
-# Ensure we're running from workspace root
+# Script location and project directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-cd "$WORKSPACE_ROOT" || exit 1
+TOOL_ROOT="${TOOL_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+# Export for child scripts
+export TOOL_ROOT
+export PROJECT_ROOT
+
+# Stay in project directory
 
 # Color output
 C_BLUE='\033[0;34m'
@@ -21,7 +27,7 @@ error() { echo -e "${C_RED}xx${C_RESET} $*" >&2; }
 ########### user options (safe defaults) ###########
 : "${MODEL:=medium}"  # Use larger model for retries by default
 : "${LANGUAGE:=en}"
-: "${MANIFEST_DIR:=generated}"
+: "${MANIFEST_DIR:=${PROJECT_ROOT}/generated}"
 : "${NV_VENV:=${HOME}/transcribe-nv}"
 : "${DRY_RUN:=0}"
 : "${MAX_MANIFESTS:=}"  # Empty = process all
@@ -151,7 +157,7 @@ if [[ -n "${MAX_MANIFESTS}" ]]; then
 fi
 
 # Export vars for Python script
-export MODEL LANGUAGE NV_VENV DRY_RUN WORKSPACE_ROOT WORKERS
+export MODEL LANGUAGE NV_VENV DRY_RUN PROJECT_ROOT WORKERS
 
 # Call Python script to do the heavy lifting
 log "Processing manifests..."

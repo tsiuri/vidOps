@@ -7,8 +7,11 @@ Output format: YouTube URLs for clips.sh pull
 import sys
 import re
 import json
+import os
 from pathlib import Path
 from datetime import datetime
+
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
 
 def extract_date_from_title(title):
     """Extract date from title like 'HasanAbi February 11, 2022 – ...'"""
@@ -28,8 +31,8 @@ def main():
     parser = argparse.ArgumentParser(description='Create download list from missing dates')
     parser.add_argument('missing_dates', help='File with missing dates (YYYY-MM-DD)')
     parser.add_argument('archive_cache', help='archive_metadata_cache.json file')
-    parser.add_argument('--output', default='data/download_list.txt',
-                       help='Output file with YouTube URLs (default: download_list.txt)')
+    parser.add_argument('--output', default=str(PROJECT_ROOT / 'data' / 'download_list.txt'),
+                       help='Output file with YouTube URLs (default: data/download_list.txt)')
 
     args = parser.parse_args()
 

@@ -79,17 +79,17 @@ check_file_completeness(){
   shopt -s nullglob
 
   # Check for video file
-  for f in pull/${vid}__*.{webm,opus,m4a,mp3,mp4,mkv,mka}; do
+  for f in "${PROJECT_ROOT}"/pull/${vid}__*.{webm,opus,m4a,mp3,mp4,mkv,mka}; do
     [[ -f "$f" ]] && has_video=1 && break
   done
 
   # Check for transcript (both .transcript.en.vtt and .en.vtt patterns)
-  for f in pull/${vid}__*.transcript.en.vtt pull/${vid}__*.en.vtt; do
+  for f in "${PROJECT_ROOT}"/pull/${vid}__*.transcript.en.vtt "${PROJECT_ROOT}"/pull/${vid}__*.en.vtt; do
     [[ -f "$f" ]] && has_transcript=1 && break
   done
 
   # Check for info.json
-  for f in pull/${vid}__*.info.json; do
+  for f in "${PROJECT_ROOT}"/pull/${vid}__*.info.json; do
     [[ -f "$f" ]] && has_info=1 && break
   done
 
@@ -100,15 +100,15 @@ check_file_completeness(){
 is_transcript_unavailable(){
   # Check if a video ID is in the no-transcripts list
   local vid="$1"
-  local no_trans_file="logs/no_transcripts_available.txt"
+  local no_trans_file="${PROJECT_ROOT}/logs/no_transcripts_available.txt"
   [[ -f "$no_trans_file" ]] && grep -qxF -- "$vid" "$no_trans_file"
 }
 
 mark_transcript_unavailable(){
   # Add a video ID to the no-transcripts list
   local vid="$1"
-  local no_trans_file="logs/no_transcripts_available.txt"
-  mkdir -p logs 2>/dev/null || true
+  local no_trans_file="${PROJECT_ROOT}/logs/no_transcripts_available.txt"
+  mkdir -p "${PROJECT_ROOT}/logs" 2>/dev/null || true
   # Only add if not already present
   if [[ -f "$no_trans_file" ]]; then
     grep -qxF -- "$vid" "$no_trans_file" && return 0
@@ -260,13 +260,13 @@ cmd_pull(){
     # Emit requested/ok (likely empty) and compute a convenience failed_urls list
     local TS APPEND
     TS="$(date -u '+%Y%m%d_%H%M%SZ')"
-    mkdir -p logs/pull 2>/dev/null || true
+    mkdir -p "${PROJECT_ROOT}/logs/pull" 2>/dev/null || true
     local base
     if [[ -n "${PULL_LOG_PREFIX:-}" ]]; then
       base="$PULL_LOG_PREFIX"
       APPEND=1
     else
-      base="logs/pull/${TS}"
+      base="${PROJECT_ROOT}/logs/pull/${TS}"
       APPEND=0
     fi
     local req_tsv="${base}.requested.tsv"
@@ -279,13 +279,13 @@ cmd_pull(){
     declare -A HAVE_MEDIA=()
     local f bn id
     shopt -s nullglob
-    for f in pull/*.opus pull/*.m4a pull/*.mp3 pull/*.mp4 pull/*.mkv pull/*.webm pull/*.mka; do
+    for f in "${PROJECT_ROOT}"/pull/*.opus "${PROJECT_ROOT}"/pull/*.m4a "${PROJECT_ROOT}"/pull/*.mp3 "${PROJECT_ROOT}"/pull/*.mp4 "${PROJECT_ROOT}"/pull/*.mkv "${PROJECT_ROOT}"/pull/*.webm "${PROJECT_ROOT}"/pull/*.mka; do
       bn="$(basename "$f")"; id="${bn%%__*}"
       [[ -n "$id" ]] && HAVE_MEDIA["$id"]=1
     done
     # For each info.json, if no media, emit as failed with URL
     local info url title extractor
-    for info in pull/*.info.json; do
+    for info in "${PROJECT_ROOT}"/pull/*.info.json; do
       bn="$(basename "$info")"; id="${bn%%__*}"
       [[ -n "$id" ]] || continue
       [[ -n "${HAVE_MEDIA[$id]:-}" ]] && continue
@@ -334,14 +334,14 @@ PY
   fi
 
   # Ensure dirs and log base exist
-  mkdir -p pull logs/pull 2>/dev/null || true
+  mkdir -p "${PROJECT_ROOT}/pull" "${PROJECT_ROOT}/logs/pull" 2>/dev/null || true
   local TS APPEND base
   TS="$(date -u '+%Y%m%d_%H%M%SZ')"
   if [[ -n "${PULL_LOG_PREFIX:-}" ]]; then
     base="$PULL_LOG_PREFIX"
     APPEND=1
   else
-    base="logs/pull/${TS}"
+    base="${PROJECT_ROOT}/logs/pull/${TS}"
     APPEND=0
   fi
   local req_tsv="${base}.requested.tsv"
@@ -396,8 +396,8 @@ PY
       --write-info-json
       --write-auto-subs --sub-langs en
       --ignore-no-formats-error -ciw --no-overwrites
-      --exec "bash scripts/utilities/mark_success.sh '%(id)s' '$base'"
-      -o "pull/%(id)s__%(upload_date>%Y-%m-%d)s - %(title).120B.%(ext)s"
+      --exec "bash ${TOOL_ROOT}/scripts/utilities/mark_success.sh '%(id)s' '$base'"
+      -o "${PROJECT_ROOT}/pull/%(id)s__%(upload_date>%Y-%m-%d)s - %(title).120B.%(ext)s"
     )
     yargs1+=( "${COOKIE_ARG[@]}" )
   else
@@ -417,8 +417,8 @@ PY
       --write-info-json
       --write-auto-subs --sub-langs en
       --ignore-no-formats-error -ciw --no-overwrites
-      --exec "bash scripts/utilities/mark_success.sh '%(id)s' '$base'"
-      -o "pull/%(id)s__%(upload_date>%Y-%m-%d)s - %(title).120B.%(ext)s"
+      --exec "bash ${TOOL_ROOT}/scripts/utilities/mark_success.sh '%(id)s' '$base'"
+      -o "${PROJECT_ROOT}/pull/%(id)s__%(upload_date>%Y-%m-%d)s - %(title).120B.%(ext)s"
     )
   fi
   yargs1+=("${MISSING_URLS[@]}")
@@ -457,8 +457,8 @@ PY
       --write-info-json
       --write-auto-subs --sub-langs en
       --ignore-no-formats-error -ciw --no-overwrites
-      --exec "bash scripts/utilities/mark_success.sh '%(id)s' '$base'"
-      -o "pull/%(id)s__%(upload_date>%Y-%m-%d)s - %(title).120B.%(ext)s"
+      --exec "bash ${TOOL_ROOT}/scripts/utilities/mark_success.sh '%(id)s' '$base'"
+      -o "${PROJECT_ROOT}/pull/%(id)s__%(upload_date>%Y-%m-%d)s - %(title).120B.%(ext)s"
     )
     if [[ ${#COOKIE_ARG[@]} -gt 0 ]]; then yargs2+=( "${COOKIE_ARG[@]}" ); fi
     yargs2+=("${MISSING_URLS[@]}")
@@ -472,7 +472,7 @@ PY
 
   # Rename subtitle files to match transcript naming convention
   shopt -s nullglob
-  for subtitle in pull/*.en.vtt; do
+  for subtitle in "${PROJECT_ROOT}"/pull/*.en.vtt; do
     [[ -f "$subtitle" ]] || continue
     # Skip if already has .transcript in name
     [[ "$subtitle" == *.transcript.en.vtt ]] && continue
@@ -488,10 +488,10 @@ PY
     [[ "$needs_transcript" -eq 0 ]] && continue
     # Check if video was downloaded but transcript wasn't
     local has_video=0 has_transcript=0
-    for f in pull/${vid}__*.{webm,opus,m4a,mp3,mp4,mkv,mka}; do
+    for f in "${PROJECT_ROOT}"/pull/${vid}__*.{webm,opus,m4a,mp3,mp4,mkv,mka}; do
       [[ -f "$f" ]] && has_video=1 && break
     done
-    for f in pull/${vid}__*.transcript.en.vtt pull/${vid}__*.en.vtt; do
+    for f in "${PROJECT_ROOT}"/pull/${vid}__*.transcript.en.vtt "${PROJECT_ROOT}"/pull/${vid}__*.en.vtt; do
       [[ -f "$f" ]] && has_transcript=1 && break
     done
     # If we have video but no transcript, mark transcript as unavailable
@@ -523,7 +523,7 @@ PY
   # regenerate provenance for anything lacking it in pull directory
   while IFS= read -r -d '' f; do
     ensure_src_json "$f"
-  done < <(find pull -type f \( -name "*.opus" -o -name "*.m4a" -o -name "*.mp3" -o -name "*.mkv" -o -name "*.mp4" \) -print0 2>/dev/null || true)
+  done < <(find "${PROJECT_ROOT}/pull" -type f \( -name "*.opus" -o -name "*.m4a" -o -name "*.mp3" -o -name "*.mkv" -o -name "*.mp4" \) -print0 2>/dev/null || true)
 
   c_do "Refreshing archive metadata..."
   if ! sync_archive_from_media "$archive"; then

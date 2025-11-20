@@ -4,8 +4,10 @@ set -euo pipefail
 # Prompt for an upload_type and apply it to videos from the last export batch
 # Usage: scripts/db/annotate_upload_type.sh [database]
 
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
 DB_NAME="${1:-transcripts}"
-LIST_FILE="logs/db/_last_exported_ytids.txt"
+LIST_FILE="${PROJECT_ROOT}/logs/db/_last_exported_ytids.txt"
 
 if [[ ! -f "$LIST_FILE" ]]; then
   echo "List not found: $LIST_FILE. Run export_videos_from_info.py first." >&2

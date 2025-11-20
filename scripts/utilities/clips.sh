@@ -4,14 +4,27 @@
 
 set -euo pipefail
 
+# Tool installation directory (where this script lives)
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 COMP_DIR="$SCRIPT_DIR/clips_templates"
 
-# Detect workspace root (2 levels up from scripts/utilities/)
-WORKSPACE_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+# Tool root (where all scripts are installed)
+TOOL_ROOT="${TOOL_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
-# Change to workspace root so relative paths work correctly
-cd "$WORKSPACE_ROOT"
+# Project directory (where data lives)
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+# Export for child scripts
+export TOOL_ROOT
+export PROJECT_ROOT
+
+# Initialize project structure if needed
+if [[ ! -f "$PROJECT_ROOT/.vidops-project" ]]; then
+    mkdir -p "$PROJECT_ROOT"/{pull,generated,logs/pull,data,results,cuts}
+    touch "$PROJECT_ROOT/.vidops-project"
+fi
+
+# Stay in project directory - don't cd to tool directory
 
 if [[ ! -d "$COMP_DIR" ]]; then
   printf '\033[1;31mxx  missing components directory: %s\033[0m\n' "$COMP_DIR" >&2

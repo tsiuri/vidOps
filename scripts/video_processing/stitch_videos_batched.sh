@@ -4,7 +4,14 @@
 set -euo pipefail
 shopt -s nullglob
 
-INDIR="${1:-cuts_exact}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TOOL_ROOT="${TOOL_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+export TOOL_ROOT
+export PROJECT_ROOT
+
+INDIR="${1:-${PROJECT_ROOT}/cuts_exact}"
 OUTFILE="${2:-stitched_output.mp4}"
 SORT_METHOD="${3:-date_timestamp}"
 # Allow overriding batch size via env var
@@ -32,7 +39,7 @@ case "$SORT_METHOD" in
             }' | sort -n | cut -d' ' -f2- > /tmp/files.txt
         ;;
     date_timestamp)
-        find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 /mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/the 2021 2021 vods bak folder b4 cleanup/scripts/utilities/sort_clips.py > /tmp/files.txt
+        find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 "${TOOL_ROOT}/scripts/utilities/sort_clips.py" > /tmp/files.txt
         ;;
     *)
         echo "Unknown sort method: $SORT_METHOD"

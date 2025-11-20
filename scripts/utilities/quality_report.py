@@ -15,10 +15,13 @@ Usage:
 """
 
 import sys
+import os
 import glob
 from pathlib import Path
 from collections import defaultdict
 import json
+
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
 
 def load_words_tsv(filepath):
     """Load a words.tsv file and return list of word dicts"""
@@ -97,7 +100,7 @@ def print_histogram(values, bins=10, width=50):
         print(f"  {bin_start:6.2f} to {bin_end:6.2f}: {bar} {count}")
 
 def main():
-    search_dir = sys.argv[1] if len(sys.argv) > 1 else "generated"
+    search_dir = sys.argv[1] if len(sys.argv) > 1 else str(PROJECT_ROOT / "generated")
     pattern = f"{search_dir}/**/*.words.tsv"
 
     files = list(Path(search_dir).glob("**/*.words.tsv"))

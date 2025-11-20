@@ -5,8 +5,11 @@ Find which dates from the list don't have corresponding .opus files.
 
 import sys
 import re
+import os
 from pathlib import Path
 from datetime import datetime
+
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
 
 def date_to_text_format(date_str):
     """Convert 2024-01-31 to 'January 31, 2024'"""
@@ -30,8 +33,8 @@ def main():
     parser = argparse.ArgumentParser(description='Find missing dates')
     parser.add_argument('dates_file', help='File containing dates (YYYY-MM-DD format)')
     parser.add_argument('source_dir', help='Directory containing .opus files')
-    parser.add_argument('--output', default='data/missing_dates.txt',
-                       help='Output file for missing dates (default: missing_dates.txt)')
+    parser.add_argument('--output', default=str(PROJECT_ROOT / 'data' / 'missing_dates.txt'),
+                       help='Output file for missing dates (default: data/missing_dates.txt)')
 
     args = parser.parse_args()
 

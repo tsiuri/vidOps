@@ -3,7 +3,14 @@
 
 set -euo pipefail
 
-INDIR="${1:-cuts_exact}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TOOL_ROOT="${TOOL_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
+
+export TOOL_ROOT
+export PROJECT_ROOT
+
+INDIR="${1:-${PROJECT_ROOT}/cuts_exact}"
 OUTFILE="${2:-stitched_output.mp4}"
 SORT_METHOD="${3:-date_timestamp}"  # name, time, timestamp, or date_timestamp
 REENCODE="${4:-0}"  # 0 = copy (fast), 1 = re-encode (fixes timestamps)
@@ -37,7 +44,7 @@ case "$SORT_METHOD" in
         ;;
     date_timestamp)
         # Sort by date in title FIRST, then by timestamp (use absolute paths)
-        find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 /mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/the 2021 2021 vods bak folder b4 cleanup/scripts/utilities/sort_clips.py > /tmp/files.txt
+        find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 "${TOOL_ROOT}/scripts/utilities/sort_clips.py" > /tmp/files.txt
         ;;
     *)
         echo "Unknown sort method: $SORT_METHOD"

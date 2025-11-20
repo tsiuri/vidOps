@@ -3,10 +3,12 @@
 import os
 from pathlib import Path
 
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
+
 # Config
-ID_FILE = "logs/no_transcripts_available.txt"
-OUTPUT_FILE = "transcripts_needed.txt"
-PULL_DIR = Path("pull")
+ID_FILE = PROJECT_ROOT / "logs" / "no_transcripts_available.txt"
+OUTPUT_FILE = PROJECT_ROOT / "transcripts_needed.txt"
+PULL_DIR = PROJECT_ROOT / "pull"
 
 # Build ID -> file mapping
 print("Building file index...")

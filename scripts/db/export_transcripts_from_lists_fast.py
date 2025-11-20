@@ -4,8 +4,10 @@ import re
 from pathlib import Path
 import csv
 
-LOGS = Path('logs') / 'db'
-GENERATED = Path('generated')
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "."))
+
+LOGS = PROJECT_ROOT / 'logs' / 'db'
+GENERATED = PROJECT_ROOT / 'generated'
 OUT = LOGS / 'transcripts.tsv'
 
 ytid_re = re.compile(r'([A-Za-z0-9_-]{11})__')
