@@ -21,6 +21,7 @@ echo "==> Stitching videos from: $INDIR"
 echo "==> Output file: $OUTFILE"
 echo "==> Sort method: $SORT_METHOD"
 echo "==> Using batched approach (most reliable)"
+echo "==> Sub-tools: scripts/utilities/sort_clips.py (date_timestamp sorting)"
 
 echo "==> Building file list..."
 
@@ -39,6 +40,7 @@ case "$SORT_METHOD" in
             }' | sort -n | cut -d' ' -f2- > /tmp/files.txt
         ;;
     date_timestamp)
+        echo "==> Using sort_clips.py for date+timestamp ordering"
         find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 "${TOOL_ROOT}/scripts/utilities/sort_clips.py" > /tmp/files.txt
         ;;
     *)

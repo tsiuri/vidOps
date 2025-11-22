@@ -92,7 +92,8 @@ def analyze_with_resemblyzer_parallel(clips_dir, reference_clips, output_dir, th
     total_clips = len(clips)
     print(f"\n[ANALYZE] Preprocessing {total_clips} clips on {num_workers} CPU cores...")
 
-    Path(output_dir).mkdir(exist_ok=True)
+    # Ensure output directory (mkdir -p behavior)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
     progress_file = Path(output_dir) / "progress.txt"
 
     # Parallel audio preprocessing

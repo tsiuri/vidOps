@@ -36,18 +36,33 @@ def parse_manifest(manifest_path: Path) -> List[Dict]:
         with open(manifest_path, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f, delimiter='\t')
             for row in reader:
+                start = float(row['start_time'])
+                end = float(row['end_time'])
+
+                zl_raw = row.get('zero_length')
+                if zl_raw is not None and zl_raw != "":
+                    try:
+                        zero_length = int(zl_raw)
+                    except ValueError:
+                        zero_length = 1 if end <= start else 0
+                else:
+                    # Backwards-compatible: infer from times if column is missing
+                    zero_length = 1 if end <= start else 0
+
                 segments.append({
                     'media_file': row['media_file'],
                     'segment_idx': int(row['segment_idx']),
-                    'start_time': float(row['start_time']),
-                    'end_time': float(row['end_time']),
+                    'start_time': start,
+                    'end_time': end,
                     'confidence': float(row['confidence']),
-                    'text': row['text']
+                    'zero_length': zero_length,
+                    'text': row['text'],
                 })
     except Exception as e:
         warn(f"Failed to parse {manifest_path}: {e}")
         return []
     return segments
+
 
 def group_by_media(segments: List[Dict]) -> Dict[str, List[Dict]]:
     """Group segments by media file"""
@@ -73,7 +88,7 @@ def extract_audio_segment(media_path: Path, start: float, end: float, output_pat
         subprocess.run(cmd, check=True, capture_output=True)
         return True
     except subprocess.CalledProcessError as e:
-        warn(f"Failed to extract audio {start:.1f}s-{end:.1f}s: {e}")
+        warn(f"Failed to extract audio {start:.1f}s-{end:.1f}s. FFmpeg stderr:\n{e.stderr.decode('utf-8', 'ignore')}")
         return False
 
 def transcribe_segment(audio_path: Path) -> Tuple[str, float]:
@@ -106,10 +121,12 @@ def transcribe_segment(audio_path: Path) -> Tuple[str, float]:
         if detected_lang and detected_lang != LANGUAGE:
             warn(f"    Language mismatch: requested={LANGUAGE}, detected={detected_lang}")
 
+        # ✅ Return the actual result
         return text, avg_conf
+
     except Exception as e:
         warn(f"Transcription failed for {audio_path}: {e}")
-        return "", 0.0
+        return None
 
 def process_single_segment(args):
     """Worker function for parallel segment processing. Returns processed segment dict."""
@@ -133,7 +150,10 @@ def process_single_segment(args):
 
     # Re-transcribe
     if not DRY_RUN:
-        new_text, new_conf = transcribe_segment(audio_file)
+        result = transcribe_segment(audio_file)
+        if result is None:
+            return None  # Propagate failure
+        new_text, new_conf = result
         seg['new_text'] = new_text
         seg['new_confidence'] = new_conf
         log(f"    Old: {seg['text'][:60]} (conf={seg['confidence']:.3f})")
@@ -309,6 +329,11 @@ def process_media_file(media_path: Path, segments: List[Dict]) -> bool:
 
     # Patch VTT file
     if retried_segments:
+        # Check for partial failures before patching
+        if len(retried_segments) < len(segments):
+            warn(f"Partial failure: only {len(retried_segments)}/{len(segments)} segments succeeded for {media_path.name}")
+            return False
+
         success = patch_vtt_file(vtt_path, retried_segments)
         if success:
             # Also update words.tsv
@@ -316,6 +341,9 @@ def process_media_file(media_path: Path, segments: List[Dict]) -> bool:
             if words_tsv.exists():
                 update_words_tsv(words_tsv, retried_segments)
         return success
+    elif segments: # If there were segments to process but none were successful
+        warn(f"Total failure processing segments for {media_path.name}")
+        return False
     return True
 
 def update_words_tsv(words_tsv_path: Path, retry_segments: List[Dict]):
@@ -378,6 +406,10 @@ def update_words_tsv(words_tsv_path: Path, retry_segments: List[Dict]):
         warn(f"Failed to update words.tsv {words_tsv_path}: {e}")
 
 def main():
+    if not shutil.which('ffmpeg'):
+        warn("ffmpeg command not found. Please ensure ffmpeg is installed and in your system's PATH.")
+        sys.exit(1)
+
     if len(sys.argv) < 2:
         print("Usage: batch_retry_worker.py <manifest1> [manifest2...]")
         sys.exit(1)
@@ -405,38 +437,49 @@ def main():
 
     log(f"Total segments to retry: {len(all_segments)}")
 
+    # Track the success status of each manifest file. Assume success until a failure occurs.
+    manifest_status = {path: True for path in manifest_segments.keys()}
+
     # Group by media file
     grouped = group_by_media(all_segments)
     log(f"Segments grouped into {len(grouped)} media files")
 
-    # Process each media file and track success
-    processed_manifests = set()
+    # Process each media file and update manifest statuses on failure
     for media_file, segments in grouped.items():
         media_path = PROJECT_ROOT / media_file
         if not media_path.exists():
             warn(f"Media file not found: {media_file}")
+            # Mark all manifests associated with this missing file as failed
+            for manifest_path, manifest_segs in manifest_segments.items():
+                if any(seg['media_file'] == media_file for seg in manifest_segs):
+                    manifest_status[manifest_path] = False
             continue
 
         success = process_media_file(media_path, segments)
 
-        # If successful, mark all manifests that contributed segments for this media
-        if success:
+        # If processing fails, mark all manifests that contributed segments as failed
+        if not success:
             for manifest_path, manifest_segs in manifest_segments.items():
-                # Check if any segments from this manifest were for this media file
                 if any(seg['media_file'] == media_file for seg in manifest_segs):
-                    processed_manifests.add(manifest_path)
+                    manifest_status[manifest_path] = False
 
-    # Rename processed manifests
+    # Rename manifests that were fully successful
     if not DRY_RUN:
-        for manifest_path in processed_manifests:
-            processed_path = Path(str(manifest_path) + ".processed")
-            try:
-                manifest_path.rename(processed_path)
-                log(f"Marked as processed: {manifest_path.name}")
-            except Exception as e:
-                warn(f"Failed to rename manifest {manifest_path}: {e}")
+        processed_count = 0
+        for manifest_path, was_successful in manifest_status.items():
+            if was_successful:
+                processed_path = Path(str(manifest_path) + ".processed")
+                try:
+                    manifest_path.rename(processed_path)
+                    log(f"Marked as processed: {manifest_path.name}")
+                    processed_count += 1
+                except Exception as e:
+                    warn(f"Failed to rename manifest {manifest_path}: {e}")
+        if processed_count == 0 and any(manifest_status.values()):
+             warn("A successful run did not result in any manifests being marked as processed.")
     else:
-        log(f"DRY RUN - would mark {len(processed_manifests)} manifests as processed")
+        successful_manifests = [p.name for p, s in manifest_status.items() if s]
+        log(f"DRY RUN - would mark {len(successful_manifests)} manifests as processed: {successful_manifests}")
 
     log("Batch retry complete!")
 

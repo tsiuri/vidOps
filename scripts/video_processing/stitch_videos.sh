@@ -18,6 +18,7 @@ REENCODE="${4:-0}"  # 0 = copy (fast), 1 = re-encode (fixes timestamps)
 echo "==> Stitching videos from: $INDIR"
 echo "==> Output file: $OUTFILE"
 echo "==> Sort method: $SORT_METHOD"
+echo "==> Sub-tools: scripts/utilities/sort_clips.py (date_timestamp sorting)"
 
 # Create concat list file
 CONCAT_LIST="$(mktemp --suffix=.txt)"
@@ -44,6 +45,7 @@ case "$SORT_METHOD" in
         ;;
     date_timestamp)
         # Sort by date in title FIRST, then by timestamp (use absolute paths)
+        echo "==> Using sort_clips.py for date+timestamp ordering"
         find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 "${TOOL_ROOT}/scripts/utilities/sort_clips.py" > /tmp/files.txt
         ;;
     *)

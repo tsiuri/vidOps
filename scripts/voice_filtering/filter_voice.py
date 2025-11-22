@@ -79,7 +79,8 @@ def analyze_with_resemblyzer(clips_dir, reference_clips, output_dir, threshold=0
     print(f"\n[ANALYZE] Processing {len(clips)} clips...")
 
     results = []
-    Path(output_dir).mkdir(exist_ok=True)
+    # Ensure output directory (mkdir -p behavior)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     # Progress file
     progress_file = Path(output_dir) / "progress.txt"

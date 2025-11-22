@@ -18,6 +18,7 @@ echo "==> Stitching videos from: $INDIR"
 echo "==> Output file: $OUTFILE"
 echo "==> Sort method: $SORT_METHOD"
 echo "==> Forcing CFR (Constant Frame Rate) at 60fps"
+echo "==> Sub-tools: scripts/utilities/sort_clips.py (date_timestamp sorting)"
 
 # Create concat list file
 CONCAT_LIST="$(mktemp --suffix=.txt)"
@@ -40,6 +41,7 @@ case "$SORT_METHOD" in
             }' | sort -n | cut -d' ' -f2- > /tmp/files.txt
         ;;
     date_timestamp)
+        echo "==> Using sort_clips.py for date+timestamp ordering"
         find "$(realpath "$INDIR")" -name "*.mp4" -type f | python3 "${TOOL_ROOT}/scripts/utilities/sort_clips.py" > /tmp/files.txt
         ;;
     *)

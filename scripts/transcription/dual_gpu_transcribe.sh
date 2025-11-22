@@ -631,7 +631,8 @@ def write_retry_manifest_amd(base_path: Path, media_path: Path, segs, low_conf_i
     """Write a manifest of segments needing retry for batch post-processing"""
     manifest_path = base_path.with_suffix(".retry_manifest.tsv")
     with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\ttext\n")
+        # NEW: include zero_length flag
+        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\tzero_length\ttext\n")
         for idx in low_conf_indices:
             seg = segs[idx]
             # Handle both dict and object formats
@@ -645,8 +646,16 @@ def write_retry_manifest_amd(base_path: Path, media_path: Path, segs, low_conf_i
                 end = float(getattr(seg, "end", 0.0))
                 conf = float(getattr(seg, "avg_logprob", 0.0))
                 text = (getattr(seg, "text", "") or "").strip()
+
+            # Mark and expand zero-length spans
+            zero_length = 1 if end <= start else 0
+            if zero_length:
+                end = start + 1.0  # 1-second window for retry
+
             text = text.replace("\t", " ").replace("\n", " ")
-            f.write(f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{text}\n")
+            f.write(
+                f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{zero_length}\t{text}\n"
+            )
     print(f"[AMD][MANIFEST] wrote retry manifest for {len(low_conf_indices)} segments to {manifest_path.name}", flush=True)
 
 def write_vtt(segs,path,retried_indices=None):
@@ -675,15 +684,25 @@ def write_retry_manifest(base_path: Path, media_path: Path, segs, low_conf_indic
     """Write a manifest of segments needing retry for batch post-processing"""
     manifest_path = base_path.with_suffix(".retry_manifest.tsv")
     with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\ttext\n")
+        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\tzero_length\ttext\n")
         for idx in low_conf_indices:
             seg = segs[idx]
             start = float(getattr(seg, "start", 0.0))
             end = float(getattr(seg, "end", 0.0))
             conf = float(getattr(seg, "avg_logprob", 0.0))
-            text = seg.text.strip().replace("\t", " ").replace("\n", " ")
-            f.write(f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{text}\n")
+            text = (getattr(seg, "text", "") or "").strip()
+
+            # Mark and expand zero-length segments
+            zero_length = 1 if end <= start else 0
+            if zero_length:
+                end = start + 1.0  # give a 1-second span
+
+            text = text.replace("\t", " ").replace("\n", " ")
+            f.write(
+                f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{zero_length}\t{text}\n"
+            )
     print(f"[NV][MANIFEST] wrote retry manifest for {len(low_conf_indices)} segments to {manifest_path.name}", flush=True)
+
 
 def write_words_tsv_faster(base_path: Path, segs, retried_indices=None):
     retried_indices = retried_indices or set()
@@ -1194,7 +1213,8 @@ def write_retry_manifest_amd(base_path: Path, media_path: Path, segs, low_conf_i
     """Write a manifest of segments needing retry for batch post-processing"""
     manifest_path = base_path.with_suffix(".retry_manifest.tsv")
     with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\ttext\n")
+        # NEW: include zero_length flag
+        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\tzero_length\ttext\n")
         for idx in low_conf_indices:
             seg = segs[idx]
             # Handle both dict and object formats
@@ -1208,8 +1228,16 @@ def write_retry_manifest_amd(base_path: Path, media_path: Path, segs, low_conf_i
                 end = float(getattr(seg, "end", 0.0))
                 conf = float(getattr(seg, "avg_logprob", 0.0))
                 text = (getattr(seg, "text", "") or "").strip()
+
+            # Mark and expand zero-length spans
+            zero_length = 1 if end <= start else 0
+            if zero_length:
+                end = start + 1.0  # 1-second window for retry
+
             text = text.replace("\t", " ").replace("\n", " ")
-            f.write(f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{text}\n")
+            f.write(
+                f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{zero_length}\t{text}\n"
+            )
     print(f"[AMD][MANIFEST] wrote retry manifest for {len(low_conf_indices)} segments to {manifest_path.name}", flush=True)
 
 def write_vtt(segs,path,retried_indices=None):
@@ -1659,7 +1687,8 @@ def write_retry_manifest_amd(base_path: Path, media_path: Path, segs, low_conf_i
     """Write a manifest of segments needing retry for batch post-processing"""
     manifest_path = base_path.with_suffix(".retry_manifest.tsv")
     with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\ttext\n")
+        # NEW: include zero_length flag
+        f.write("media_file\tsegment_idx\tstart_time\tend_time\tconfidence\tzero_length\ttext\n")
         for idx in low_conf_indices:
             seg = segs[idx]
             # Handle both dict and object formats
@@ -1673,9 +1702,18 @@ def write_retry_manifest_amd(base_path: Path, media_path: Path, segs, low_conf_i
                 end = float(getattr(seg, "end", 0.0))
                 conf = float(getattr(seg, "avg_logprob", 0.0))
                 text = (getattr(seg, "text", "") or "").strip()
+
+            # Mark and expand zero-length spans
+            zero_length = 1 if end <= start else 0
+            if zero_length:
+                end = start + 1.0  # 1-second window for retry
+
             text = text.replace("\t", " ").replace("\n", " ")
-            f.write(f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{text}\n")
+            f.write(
+                f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{zero_length}\t{text}\n"
+            )
     print(f"[AMD][MANIFEST] wrote retry manifest for {len(low_conf_indices)} segments to {manifest_path.name}", flush=True)
+
 
 def write_vtt(segs,path,retried_indices=None):
     retried_indices = retried_indices or set()

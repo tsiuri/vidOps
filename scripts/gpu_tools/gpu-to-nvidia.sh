@@ -2,11 +2,48 @@
 # gpu-to-nvidia.sh — rebind NVIDIA GPU back to the host drivers (nvidia + snd_hda_intel)
 set -euo pipefail
 
+# Only affect these specific devices (GPU and its audio function)
+ALLOWED_DEVICES=("0000:05:00.0" "0000:05:00.1")
+
 log(){ printf '\033[1;34m==> %s\033[0m\n' "$*"; }
 warn(){ printf '\033[1;33m!!  %s\033[0m\n' "$*" >&2; }
 die(){ printf '\033[1;31mxx  %s\033[0m\n' "$*" >&2; exit 1; }
 
 require_root(){ [[ $EUID -eq 0 ]] || die "Run as root."; }
+
+is_allowed_device(){
+  local bdf="$1"
+  for allowed in "${ALLOWED_DEVICES[@]}"; do
+    [[ "$bdf" == "$allowed" ]] && return 0
+  done
+  return 1
+}
+
+# Check if any OTHER nvidia GPUs (not in ALLOWED_DEVICES) are using nvidia driver
+has_other_nvidia_gpus_active(){
+  for devpath in /sys/bus/pci/devices/*; do
+    [[ -e "$devpath/vendor" && -e "$devpath/class" ]] || continue
+    local ven devcls bdf drv
+    ven=$(<"$devpath/vendor")
+    devcls=$(<"$devpath/class")
+    bdf=$(basename "$devpath")
+    [[ "$ven" == "0x10de" ]] || continue
+    # Check if it's a GPU class device
+    case "$devcls" in
+      0x030000|0x030200) ;;  # VGA/3D controller
+      *) continue ;;
+    esac
+    # Skip if this is one of our managed devices
+    is_allowed_device "$bdf" && continue
+    # Check if it's bound to nvidia driver
+    drv=$(current_driver "$bdf")
+    if [[ "$drv" == "nvidia" ]]; then
+      log "Found other NVIDIA GPU $bdf already using nvidia driver (likely display GPU)"
+      return 0
+    fi
+  done
+  return 1
+}
 
 load_nvidia_stack(){
   local fail=0
@@ -45,6 +82,8 @@ discover_nvidia_functions(){
     devcls=$(<"$devpath/class")
     bdf=$(basename "$devpath")
     [[ "$ven" == "0x10de" ]] || continue
+    # Only include devices in the allowed list
+    is_allowed_device "$bdf" || continue
     case "$devcls" in
       0x030000|0x030200) out_gpu+=("$bdf") ;;  # VGA/3D -> nvidia
       0x040300)          out_hda+=("$bdf") ;;  # HDMI audio -> snd_hda_intel
@@ -116,10 +155,27 @@ bind_to(){
 main(){
   require_root
 
-  # Load host drivers first so bind works (will retry after unbinding if needed)
-  load_nvidia_stack || true
-  load_audio_stack || true
-  udevadm settle || true
+  # Check if we have other active NVIDIA GPUs (e.g., display GPU)
+  local skip_module_reload=0
+  if has_other_nvidia_gpus_active; then
+    log "Skipping nvidia module reload to avoid disrupting display GPU"
+    skip_module_reload=1
+  fi
+
+  # Only load modules if no other nvidia GPUs are active
+  if [[ $skip_module_reload -eq 0 ]]; then
+    load_nvidia_stack || true
+    load_audio_stack || true
+    udevadm settle || true
+  else
+    # Just ensure modules are loaded, don't force reload
+    if ! lsmod | grep -q "^nvidia "; then
+      load_nvidia_stack || true
+    fi
+    if ! lsmod | grep -q "^snd_hda_intel "; then
+      load_audio_stack || true
+    fi
+  fi
 
   mapfile -d '' ALL < <(discover_nvidia_functions)
   [[ ${#ALL[@]} -gt 0 ]] || die "No NVIDIA functions found."
@@ -139,9 +195,11 @@ main(){
   for bdf in "${gpus[@]}" "${hdas[@]}"; do unbind_if_vfio "$bdf"; done
   udevadm settle || true
 
-  # Retry loading drivers now that the functions are free from vfio
-  load_nvidia_stack || warn "NVIDIA modules still not loading; check dmesg if binding fails."
-  load_audio_stack || warn "snd_hda_intel still unavailable; HDMI audio will stay detached."
+  # Only retry loading drivers if we didn't skip module reload
+  if [[ $skip_module_reload -eq 0 ]]; then
+    load_nvidia_stack || warn "NVIDIA modules still not loading; check dmesg if binding fails."
+    load_audio_stack || warn "snd_hda_intel still unavailable; HDMI audio will stay detached."
+  fi
 
   # Bind back to the appropriate drivers
   for bdf in "${gpus[@]}"; do bind_to "$bdf" "nvidia"; done
@@ -149,7 +207,11 @@ main(){
 
   udevadm settle || true
   log "Done. GPU is now owned by host drivers (nvidia + snd_hda_intel)."
-  log "If you use a display manager, start it again (e.g., systemctl start gdm)."
+  if [[ $skip_module_reload -eq 1 ]]; then
+    log "Display GPU was not affected - your session should remain stable."
+  else
+    log "If you use a display manager, start it again (e.g., systemctl start gdm)."
+  fi
 }
 
 main "$@"

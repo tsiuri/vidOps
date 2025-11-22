@@ -51,13 +51,18 @@ NOTES
   • Run from a directory containing media / transcripts — everything scans recursively.
   • "pull" writes .info.json and a provenance <base>.src.json per media file.
     Use --force or --no-download-archive to redownload videos already in the archive.
-  • "hits" scans precise *.words.tsv (if present) or legacy *.tslog.txt, emits TSV.
+  • "hits" scans precise *.words.tsv (if present), then *.words.yt.tsv, and finally legacy *.tslog.txt, emits TSV.
     Add --exact (words source) to use the exact [start→end] per word from words.tsv (plus PAD_START/PAD_END),
     instead of a fixed window around the midpoint.
   • "cut-local" slices from already-downloaded media using ffmpeg (fast).
   • "cut-net" grabs precise windows from the network with yt-dlp --download-sections.
     In --from-words-exact mode, it scans words.tsv logs and pulls exact word/phrase spans.
   • "refine" re-trims existing clips by snapping tightly to a target word.
+
+Sub-scripts
+  This command dynamically sources and dispatches to components under
+  scripts/utilities/clips_templates/: pull.sh, hits.sh, cut_local.sh,
+  cut_net.sh, refine.sh
 
 ENV KNOBS (override as needed)
   CLIP_CONTAINER=opus|mp3|mka|mp4   (default opus)

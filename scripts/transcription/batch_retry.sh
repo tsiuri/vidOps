@@ -43,6 +43,7 @@ USAGE
 DESCRIPTION
   Finds all .retry_manifest.tsv files in generated/, extracts the low-confidence
   segments, re-transcribes them, and patches the results back into the VTT/SRT files.
+  Under the hood, this invokes: scripts/transcription/batch_retry_worker.py
 
 OPTIONS
   --model <size>          Whisper model for retries (default: medium)

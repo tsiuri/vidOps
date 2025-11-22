@@ -92,7 +92,7 @@ cmd_transcripts(){
       ;;
     help)
       cat <<'HELP'
-transcripts — Download auto-generated subtitles from YouTube videos
+dl-subs — Download auto-generated subtitles from YouTube videos
 
 USAGE
   ./clips.sh transcripts subs-only <URL> [format]

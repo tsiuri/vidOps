@@ -16,6 +16,7 @@ echo "==> Stitching videos from: $INDIR"
 echo "==> Output file: $OUTFILE"
 echo "==> Sort method: $SORT_METHOD"
 echo "==> Using batched concat FILTER (robust)"
+echo "==> Sub-tools: concat_filter_from_list.sh (filter concat), sort_clips.py (date_timestamp sorting)"
 
 abs_in="$(realpath "$INDIR")"
 abs_out="$(realpath -m "$OUTFILE")"
@@ -35,7 +36,8 @@ case "$SORT_METHOD" in
       sort -n | cut -d' ' -f2- > /tmp/files.txt
     ;;
   date_timestamp)
-    find "$abs_in" -name "*.mp4" -type f | python3 /mnt/firecuda/Videos/yt-videos/collargate/yt-downloader-test/the 2021 2021 vods bak folder b4 cleanup/scripts/utilities/sort_clips.py > /tmp/files.txt
+    echo "==> Using sort_clips.py for date+timestamp ordering"
+    find "$abs_in" -name "*.mp4" -type f | python3 "${TOOL_ROOT}/scripts/utilities/sort_clips.py" > /tmp/files.txt
     ;;
   *)
     echo "Unknown sort method: $SORT_METHOD"; exit 1 ;;

@@ -81,12 +81,13 @@ def analyze_with_resemblyzer_chunked(clips_dir, reference_clips, output_dir, thr
     ref_embedding = np.mean(ref_embeddings, axis=0)
     print(f"[REFERENCE] Created voice profile from {len(ref_embeddings)} clips")
 
-    # Get all clips
-    clips = sorted(Path(clips_dir).glob("*.mp4"))
+    # Get all clips (support both mp4 and wav)
+    clips = sorted(list(Path(clips_dir).glob("*.mp4")) + list(Path(clips_dir).glob("*.wav")))
     total_clips = len(clips)
     print(f"\n[ANALYZE] Processing {total_clips} clips in chunks of {chunk_size}...")
 
-    Path(output_dir).mkdir(exist_ok=True)
+    # Ensure output directory (mkdir -p behavior)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
     progress_file = Path(output_dir) / "progress.txt"
 
     all_results = []
@@ -162,8 +163,11 @@ def analyze_with_resemblyzer_chunked(clips_dir, reference_clips, output_dir, thr
     hasan_clips = [r for r in all_results if r.get('is_hasan', False)]
     print(f"\n[RESULTS]")
     print(f"  Total clips: {len(all_results)}")
-    print(f"  Hasan speaking: {len(hasan_clips)} ({len(hasan_clips)/len(all_results)*100:.1f}%)")
-    print(f"  Other speakers: {len(all_results) - len(hasan_clips)}")
+    if len(all_results) > 0:
+        print(f"  Hasan speaking: {len(hasan_clips)} ({len(hasan_clips)/len(all_results)*100:.1f}%)")
+        print(f"  Other speakers: {len(all_results) - len(hasan_clips)}")
+    else:
+        print(f"  No clips were processed!")
     print(f"  Results saved to: {results_file}")
 
     # Create filtered list

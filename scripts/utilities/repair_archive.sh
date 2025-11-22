@@ -37,6 +37,9 @@ Options:
   --emit-lists         Write URL/ID lists for re-download of info-only items
   --out-prefix <name>  Prefix for emitted lists (default: info_only)
   -h, --help           Show this help
+
+Sub-scripts / libraries:
+  --regen-provenance uses helpers from scripts/utilities/clips_templates/common.sh
 H
 }
 

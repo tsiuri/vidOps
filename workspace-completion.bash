@@ -12,7 +12,7 @@ _workspace_sh_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Main commands
-    commands="download clips voice transcribe stitch dates gpu info help"
+    commands="download clips voice transcribe stitch dl-subs dates gpu extra-utils info help"
 
     # If we're completing the first argument
     if [[ $COMP_CWORD -eq 1 ]]; then
@@ -43,12 +43,24 @@ _workspace_sh_completion() {
             ;;
         stitch|concat)
             if [[ $COMP_CWORD -eq 2 ]]; then
-                COMPREPLY=( $(compgen -W "batched cfr simple" -- "$cur") )
+                COMPREPLY=( $(compgen -W "batch cfr simple" -- "$cur") )
+            fi
+            ;;
+        dl-subs)
+            if [[ $COMP_CWORD -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "subs-only batch from-dir" -- "$cur") )
+            elif [[ $COMP_CWORD -eq 3 && "${COMP_WORDS[2]}" == "from-dir" ]]; then
+                COMPREPLY=( $(compgen -d -- "$cur") )
             fi
             ;;
         dates|date)
             if [[ $COMP_CWORD -eq 2 ]]; then
                 COMPREPLY=( $(compgen -W "find-missing create-list move compare" -- "$cur") )
+            fi
+            ;;
+        extra-utils)
+            if [[ $COMP_CWORD -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "help mark_success.sh quality_report.py repair_archive.sh map_ids_to_files.py sort_clips.py concat_filter_from_list.sh stitch_videos_batched_filter.sh detect_dupe_hallu.py watch_cuda_error.sh" -- "$cur") )
             fi
             ;;
         gpu)

@@ -5,7 +5,9 @@
 set -euo pipefail
 
 # Tool installation directory (where scripts live)
-TOOL_ROOT="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks to find the actual script location
+SCRIPT_PATH="$(readlink -f "$0")"
+TOOL_ROOT="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
 # Project directory (where data lives) - current working directory
 PROJECT_ROOT="$(pwd)"
@@ -14,12 +16,33 @@ PROJECT_ROOT="$(pwd)"
 export TOOL_ROOT
 export PROJECT_ROOT
 
-# Verify we're in a valid project directory or create structure
-if [[ ! -f "$PROJECT_ROOT/.vidops-project" ]]; then
-    echo -e "\033[1;33mInitializing VidOps project in: $PROJECT_ROOT\033[0m"
-    touch "$PROJECT_ROOT/.vidops-project"
-    mkdir -p "$PROJECT_ROOT"/{pull,generated,logs/pull,logs/db,data,results,media/{clips,final},config,cuts}
-    echo -e "\033[1;32mProject structure created.\033[0m"
+# Verify we're in a valid project directory; prompt before creating structure
+# Accept either legacy marker (.vidops-project) or new marker (.vidops_deploy_marker)
+if [[ ! -f "$PROJECT_ROOT/.vidops-project" && ! -f "$PROJECT_ROOT/.vidops_deploy_marker" ]]; then
+    echo -e "\033[1;33mThis directory is not initialized as a VidOps project.\033[0m"
+    echo "Path: $PROJECT_ROOT"
+    echo "If initialized, the following directories may be created here:"
+    echo "  pull/ generated/ logs/{pull,db} data/ results/ media/{clips,final} config/ cuts"
+    if [[ -t 0 ]]; then
+        read -r -p "Initialize VidOps project structure here? [y/N]: " _ans
+    else
+        echo "Non-interactive session detected; defaulting to No."
+        _ans=""
+    fi
+    case "${_ans,,}" in
+        y|yes)
+            echo -e "\033[1;33mInitializing VidOps project in: $PROJECT_ROOT\033[0m"
+            # Create deployment marker to avoid future prompts in this directory
+            touch "$PROJECT_ROOT/.vidops_deploy_marker"
+            mkdir -p "$PROJECT_ROOT"/{pull,generated,logs/pull,logs/db,data,results,media/{clips,final},config,cuts}
+            echo -e "\033[1;32mProject structure created.\033[0m"
+            ;;
+        *)
+            echo -e "\033[1;34mSkipping initialization.\033[0m"
+            echo "To suppress this prompt in the future for this directory, either re-run and answer 'y',"
+            echo "or manually create the marker file: $PROJECT_ROOT/.vidops_deploy_marker"
+            ;;
+    esac
 fi
 
 # Stay in project directory - don't cd to tool directory
@@ -41,14 +64,15 @@ USAGE
 COMMANDS
   download <url>              Download videos from YouTube
   clips <subcommand>          Clip operations (hits, cut-local, cut-net, refine)
-  transcripts <action>        Download auto-generated subtitles/captions
+  dl-subs <action>            Download auto-generated subtitles/captions
+  extra-utils <tool|help>     Run extra utilities (see EXTRA_UTILS.md)
   voice <action>              Voice filtering operations
   transcribe [options]        Dual-GPU transcription with Whisper
   analyze <transcripts...>    AI-powered transcript analysis
   convert-captions            Convert VTT captions to words.yt.tsv
   stitch <method>             Stitch videos together
   dates <action>              Date-based file management
-  gpu <action>                GPU binding management (requires sudo)
+  gpu <action>                GPU binding management (to-nvidia requires sudo)
   dbupdate [database]         Full DB ingest/update pipeline (prompts)
   info                        Show workspace information
   help [command]              Show help for a command
@@ -63,8 +87,8 @@ EXAMPLES
   # Filter by Hasan's voice
   ./workspace.sh voice filter --clips-dir media/clips/raw
 
-  # Stitch videos (batched method)
-  ./workspace.sh stitch batched media/clips/input/ media/final/output.mp4
+  # Stitch videos (batch method)
+  ./workspace.sh stitch batch media/clips/input/ media/final/output.mp4
 
   # Find missing dates
   ./workspace.sh dates find-missing data/dates.txt /path/to/search
@@ -85,12 +109,40 @@ LOCATION
     data/       - Configuration and lists
     results/    - Processing outputs
     media/      - Processed media files
+
+EXTRA UTILITIES (use: ./workspace.sh extra-utils)
+  Standalone scripts (see EXTRA_UTILS.md, e.g., ~/tools/vidops/EXTRA_UTILS.md):
+    scripts/utilities/mark_success.sh
+    scripts/utilities/quality_report.py
+    scripts/utilities/repair_archive.sh
+    scripts/utilities/map_ids_to_files.py
+    scripts/utilities/sort_clips.py
+    scripts/video_processing/concat_filter_from_list.sh
+    scripts/video_processing/stitch_videos_batched_filter.sh
+    scripts/transcription/detect_dupe_hallu.py
+    scripts/transcription/watch_cuda_error.sh
 EOF
 }
 
 show_command_help() {
     local cmd="$1"
     case "$cmd" in
+        extra-utils)
+            cat <<'EOF'
+EXTRA-UTILS - Run extra standalone utilities
+
+USAGE
+  ./workspace.sh extra-utils help
+  ./workspace.sh extra-utils <tool> [args]
+
+TOOLS
+  See EXTRA_UTILS.md for the full list and usage details.
+
+EXAMPLES
+  ./workspace.sh extra-utils repair_archive.sh --report
+  ./workspace.sh extra-utils map_ids_to_files.py
+EOF
+            ;;
         download)
             cat <<'EOF'
 DOWNLOAD - Download videos from YouTube
@@ -143,6 +195,10 @@ EXAMPLES
   # Find clips with phrases
   ./workspace.sh clips hits -q "interesting,phrase" -o results/wanted.tsv
 
+  # Exact hits using words timestamps with padding
+  PAD_START=0.25 PAD_END=0.50 \
+    ./workspace.sh clips hits --words --exact -q "hasan abi"
+
   # Cut from local files
   ./workspace.sh clips cut-local results/wanted.tsv media/clips/raw
 
@@ -152,16 +208,17 @@ EXAMPLES
 For full clips.sh documentation, see scripts/utilities/clips.sh help
 EOF
             ;;
-        transcripts)
+        dl-subs)
             cat <<'EOF'
-TRANSCRIPTS - Download auto-generated subtitles
+DL-SUBS - Download auto-generated subtitles
 
 USAGE
-  ./workspace.sh transcripts <action> [options]
+  ./workspace.sh dl-subs <action> [options]
 
 ACTIONS
   subs-only <URL> [format]    Download only subtitles for a single video
   batch <file> [format]       Batch download subtitles from URL list
+  from-dir <dir> [format]     Discover video IDs from media files in a directory and download subs for each
 
 FORMATS
   vtt     Video Text Tracks (default, includes timestamps)
@@ -170,10 +227,22 @@ FORMATS
 
 EXAMPLES
   # Download subs for a single video
-  ./workspace.sh transcripts subs-only "https://www.youtube.com/watch?v=VIDEO_ID"
+  ./workspace.sh dl-subs subs-only "https://www.youtube.com/watch?v=VIDEO_ID"
 
   # Batch download subs from a list
-  ./workspace.sh transcripts batch url_list.txt vtt
+  ./workspace.sh dl-subs batch url_list.txt vtt
+
+  # Download subs for all media files in a directory
+  ./workspace.sh dl-subs from-dir pull/ vtt
+
+NOTES
+  from-dir:
+    - Scans only the top-level of <dir> (non-recursive)
+    - Expects filenames to start with the 11-char YouTube ID followed by "__"
+      e.g., ObWv-_aPiXI__2025-11-19 - Title.ext
+    - Deduplicates IDs discovered in the directory
+    - Supports common media extensions (mp4, mkv, mov, avi, mp3, wav, m4a, opus, webm)
+    - Saves subtitles into pull/ matching the standard naming scheme
 
 OUTPUT
   Subtitles saved to: pull/
@@ -211,6 +280,14 @@ EXAMPLES
     --output results/voice_filtered/results.json \
     --threshold 0.65 \
     --chunk-size 200
+
+  # Filter with glob pattern and custom workers
+  ws voice filter \
+    --reference voice_reference/* \
+    --output filtered \
+    --workers 23 \
+    --chunk-size 200 \
+    filter_source
 
   # Extract matching clips to text file
   ./workspace.sh voice extract results/voice_filtered/results.json
@@ -253,7 +330,7 @@ USAGE
   ./workspace.sh stitch <method> <input-dir> <output-file> [sort-method]
 
 METHODS
-  batched             Batched approach (most reliable, recommended)
+  batch               Batch approach (most reliable, recommended)
   cfr                 Constant frame rate (fast)
   simple              Simple re-encode
 
@@ -264,8 +341,8 @@ SORT METHODS
   time                Sort by file modification time
 
 EXAMPLES
-  # Stitch with batched method (recommended)
-  ./workspace.sh stitch batched \
+  # Stitch with batch method (recommended)
+  ./workspace.sh stitch batch \
     media/clips/confirmedPiker1/ \
     media/final/output.mp4 \
     date_timestamp
@@ -288,10 +365,11 @@ USAGE
   ./workspace.sh dates <action> [options]
 
 ACTIONS
-  find-missing        Find which dates don't have files
-  create-list         Create download list from missing dates
-  move                Move files matching date list
-  compare             Compare dates between sources
+  find-missing        Find + print text list of which dates, of a list of dates in a textfile, don't have a corresponding youtube video file of that date.  (ex, check every calendar day for a VOD)
+  create-list         Creates a download list of videos from missing dates NOTE: for fixing files with metadata and no corresponding video!  For fixing partial downloads!
+  move                Moves .opus files whose filenames contain a specific “Month Day, Year” date that matches a provided list, plus any sidecar .json files sharing the same base name.
+  compare               - Compares dates present in your local “podcasts” (.opus files under pull/) against dates present in a txt list of YouTube video IDs. Outputs three sets: only in podcasts, only in archive, and in both.  For deduplicating VODs from overlapping sources.
+
 
 EXAMPLES
   # Find missing dates
@@ -325,7 +403,6 @@ USAGE
 ACTIONS
   status              Show current GPU driver bindings
   to-nvidia           Rebind NVIDIA GPUs to host (nvidia drivers)
-  to-vfio             Rebind NVIDIA GPUs to VM passthrough (vfio-pci)
 
 EXAMPLES
   # Check current GPU bindings
@@ -334,21 +411,12 @@ EXAMPLES
   # Rebind to host (for transcoding, CUDA work, etc.)
   sudo ./workspace.sh gpu to-nvidia
 
-  # Rebind to VM passthrough
-  sudo ./workspace.sh gpu to-vfio
-
 NOTE
   - status: No sudo required
-  - to-nvidia/to-vfio: Requires sudo/root
-  - Rebinding will affect running VMs and GPU applications
+  - to-nvidia: Requires sudo/root
+  - Rebinding will affect running GPU applications
   - After rebinding to nvidia, you may need to restart display manager
-
-COMMON WORKFLOW
-  # Before running VM
-  sudo ./workspace.sh gpu to-vfio
-
-  # After VM shutdown, to use GPU for transcoding
-  sudo ./workspace.sh gpu to-nvidia
+  - Only affects GPU at 0000:05:00.0 and its audio cohort at 0000:05:00.1
 EOF
             ;;
         transcribe)
@@ -412,6 +480,10 @@ NOTE
   ./scripts/transcription/dual_gpu_transcribe.sh --help
 
   To re-transcribe low-confidence segments, use --batch-retry after transcription
+  After transcription completes, this command also runs:
+    ./scripts/transcription/detect_dupe_hallu.py
+  to generate an additional dupe_hallu.retry_manifest.tsv (when seed manifests exist),
+  which you can include in a subsequent --batch-retry.
 EOF
             ;;
         analyze)
@@ -642,13 +714,58 @@ cmd_clips() {
     "$TOOL_ROOT/clips.sh" "$@"
 }
 
-cmd_transcripts() {
+cmd_dl_subs() {
+    local action="${1:-}"
+    if [[ -z "$action" ]]; then
+        "$TOOL_ROOT/clips.sh" transcripts help
+        return
+    fi
+    if [[ "$action" == "from-dir" ]]; then
+        shift || true
+        local dir="${1:-}"
+        local format="${2:-vtt}"
+        if [[ -z "$dir" || ! -d "$dir" ]]; then
+            echo "Error: from-dir requires a valid directory"
+            echo "Usage: ./workspace.sh dl-subs from-dir <dir> [format]"
+            exit 1
+        fi
+        echo "Discovering media in: $dir"
+        # Ensure output location exists when clips layer writes to pull/
+        mkdir -p "$PROJECT_ROOT/pull" 2>/dev/null || true
+        # Supported media extensions (align with transcribe)
+        local exts=(mp4 mkv mov avi mp3 wav m4a opus webm)
+        declare -A seen
+        local total=0 ok=0 fail=0
+        while IFS= read -r -d '' f; do
+            local bn id url
+            bn="$(basename "$f")"
+            id="$(printf '%s' "$bn" | sed -nE 's/^([A-Za-z0-9_-]{11})__.*/\1/p')"
+            if [[ -z "$id" ]]; then
+                continue
+            fi
+            if [[ -n "${seen[$id]:-}" ]]; then
+                continue
+            fi
+            seen[$id]=1
+            url="https://www.youtube.com/watch?v=$id"
+            (( total++ ))
+            echo "[$total] Downloading subs for $id ($bn)"
+            if "$TOOL_ROOT/clips.sh" transcripts subs-only "$url" "$format"; then
+                (( ok++ ))
+            else
+                (( fail++ ))
+            fi
+        done < <(find "$dir" -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.avi' -o -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.opus' -o -iname '*.webm' \) -print0)
+        echo "Done. Processed: $total, Succeeded: $ok, Failed: $fail"
+        return
+    fi
     "$TOOL_ROOT/clips.sh" transcripts "$@"
 }
 
 cmd_voice() {
     local action="${1:-}"
     shift || true
+    local VENV_WRAPPER="$TOOL_ROOT/scripts/voice_filtering/voicefil_w_venv.sh"
 
     case "$action" in
         filter)
@@ -660,26 +777,28 @@ cmd_voice() {
             choice=${choice:-3}
 
             case "$choice" in
-                1) python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@" ;;
-                2) python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@" ;;
-                3) python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@" ;;
+                1) "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@" ;;
+                2) "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@" ;;
+                3) "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@" ;;
                 *) echo "Invalid choice"; exit 1 ;;
             esac
             ;;
         filter-simple)
-            python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@"
+            "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@"
             ;;
         filter-parallel)
-            python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@"
+            "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@"
             ;;
         filter-chunked)
-            python3 "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@"
+            "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@"
             ;;
         extract)
             local results_file="${1:-$PROJECT_ROOT/results/voice_filtered/results.json}"
             local output_file="${2:-$PROJECT_ROOT/results/voice_filtered/matched_clips.txt}"
 
             echo "Extracting matching clips from: $results_file"
+            # Ensure output directory exists
+            mkdir -p "$(dirname "$output_file")" 2>/dev/null || true
             python3 -c "
 import json
 with open('$results_file') as f:
@@ -700,6 +819,20 @@ print(f\"Extracted to: $output_file\")
 }
 
 cmd_transcribe() {
+    # Helper: run hallucination detection to generate dupe_hallu retry manifests
+    run_dupe_hallu_detection() {
+        # Collect unprocessed retry manifests to seed media discovery
+        local manifests
+        mapfile -t manifests < <(find "$PROJECT_ROOT/generated" -maxdepth 1 -type f -name "*.retry_manifest.tsv" ! -name "*.processed" 2>/dev/null | sort || true)
+        if [[ ${#manifests[@]} -eq 0 ]]; then
+            # Nothing to seed from; skip silently
+            return 0
+        fi
+        echo "Detecting repeated-phrase hallucinations (dupe hallu)…"
+        # Best-effort: do not fail overall flow if detector exits non-zero
+        python3 "$TOOL_ROOT/scripts/transcription/detect_dupe_hallu.py" "${manifests[@]}" || true
+    }
+
     # Check if --batch-retry is requested
     for arg in "$@"; do
         if [[ "$arg" == "--batch-retry" ]]; then
@@ -709,6 +842,8 @@ cmd_transcribe() {
     done
     # Normal transcription
     "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
+    # Post-processing: generate dupe_hallu retry manifests (if any seed manifests exist)
+    run_dupe_hallu_detection
 }
 
 cmd_analyze() {
@@ -719,12 +854,61 @@ cmd_convert_captions() {
     "$TOOL_ROOT/scripts/utilities/convert-captions.sh" "$@"
 }
 
+cmd_extra_utils() {
+    local tool="${1:-help}"
+    shift || true
+
+    case "$tool" in
+        help|-h|--help)
+            show_command_help extra-utils
+            ;;
+        mark_success.sh)
+            "$TOOL_ROOT/scripts/utilities/mark_success.sh" "$@"
+            ;;
+        quality_report.py)
+            python3 "$TOOL_ROOT/scripts/utilities/quality_report.py" "$@"
+            ;;
+        repair_archive.sh)
+            "$TOOL_ROOT/scripts/utilities/repair_archive.sh" "$@"
+            ;;
+        map_ids_to_files.py)
+            python3 "$TOOL_ROOT/scripts/utilities/map_ids_to_files.py" "$@"
+            ;;
+        sort_clips.py)
+            python3 "$TOOL_ROOT/scripts/utilities/sort_clips.py" "$@"
+            ;;
+        concat_filter_from_list.sh)
+            "$TOOL_ROOT/scripts/video_processing/concat_filter_from_list.sh" "$@"
+            ;;
+        stitch_videos_batched_filter.sh)
+            "$TOOL_ROOT/scripts/video_processing/stitch_videos_batched_filter.sh" "$@"
+            ;;
+        detect_dupe_hallu.py)
+            python3 "$TOOL_ROOT/scripts/transcription/detect_dupe_hallu.py" "$@"
+            ;;
+        watch_cuda_error.sh)
+            "$TOOL_ROOT/scripts/transcription/watch_cuda_error.sh" "$@"
+            ;;
+        *)
+            echo "Error: Unknown extra utility: $tool"
+            echo "Use: ./workspace.sh help extra-utils"
+            exit 1
+            ;;
+    esac
+}
+
 cmd_stitch() {
-    local method="${1:-batched}"
+    # If no args, show help instead of defaulting silently
+    if [[ $# -eq 0 ]]; then
+        show_command_help stitch
+        return 0
+    fi
+
+    local method="${1:-batch}"
     shift || true
 
     case "$method" in
-        batched)
+        batch|batched)
             "$TOOL_ROOT/scripts/video_processing/stitch_videos_batched.sh" "$@"
             ;;
         cfr)
@@ -735,7 +919,8 @@ cmd_stitch() {
             ;;
         *)
             echo "Error: Unknown stitch method: $method"
-            echo "Available: batched, cfr, simple"
+            echo "Available: batch, cfr, simple"
+            echo "Use: ./workspace.sh help stitch"
             exit 1
             ;;
     esac
@@ -783,130 +968,12 @@ cmd_gpu() {
             echo -e "${C_YELLOW}Rebinding NVIDIA GPUs to host drivers...${C_RESET}"
             "$TOOL_ROOT/scripts/gpu_tools/gpu-to-nvidia.sh"
             ;;
-        to-vfio)
-            if [[ $EUID -ne 0 ]]; then
-                echo -e "${C_RED}Error: This action requires root privileges${C_RESET}"
-                echo "Run: sudo ./workspace.sh gpu to-vfio"
-                exit 1
-            fi
-            if [[ ! -f "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh" ]]; then
-                echo -e "${C_YELLOW}Creating gpu-to-vfio.sh...${C_RESET}"
-                create_gpu_to_vfio_script
-            fi
-            echo -e "${C_YELLOW}Rebinding NVIDIA GPUs to vfio-pci...${C_RESET}"
-            "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh"
-            ;;
         *)
             echo "Error: Unknown gpu action: $action"
             echo "Use: ./workspace.sh help gpu"
             exit 1
             ;;
     esac
-}
-
-create_gpu_to_vfio_script() {
-    cat > "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh" << 'EOFVFIO'
-#!/usr/bin/env bash
-# gpu-to-vfio.sh — rebind NVIDIA GPU to vfio-pci (for VM passthrough)
-set -euo pipefail
-
-log(){ printf '\033[1;34m==> %s\033[0m\n' "$*"; }
-warn(){ printf '\033[1;33m!!  %s\033[0m\n' "$*" >&2; }
-die(){ printf '\033[1;31mxx  %s\033[0m\n' "$*" >&2; exit 1; }
-
-require_root(){ [[ $EUID -eq 0 ]] || die "Run as root."; }
-
-load_vfio_stack(){
-  for mod in vfio vfio_pci vfio_iommu_type1; do
-    if ! modprobe "$mod" >/dev/null 2>&1; then
-      warn "Could not load module $mod"
-      return 1
-    fi
-  done
-  return 0
-}
-
-current_driver(){
-  local bdf="$1" link="/sys/bus/pci/devices/$bdf/driver"
-  if [[ -L "$link" ]]; then
-    basename "$(readlink -f "$link")"
-  else
-    echo ""
-  fi
-}
-
-discover_nvidia_functions(){
-  local out=()
-  for devpath in /sys/bus/pci/devices/*; do
-    [[ -e "$devpath/vendor" && -e "$devpath/class" ]] || continue
-    local ven devcls bdf
-    ven=$(<"$devpath/vendor")
-    devcls=$(<"$devpath/class")
-    bdf=$(basename "$devpath")
-    [[ "$ven" == "0x10de" ]] || continue
-    case "$devcls" in
-      0x030000|0x030200|0x040300) out+=("$bdf") ;;
-    esac
-  done
-  printf '%s\n' "${out[@]}"
-}
-
-unbind_current_driver(){
-  local bdf="$1"
-  local drvlink="/sys/bus/pci/devices/$bdf/driver"
-  [[ -L "$drvlink" ]] || return 0
-  local drv; drv=$(basename "$(readlink -f "$drvlink")")
-  if [[ -e "/sys/bus/pci/devices/$bdf/driver/unbind" ]]; then
-    printf "%s" "$bdf" > "/sys/bus/pci/devices/$bdf/driver/unbind"
-    log "Unbound $bdf from $drv"
-  fi
-}
-
-bind_to_vfio(){
-  local bdf="$1"
-  local bind_path="/sys/bus/pci/drivers/vfio-pci/bind"
-
-  load_vfio_stack || die "Failed to load vfio modules"
-  [[ -e "$bind_path" ]] || die "vfio-pci driver not available"
-
-  local cur; cur=$(current_driver "$bdf")
-  if [[ "$cur" == "vfio-pci" ]]; then
-    log "$bdf already bound to vfio-pci"
-    return 0
-  elif [[ -n "$cur" ]]; then
-    unbind_current_driver "$bdf"
-    udevadm settle || true
-  fi
-
-  echo "vfio-pci" > "/sys/bus/pci/devices/$bdf/driver_override"
-  if printf "%s" "$bdf" > "$bind_path"; then
-    log "Bound $bdf -> vfio-pci"
-  else
-    die "Failed to bind $bdf to vfio-pci"
-  fi
-  echo "" > "/sys/bus/pci/devices/$bdf/driver_override"
-}
-
-main(){
-  require_root
-
-  mapfile -t ALL < <(discover_nvidia_functions)
-  [[ ${#ALL[@]} -gt 0 ]] || die "No NVIDIA functions found."
-
-  log "Found ${#ALL[@]} NVIDIA function(s)"
-
-  for bdf in "${ALL[@]}"; do
-    bind_to_vfio "$bdf"
-  done
-
-  udevadm settle || true
-  log "Done. NVIDIA GPU(s) now bound to vfio-pci for VM passthrough."
-}
-
-main "$@"
-EOFVFIO
-    chmod +x "$TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh"
-    echo -e "${C_GREEN}Created $TOOL_ROOT/scripts/gpu_tools/gpu-to-vfio.sh${C_RESET}"
 }
 
 # Command logging
@@ -945,8 +1012,8 @@ main() {
         clips|clip)
             cmd_clips "$@"
             ;;
-        transcripts)
-            cmd_transcripts "$@"
+        dl-subs)
+            cmd_dl_subs "$@"
             ;;
         voice|filter)
             cmd_voice "$@"
@@ -956,6 +1023,9 @@ main() {
             ;;
         analyze)
             cmd_analyze "$@"
+            ;;
+        extra-utils)
+            cmd_extra_utils "$@"
             ;;
         dbupdate)
             bash "$TOOL_ROOT/scripts/db/import_videos.sh" "${1:-transcripts}"

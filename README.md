@@ -66,7 +66,7 @@ This allows you to:
 
 ## 📚 Documentation
 
-- **QUICK_START.txt** - Command reference and common workflows
+- See `AGENTS.md` (contributors), `EXTRA_UTILS.md` (standalone tools), and `DB_README.md` (database pipeline)
 - **REFACTORING_COMPLETE.txt** - Architecture details and full feature list
 - **REFACTORING_INSTRUCTIONS_FOR_AI.txt** - Detailed implementation guide
 
@@ -101,6 +101,20 @@ python3 ~/tools/vidops/scripts/date_management/find_missing_dates.py \
 python3 ~/tools/vidops/scripts/utilities/quality_report.py
 ```
 
+### Map IDs to Local Files
+```bash
+# Build a list of local media files for IDs lacking transcripts
+python3 ~/tools/vidops/scripts/utilities/map_ids_to_files.py
+
+# Defaults:
+#   Reads IDs from: logs/no_transcripts_available.txt
+#   Scans media in: pull/*.opus
+#   Writes list to: transcripts_needed.txt
+
+# Or via the workspace wrapper
+./workspace.sh extra-utils map_ids_to_files.py
+```
+
 ### Video Stitching
 ```bash
 bash ~/tools/vidops/scripts/video_processing/stitch_videos_batched.sh \
@@ -113,7 +127,8 @@ Each project directory contains:
 
 ```
 my-project/
-├── .vidops-project        # Project marker file
+├── .vidops-project        # Project marker file (legacy)
+├── .vidops_deploy_marker  # Project marker file (current)
 ├── pull/                  # Downloaded videos
 ├── generated/             # Transcripts and words
 ├── logs/
@@ -189,7 +204,6 @@ vidops-hits "search term"
 
 ### Utilities
 - `scripts/utilities/quality_report.py` - Transcription quality metrics
-- `scripts/utilities/find_word_hits.py` - Search word-level timestamps
 - `scripts/utilities/convert-captions.sh` - Convert YouTube captions
 
 ### Video Processing
