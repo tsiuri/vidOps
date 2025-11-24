@@ -67,7 +67,7 @@ COMMANDS
   dl-subs <action>            Download auto-generated subtitles/captions
   extra-utils <tool|help>     Run extra utilities (see EXTRA_UTILS.md)
   voice <action>              Voice filtering operations
-  transcribe [options]        Dual-GPU transcription with Whisper
+  transcribe [options]        Multi-GPU transcription with Whisper (auto-detects NVIDIA GPUs)
   analyze <transcripts...>    AI-powered transcript analysis
   convert-captions            Convert VTT captions to words.yt.tsv
   stitch <method>             Stitch videos together
@@ -421,13 +421,14 @@ EOF
             ;;
         transcribe)
             cat <<'EOF'
-TRANSCRIBE - Dual-GPU batch transcription with Whisper
+TRANSCRIBE - Multi-GPU batch transcription with Whisper
 
 USAGE
   ./workspace.sh transcribe [options]
 
 DESCRIPTION
-  Transcribes all media files in pull/ using NVIDIA GPU in parallel (with optional legacy AMD/CPU workers)
+  Transcribes all media files in pull/ using NVIDIA GPUs in parallel (with optional CPU workers)
+  Automatically detects and uses all available NVIDIA GPUs
   Outputs transcriptions to generated/ directory
 
 COMMON OPTIONS
@@ -440,12 +441,22 @@ COMMON OPTIONS
   --follow / --no-follow      Live-tail logs [default: --follow]
   --setup-venvs               Create/update virtual environments (first-time setup)
 
+MULTI-GPU CONTROL
+  NUM_GPU_WORKERS=auto        auto=use all detected GPUs, or specify number (1, 2, 3, etc.)
+  GPU_DEVICES=0,1             Comma-separated GPU indices to use (empty=use all detected)
+
 EXAMPLES
   # First-time setup (creates virtual environments)
   ./workspace.sh transcribe --setup-venvs
 
-  # Regular transcription (uses files in pull/)
+  # Regular transcription (auto-detects and uses all GPUs)
   ./workspace.sh transcribe
+
+  # Use only first 2 GPUs
+  NUM_GPU_WORKERS=2 ./workspace.sh transcribe
+
+  # Use specific GPUs (e.g., GPU 0 and GPU 2)
+  GPU_DEVICES=0,2 ./workspace.sh transcribe
 
   # Transcribe specific files from a list
   ./workspace.sh transcribe --filelist my_videos.txt
@@ -475,11 +486,11 @@ INPUT
 
 OUTPUT
   Transcriptions go to: generated/
-  Logs go to: logs/nv.log, logs/amd.log
+  Logs go to: logs/nv0.log, logs/nv1.log, logs/cpu.log (per-GPU logs for multi-GPU)
   Retry manifests: generated/*.retry_manifest.tsv (low-confidence segments)
 
 NOTE
-  Requires GPU access. For NVIDIA/AMD setup, see the script help:
+  Requires GPU access. For NVIDIA multi-GPU setup, see the script help:
   ./scripts/transcription/dual_gpu_transcribe.sh --help
 
   To re-transcribe low-confidence segments, use --batch-retry after transcription

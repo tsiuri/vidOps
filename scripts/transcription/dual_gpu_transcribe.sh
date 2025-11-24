@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# dual_gpu_transcribe.sh — dual-GPU (+optional CPU) batch transcriber with dynamic queue, hotwords priming, percent progress, and clean quit
+# dual_gpu_transcribe.sh — multi-GPU (+optional CPU) batch transcriber with dynamic queue, hotwords priming, percent progress, and clean quit
+# Supports multiple NVIDIA GPUs with automatic detection and per-GPU workers
 # PATCHED VERSION: Fixed hallucination bug and improved CPU accuracy
 set -euo pipefail
 
@@ -25,6 +26,10 @@ EXTENSIONS=("mp4" "mkv" "mov" "avi" "mp3" "wav" "m4a" "opus")
 : "${AMD_FP16:=1}"                        # 1=FP16 precision (faster); 0=FP32 (slower, more accurate)
 
 : "${ENABLE_AMD:=0}"                      # 1=enable legacy AMD/ROCm worker (deprecated)
+
+# Multi-GPU NVIDIA worker controls
+: "${NUM_GPU_WORKERS:=auto}"              # auto=detect all GPUs, or specify number (1, 2, 3, etc.)
+: "${GPU_DEVICES:=}"                      # comma-separated GPU indices to use (e.g., "0,1"), empty=use all detected
 
 : "${SHIM_CUDA12:=1}"
 
@@ -211,21 +216,23 @@ cleanup_queue(){
   [[ -n "${QUEUE_DIR:-}" && -d "$QUEUE_DIR" ]] && rm -rf -- "$QUEUE_DIR" || true
 }
 
-# inline log tailers (NV/AMD/CPU) — single instance each
-tl1=""; tl2=""; tl3=""
-TAIL_PIDFILE_NV=""; TAIL_PIDFILE_AMD=""; TAIL_PIDFILE_CPU=""
+# inline log tailers (NV0..NVn/AMD/CPU)
+declare -a tail_pids=()
+declare -a tail_pidfiles=()
 stop_follow(){
-  [[ -n "${tl1:-}" ]] && kill "$tl1" 2>/dev/null || true; tl1=""
-  [[ -n "${tl2:-}" ]] && kill "$tl2" 2>/dev/null || true; tl2=""
-  [[ -n "${tl3:-}" ]] && kill "$tl3" 2>/dev/null || true; tl3=""
-  [[ -n "${TAIL_PIDFILE_NV:-}" && -f "$TAIL_PIDFILE_NV" ]] && rm -f -- "$TAIL_PIDFILE_NV" || true
-  [[ -n "${TAIL_PIDFILE_AMD:-}" && -f "$TAIL_PIDFILE_AMD" ]] && rm -f -- "$TAIL_PIDFILE_AMD" || true
-  [[ -n "${TAIL_PIDFILE_CPU:-}" && -f "$TAIL_PIDFILE_CPU" ]] && rm -f -- "$TAIL_PIDFILE_CPU" || true
+  for tpid in "${tail_pids[@]:-}"; do
+    [[ -n "$tpid" ]] && kill "$tpid" 2>/dev/null || true
+  done
+  tail_pids=()
+  for tpf in "${tail_pidfiles[@]:-}"; do
+    [[ -n "$tpf" && -f "$tpf" ]] && rm -f -- "$tpf" || true
+  done
+  tail_pidfiles=()
 }
 kill_stale_tailers(){
   (( ${KILL_STALE_TAILS:-1} )) || return 0
   # Best-effort kill of old tails on these exact files
-  for p in "${NV_LOG:-}" "${AMD_LOG:-}" "${CPU_LOG:-}"; do
+  for p in "${NV_LOGS[@]:-}" "${AMD_LOG:-}" "${CPU_LOG:-}"; do
     [[ -n "${p:-}" ]] || continue
     pkill -f "tail -n \+1 -F $(printf %q "$p")" 2>/dev/null || true
   done
@@ -233,9 +240,35 @@ kill_stale_tailers(){
 start_follow(){
   (( FOLLOW )) || return 0
   kill_stale_tailers
-  if [[ -n "${NV_LOG:-}" ]]; then ( stdbuf -oL -eL tail -n +1 -F "$NV_LOG" 2>/dev/null ) & tl1=$!; TAIL_PIDFILE_NV="$QUEUE_DIR/tail_nv.pid"; echo "$tl1" > "$TAIL_PIDFILE_NV"; fi
-  if [[ -n "${AMD_LOG:-}" ]]; then ( stdbuf -oL -eL tail -n +1 -F "$AMD_LOG" 2>/dev/null ) & tl2=$!; TAIL_PIDFILE_AMD="$QUEUE_DIR/tail_amd.pid"; echo "$tl2" > "$TAIL_PIDFILE_AMD"; fi
-  if [[ -n "${CPU_LOG:-}" && -f "$CPU_LOG" ]]; then ( stdbuf -oL -eL tail -n +1 -F "$CPU_LOG" 2>/dev/null ) & tl3=$!; TAIL_PIDFILE_CPU="$QUEUE_DIR/tail_cpu.pid"; echo "$tl3" > "$TAIL_PIDFILE_CPU"; fi
+  # Tail all NV logs
+  for i in "${!NV_LOGS[@]}"; do
+    local nvlog="${NV_LOGS[$i]}"
+    [[ -n "$nvlog" && -f "$nvlog" ]] || continue
+    ( stdbuf -oL -eL tail -n +1 -F "$nvlog" 2>/dev/null ) &
+    local tpid=$!
+    tail_pids+=("$tpid")
+    local pidfile="$QUEUE_DIR/tail_nv${i}.pid"
+    echo "$tpid" > "$pidfile"
+    tail_pidfiles+=("$pidfile")
+  done
+  # Tail AMD log if exists
+  if [[ -n "${AMD_LOG:-}" && -f "$AMD_LOG" ]]; then
+    ( stdbuf -oL -eL tail -n +1 -F "$AMD_LOG" 2>/dev/null ) &
+    local tpid=$!
+    tail_pids+=("$tpid")
+    local pidfile="$QUEUE_DIR/tail_amd.pid"
+    echo "$tpid" > "$pidfile"
+    tail_pidfiles+=("$pidfile")
+  fi
+  # Tail CPU log if exists
+  if [[ -n "${CPU_LOG:-}" && -f "$CPU_LOG" ]]; then
+    ( stdbuf -oL -eL tail -n +1 -F "$CPU_LOG" 2>/dev/null ) &
+    local tpid=$!
+    tail_pids+=("$tpid")
+    local pidfile="$QUEUE_DIR/tail_cpu.pid"
+    echo "$tpid" > "$pidfile"
+    tail_pidfiles+=("$pidfile")
+  fi
 }
 
 # quit/traps (define BEFORE anything that could trap)
@@ -287,7 +320,8 @@ while [[ $# -gt 0 ]]; do
     --setup-venvs) SETUP_VENVS=1; shift;;
     -h|--help)
       cat <<EOF
-dual_gpu_transcribe.sh — batch transcriber with NVIDIA + AMD GPU workers (plus optional CPU), hotwords, provenance sidecars, and clean quit.
+dual_gpu_transcribe.sh — multi-GPU batch transcriber with automatic NVIDIA GPU detection (plus optional CPU/AMD), hotwords, provenance sidecars, and clean quit.
+Supports multiple NVIDIA GPUs with per-GPU workers. AMD support is deprecated.
 
 USAGE:
   ./dual_gpu_transcribe.sh [options]
@@ -313,6 +347,9 @@ ENV VARS (set before running):
   MIN_TS_INTERVAL=10         Seconds between entries in *.tslog.txt
 
 GPU / CPU:
+  # Multi-GPU NVIDIA support
+  NUM_GPU_WORKERS=auto       auto=use all detected GPUs, or specify number (1, 2, 3, etc.)
+  GPU_DEVICES=               Comma-separated GPU indices (e.g., "0,1"), empty=use all detected
   NV_COMPUTE=float16         NVIDIA faster-whisper: float16|int8_float16|int8
   NV_VAD_FILTER=1            1=enable VAD pre-scan (2min delay); 0=disable (instant)
   NV_VENV=$HOME/transcribe-nv
@@ -343,7 +380,7 @@ HOTWORDS & CORRECTIONS:
   CORRECTIONS_TSV=./corrections.tsv  TSV lines:  miss<TAB>fix
 
 LOGGING / UI:
-  LOG_DIR=logs               Where nv.log / amd.log / cpu.log live
+  LOG_DIR=logs               Where nv0.log, nv1.log, amd.log, cpu.log live (multi-GPU: nv<idx>.log)
   KILL_STALE_TAILS=1         Best-effort kill of leftover tails on startup
   SHIM_CUDA12=1              Create CUDA-12 soname shims if needed
   ANTIHALLUC=1               0 disables anti-hallucination thresholds (compat)
@@ -1999,17 +2036,65 @@ archive_log() {
 }
 
 mkdir -p "$LOG_DIR"
-NV_LOG="${LOG_DIR%/}/nv.log"
+
+# Detect NVIDIA GPUs
+declare -a DETECTED_GPUS=()
+declare -a GPU_NAMES=()
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+  # Get list of GPU indices and names
+  while IFS=',' read -r idx name; do
+    DETECTED_GPUS+=("$idx")
+    GPU_NAMES+=("$name")
+  done < <(nvidia-smi --query-gpu=index,name --format=csv,noheader)
+fi
+
+NUM_DETECTED_GPUS=${#DETECTED_GPUS[@]}
+log "Detected $NUM_DETECTED_GPUS NVIDIA GPU(s)"
+
+# Determine which GPUs to use
+declare -a USE_GPUS=()
+if [[ -n "$GPU_DEVICES" ]]; then
+  # User specified GPU indices
+  IFS=',' read -ra USE_GPUS <<< "$GPU_DEVICES"
+  log "Using user-specified GPUs: ${USE_GPUS[*]}"
+elif [[ "$NUM_GPU_WORKERS" == "auto" ]]; then
+  # Auto: use all detected GPUs
+  USE_GPUS=("${DETECTED_GPUS[@]}")
+  log "Auto mode: using all $NUM_DETECTED_GPUS detected GPU(s)"
+elif [[ "$NUM_GPU_WORKERS" =~ ^[0-9]+$ ]]; then
+  # User specified number of workers
+  requested=$NUM_GPU_WORKERS
+  use_count=$((requested < NUM_DETECTED_GPUS ? requested : NUM_DETECTED_GPUS))
+  for ((i=0; i<use_count; i++)); do
+    USE_GPUS+=("${DETECTED_GPUS[$i]}")
+  done
+  log "Using first $use_count GPU(s) (requested: $requested, detected: $NUM_DETECTED_GPUS)"
+else
+  warn "Invalid NUM_GPU_WORKERS='$NUM_GPU_WORKERS'; using auto mode"
+  USE_GPUS=("${DETECTED_GPUS[@]}")
+fi
+
+# Setup log files for all workers
+declare -a NV_LOGS=()
+for idx in "${USE_GPUS[@]}"; do
+  NV_LOGS+=("${LOG_DIR%/}/nv${idx}.log")
+done
+
 AMD_LOG="${LOG_DIR%/}/amd.log"
 CPU_LOG="${LOG_DIR%/}/cpu.log"
 
 # Archive old logs instead of truncating
-archive_log "$NV_LOG"
+for nvlog in "${NV_LOGS[@]}"; do
+  archive_log "$nvlog"
+done
 archive_log "$AMD_LOG"
 archive_log "$CPU_LOG"
 
 # Create new empty logs
-: >"$NV_LOG"; : >"$AMD_LOG"; : >"$CPU_LOG"
+for nvlog in "${NV_LOGS[@]}"; do
+  : >"$nvlog"
+done
+: >"$AMD_LOG"; : >"$CPU_LOG"
 
 # Wait for background file validation to complete
 if [[ -n "${VALIDATOR_PID:-}" ]]; then
@@ -2017,18 +2102,22 @@ if [[ -n "${VALIDATOR_PID:-}" ]]; then
   wait "$VALIDATOR_PID" || warn "File validation had errors (some files may be skipped)"
 fi
 
-NV_OK=0; command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1 && NV_OK=1
 AMD_OK=0
 if (( ENABLE_AMD )); then
   AMD_OK=1
 fi
 
-# ----- NVIDIA worker -----
-if (( NV_OK )); then
-  log "Starting NVIDIA worker (log: $NV_LOG)"
-  setsid bash -c "env MODEL=\"$MODEL\" LANG=\"$LANGUAGE\" FORCE=\"$FORCE\" OUTFMT=\"$OUTFMT\" NV_COMPUTE=\"$NV_COMPUTE\" NV_VAD_FILTER=\"$NV_VAD_FILTER\" MIN_TS_INTERVAL=\"$MIN_TS_INTERVAL\" QUEUE_DIR=\"$QUEUE_DIR\" HOTWORDS_FILE=\"$HOTWORDS_FILE\" PROMPT_PREFIX=\"$PROMPT_PREFIX\" CORRECTIONS_TSV=\"$CORRECTIONS_TSV\" ANTIHALLUC=\"$ANTIHALLUC\" LOG_TS_FORMAT=\"$LOG_TS_FORMAT\" OMP_NUM_THREADS=\"$GPU_THREADS\" MKL_NUM_THREADS=\"$GPU_THREADS\" OPENBLAS_NUM_THREADS=\"$GPU_THREADS\" NUMEXPR_NUM_THREADS=\"$GPU_THREADS\" RAYON_NUM_THREADS=\"$GPU_THREADS\" stdbuf -oL -eL \"$NV_VENV/bin/python\" \"$NV_RUNNER\" 2>&1 | ts_prefix_awk >\"$NV_LOG\"" & pids+=($!); PGIDS+=(-$!)
+# ----- NVIDIA workers (one per GPU) -----
+if (( ${#USE_GPUS[@]} > 0 )); then
+  for i in "${!USE_GPUS[@]}"; do
+    gpu_idx="${USE_GPUS[$i]}"
+    gpu_log="${NV_LOGS[$i]}"
+    gpu_name="${GPU_NAMES[$gpu_idx]:-GPU$gpu_idx}"
+    log "Starting NVIDIA worker #$i on GPU $gpu_idx ($gpu_name) (log: $gpu_log)"
+    setsid bash -c "env CUDA_VISIBLE_DEVICES=\"$gpu_idx\" MODEL=\"$MODEL\" LANG=\"$LANGUAGE\" FORCE=\"$FORCE\" OUTFMT=\"$OUTFMT\" NV_COMPUTE=\"$NV_COMPUTE\" NV_VAD_FILTER=\"$NV_VAD_FILTER\" MIN_TS_INTERVAL=\"$MIN_TS_INTERVAL\" QUEUE_DIR=\"$QUEUE_DIR\" HOTWORDS_FILE=\"$HOTWORDS_FILE\" PROMPT_PREFIX=\"$PROMPT_PREFIX\" CORRECTIONS_TSV=\"$CORRECTIONS_TSV\" ANTIHALLUC=\"$ANTIHALLUC\" LOG_TS_FORMAT=\"$LOG_TS_FORMAT\" OMP_NUM_THREADS=\"$GPU_THREADS\" MKL_NUM_THREADS=\"$GPU_THREADS\" OPENBLAS_NUM_THREADS=\"$GPU_THREADS\" NUMEXPR_NUM_THREADS=\"$GPU_THREADS\" RAYON_NUM_THREADS=\"$GPU_THREADS\" stdbuf -oL -eL \"$NV_VENV/bin/python\" \"$NV_RUNNER\" 2>&1 | ts_prefix_awk >\"$gpu_log\"" & pids+=($!); PGIDS+=(-$!)
+  done
 else
-  warn "NVIDIA unavailable; skipping NV worker."
+  warn "No NVIDIA GPUs available; skipping NV workers."
 fi
 
 # ----- AMD worker -----
