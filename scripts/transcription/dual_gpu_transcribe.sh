@@ -515,6 +515,10 @@ cat > "$NV_RUNNER" <<'PY'
 import os, time, json, re, subprocess
 from pathlib import Path
 
+# GPU index for logging (set by launcher)
+GPU_IDX = os.environ.get("GPU_IDX", "")
+LOG_PREFIX = f"[NV{GPU_IDX}]"
+
 # Limit CPU thread usage for GPU worker (GPU does the heavy lifting)
 GPU_THREADS = int(os.environ.get("OMP_NUM_THREADS", "16"))  # Default to 16 if not set
 try:
@@ -767,7 +771,7 @@ def write_retry_manifest(base_path: Path, media_path: Path, segs, low_conf_indic
             f.write(
                 f"{media_path}\t{idx}\t{start:.3f}\t{end:.3f}\t{conf:.3f}\t{zero_length}\t{text}\n"
             )
-    print(f"[NV][MANIFEST] wrote retry manifest for {len(low_conf_indices)} segments to {manifest_path.name}", flush=True)
+    print(f"{LOG_PREFIX}[MANIFEST] wrote retry manifest for {len(low_conf_indices)} segments to {manifest_path.name}", flush=True)
 
 
 def write_words_tsv_faster(base_path: Path, segs, retried_indices=None):
@@ -786,7 +790,7 @@ def write_words_tsv_faster(base_path: Path, segs, retried_indices=None):
                     if not word: continue
                     wf.write(f"{float(getattr(w,'start',0.0)):.3f}\t{float(getattr(w,'end',0.0)):.3f}\t{word}\t{si}\t{conf:.3f}\t{retried}\n")
     except Exception as e:
-        print(f"[NV][WARN] failed to write words.tsv: {e}", flush=True)
+        print(f"{LOG_PREFIX}[WARN] failed to write words.tsv: {e}", flush=True)
 
 def make_tslog(caption,tslog,interval):
     import re
@@ -836,13 +840,13 @@ def claim():
         return None
     return None
 
-print(f"[NV] Worker starting at {time.strftime('%H:%M:%S')}", flush=True)
-print(f"[NV] Worker starting with {GPU_THREADS} CPU threads (GPU worker)", flush=True)
-print(f"[NV] loading faster-whisper model={MODEL} device=cuda compute=float16", flush=True)
+print(f"{LOG_PREFIX} Worker starting at {time.strftime('%H:%M:%S')}", flush=True)
+print(f"{LOG_PREFIX} Worker starting with {GPU_THREADS} CPU threads (GPU worker)", flush=True)
+print(f"{LOG_PREFIX} loading faster-whisper model={MODEL} device=cuda compute=float16 num_workers={GPU_THREADS}", flush=True)
 start_load = time.time()
-model=WhisperModel(MODEL,device="cuda",compute_type="float16")
+model=WhisperModel(MODEL,device="cuda",compute_type="float16",num_workers=GPU_THREADS)
 load_time = time.time() - start_load
-print(f"[NV] Model loaded successfully in {load_time:.1f}s at {time.strftime('%H:%M:%S')}, entering main loop", flush=True)
+print(f"{LOG_PREFIX} Model loaded successfully in {load_time:.1f}s at {time.strftime('%H:%M:%S')}, entering main loop", flush=True)
 
 while True:
     task = claim()
@@ -882,10 +886,10 @@ while True:
     try:
         # Check success marker first (faster than checking txt existence)
         if success_marker.exists() and not FORCE:
-            print(f"[NV][SKIP]{media} (already transcribed)", flush=True)
+            print(f"{LOG_PREFIX}[SKIP]{media} (already transcribed)", flush=True)
             continue
         if out_txt.exists() and not FORCE:
-            print(f"[NV][SKIP]{media} (txt exists)", flush=True)
+            print(f"{LOG_PREFIX}[SKIP]{media} (txt exists)", flush=True)
             continue  # Immediately try next task
         else:
             try:
@@ -894,20 +898,20 @@ while True:
             except FileExistsError:
                 got_lock=False
             if not got_lock:
-                print(f"[NV][LOCK]{media} (held elsewhere) — skipping", flush=True)
+                print(f"{LOG_PREFIX}[LOCK]{media} (held elsewhere) — skipping", flush=True)
                 continue  # Immediately try next task without sleeping
             else:
-                print(f"[NV][RUN ]{media}", flush=True)
+                print(f"{LOG_PREFIX}[RUN ]{media}", flush=True)
 
                 total = probe_duration_seconds(media) or 0.0
-                print(f"[NV][INFO]{media} duration={total:.1f}s", flush=True)
+                print(f"{LOG_PREFIX}[INFO]{media} duration={total:.1f}s", flush=True)
 
                 next_mark = [0.10]  # 10%, 20%, … 90%
                 last_end = 0.0
 
                 # Fast first pass: beam_size=1 (greedy decoding)
                 vad_status = "enabled" if VAD_FILTER else "DISABLED"
-                print(f"[NV][PASS1] fast transcribe (float16, greedy, VAD {vad_status}) starting at {time.strftime('%H:%M:%S')}", flush=True)
+                print(f"{LOG_PREFIX}[PASS1] fast transcribe (float16, greedy, VAD {vad_status}) starting at {time.strftime('%H:%M:%S')}", flush=True)
                 pass1_start = time.time()
                 kwargs_fast = dict(
                     language=LANG,
@@ -927,15 +931,15 @@ while True:
                     # Print segment text in real-time (similar to AMD verbose mode)
                     text = getattr(s, 'text', '').strip()
                     if text:
-                        print(f"[NV][TEXT] {text}", flush=True)
+                        print(f"{LOG_PREFIX}[TEXT] {text}", flush=True)
                     last_end = max(last_end, float(getattr(s, "end", 0.0)))
-                    emit_progress("[NV][PROG]", last_end, total, next_mark)
+                    emit_progress("{LOG_PREFIX}[PROG]", last_end, total, next_mark)
 
                 if total > 0:
-                    print(f"[NV][100%] {total:.1f}s / {total:.1f}s", flush=True)
+                    print(f"{LOG_PREFIX}[100%] {total:.1f}s / {total:.1f}s", flush=True)
 
                 pass1_elapsed = time.time() - pass1_start
-                print(f"[NV][PASS1] completed in {pass1_elapsed:.1f}s at {time.strftime('%H:%M:%S')}", flush=True)
+                print(f"{LOG_PREFIX}[PASS1] completed in {pass1_elapsed:.1f}s at {time.strftime('%H:%M:%S')}", flush=True)
 
                 # Check confidence scores and identify low-confidence segments
                 CONFIDENCE_THRESHOLD = float(os.environ.get("NV_CONFIDENCE_THRESHOLD", "-0.7"))
@@ -949,14 +953,14 @@ while True:
                 # Handle low-confidence segments based on INLINE_RETRY setting
                 if low_conf_indices and INLINE_RETRY == 0:
                     # Deferred retry: write manifest for batch post-processing
-                    print(f"[NV][DEFER] found {len(low_conf_indices)}/{len(segs)} low-confidence segments (avg_logprob < {CONFIDENCE_THRESHOLD})", flush=True)
+                    print(f"{LOG_PREFIX}[DEFER] found {len(low_conf_indices)}/{len(segs)} low-confidence segments (avg_logprob < {CONFIDENCE_THRESHOLD})", flush=True)
                     write_retry_manifest(base, media, segs, low_conf_indices, CONFIDENCE_THRESHOLD)
                     retried_set = set()  # No inline retries performed
                 elif low_conf_indices and INLINE_RETRY == 1:
                     # Inline retry (old behavior) for low-confidence segments
                     retry_start_time = time.time()
-                    print(f"[NV][RETRY] found {len(low_conf_indices)}/{len(segs)} low-confidence segments (avg_logprob < {CONFIDENCE_THRESHOLD})", flush=True)
-                    print(f"[NV][RETRY] re-transcribing with quality settings (beam_size=5) at {time.strftime('%H:%M:%S')}", flush=True)
+                    print(f"{LOG_PREFIX}[RETRY] found {len(low_conf_indices)}/{len(segs)} low-confidence segments (avg_logprob < {CONFIDENCE_THRESHOLD})", flush=True)
+                    print(f"{LOG_PREFIX}[RETRY] re-transcribing with quality settings (beam_size=5) at {time.strftime('%H:%M:%S')}", flush=True)
 
                     # Extract and retry each low-confidence segment (reusing same model)
                     for idx in low_conf_indices:
@@ -1028,10 +1032,10 @@ while True:
                             # Clean up clip
                             os.unlink(clip_path)
                         except Exception as e:
-                            print(f"[NV][RETRY] segment {idx} failed: {e}", flush=True)
+                            print(f"{LOG_PREFIX}[RETRY] segment {idx} failed: {e}", flush=True)
 
                     retry_elapsed = time.time() - retry_start_time
-                    print(f"[NV][RETRY] completed retry for {len(low_conf_indices)} segments in {retry_elapsed:.1f}s at {time.strftime('%H:%M:%S')}", flush=True)
+                    print(f"{LOG_PREFIX}[RETRY] completed retry for {len(low_conf_indices)} segments in {retry_elapsed:.1f}s at {time.strftime('%H:%M:%S')}", flush=True)
                     # Track retried segments for metadata
                     retried_set = set(low_conf_indices)
                 else:
@@ -1053,7 +1057,7 @@ while True:
                         if old_words.exists():
                             old_words.rename(new_words)
                     except Exception as _e:
-                        print(f"[NV][WARN] failed to retag words.tsv with model: {_e}", flush=True)
+                        print(f"{LOG_PREFIX}[WARN] failed to retag words.tsv with model: {_e}", flush=True)
 
                 # Captions + tslog
                 cap=None
@@ -1063,9 +1067,9 @@ while True:
 
                 # Mark successful completion
                 success_marker.touch()
-                print(f"[NV][DONE]{media}", flush=True)
+                print(f"{LOG_PREFIX}[DONE]{media}", flush=True)
     except Exception as e:
-        print(f"[NV][FAIL]{media}: {e}", flush=True)
+        print(f"{LOG_PREFIX}[FAIL]{media}: {e}", flush=True)
         # Clean up partial success marker if exists
         try: success_marker.unlink()
         except: pass
@@ -1882,8 +1886,8 @@ def claim():
     return None
 
 print(f"[CPU] CPU threads set to {CPU_THREADS_VAL} (CPU worker needs many threads)", flush=True)
-print(f"[CPU] loading faster-whisper model={MODEL} device=cpu compute={COMPUTE} threads={CPU_THREADS}", flush=True)
-model=WhisperModel(MODEL, device="cpu", compute_type=COMPUTE, cpu_threads=CPU_THREADS)
+print(f"[CPU] loading faster-whisper model={MODEL} device=cpu compute={COMPUTE} threads={CPU_THREADS} num_workers={CPU_THREADS}", flush=True)
+model=WhisperModel(MODEL, device="cpu", compute_type=COMPUTE, cpu_threads=CPU_THREADS, num_workers=CPU_THREADS)
 
 while True:
     task = claim()
@@ -2114,7 +2118,7 @@ if (( ${#USE_GPUS[@]} > 0 )); then
     gpu_log="${NV_LOGS[$i]}"
     gpu_name="${GPU_NAMES[$gpu_idx]:-GPU$gpu_idx}"
     log "Starting NVIDIA worker #$i on GPU $gpu_idx ($gpu_name) (log: $gpu_log)"
-    setsid bash -c "env CUDA_VISIBLE_DEVICES=\"$gpu_idx\" MODEL=\"$MODEL\" LANG=\"$LANGUAGE\" FORCE=\"$FORCE\" OUTFMT=\"$OUTFMT\" NV_COMPUTE=\"$NV_COMPUTE\" NV_VAD_FILTER=\"$NV_VAD_FILTER\" MIN_TS_INTERVAL=\"$MIN_TS_INTERVAL\" QUEUE_DIR=\"$QUEUE_DIR\" HOTWORDS_FILE=\"$HOTWORDS_FILE\" PROMPT_PREFIX=\"$PROMPT_PREFIX\" CORRECTIONS_TSV=\"$CORRECTIONS_TSV\" ANTIHALLUC=\"$ANTIHALLUC\" LOG_TS_FORMAT=\"$LOG_TS_FORMAT\" OMP_NUM_THREADS=\"$GPU_THREADS\" MKL_NUM_THREADS=\"$GPU_THREADS\" OPENBLAS_NUM_THREADS=\"$GPU_THREADS\" NUMEXPR_NUM_THREADS=\"$GPU_THREADS\" RAYON_NUM_THREADS=\"$GPU_THREADS\" stdbuf -oL -eL \"$NV_VENV/bin/python\" \"$NV_RUNNER\" 2>&1 | ts_prefix_awk >\"$gpu_log\"" & pids+=($!); PGIDS+=(-$!)
+    setsid bash -c "env GPU_IDX=\"$gpu_idx\" CUDA_VISIBLE_DEVICES=\"$gpu_idx\" MODEL=\"$MODEL\" LANG=\"$LANGUAGE\" FORCE=\"$FORCE\" OUTFMT=\"$OUTFMT\" NV_COMPUTE=\"$NV_COMPUTE\" NV_VAD_FILTER=\"$NV_VAD_FILTER\" MIN_TS_INTERVAL=\"$MIN_TS_INTERVAL\" QUEUE_DIR=\"$QUEUE_DIR\" HOTWORDS_FILE=\"$HOTWORDS_FILE\" PROMPT_PREFIX=\"$PROMPT_PREFIX\" CORRECTIONS_TSV=\"$CORRECTIONS_TSV\" ANTIHALLUC=\"$ANTIHALLUC\" LOG_TS_FORMAT=\"$LOG_TS_FORMAT\" OMP_NUM_THREADS=\"$GPU_THREADS\" MKL_NUM_THREADS=\"$GPU_THREADS\" OPENBLAS_NUM_THREADS=\"$GPU_THREADS\" NUMEXPR_NUM_THREADS=\"$GPU_THREADS\" RAYON_NUM_THREADS=\"$GPU_THREADS\" stdbuf -oL -eL \"$NV_VENV/bin/python\" \"$NV_RUNNER\" 2>&1 | ts_prefix_awk >\"$gpu_log\"" & pids+=($!); PGIDS+=(-$!)
   done
 else
   warn "No NVIDIA GPUs available; skipping NV workers."
