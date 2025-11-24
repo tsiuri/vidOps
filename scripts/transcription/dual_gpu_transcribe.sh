@@ -24,6 +24,8 @@ EXTENSIONS=("mp4" "mkv" "mov" "avi" "mp3" "wav" "m4a" "opus")
 : "${AMD_LOGPROB_THRESHOLD:=-1.5}"        # Skip low-confidence segments; lowered for noisy conditions
 : "${AMD_FP16:=1}"                        # 1=FP16 precision (faster); 0=FP32 (slower, more accurate)
 
+: "${ENABLE_AMD:=0}"                      # 1=enable legacy AMD/ROCm worker (deprecated)
+
 : "${SHIM_CUDA12:=1}"
 
 : "${ANTIHALLUC:=1}"                     # 1=enable thresholds; 0=disable (compat)
@@ -315,6 +317,8 @@ GPU / CPU:
   NV_VAD_FILTER=1            1=enable VAD pre-scan (2min delay); 0=disable (instant)
   NV_VENV=$HOME/transcribe-nv
 
+  # Legacy AMD/ROCm worker (deprecated, opt-in)
+  ENABLE_AMD=0               1 to enable legacy AMD/ROCm worker
   AMD_VENV=$HOME/transcribe-amd
   AMD_NO_SPEECH_THRESHOLD=0.6       0.0-1.0; higher=skip more silence; 1.0=disable VAD
   AMD_COMPRESSION_RATIO_THRESHOLD=2.4  Hallucination detection; set high to disable
@@ -485,13 +489,38 @@ except ImportError:
 
 from faster_whisper import WhisperModel
 
-# Helper to get output path in generated/ directory
+raw_model_name = os.environ.get("MODEL", "medium")
+model_tag_override = os.environ.get("MODEL_TAG")
+if model_tag_override:
+    model_tag = model_tag_override
+else:
+    n = raw_model_name.lower()
+    if "turbo" in n:
+        model_tag = "turbo"
+    elif "medium" in n:
+        model_tag = "medium"
+    elif "small" in n:
+        model_tag = "small"
+    elif "base" in n:
+        model_tag = "base"
+    elif "tiny" in n:
+        model_tag = "tiny"
+    elif "large" in n:
+        model_tag = "large"
+    else:
+        model_tag = raw_model_name
+
+MODEL_TAG_SAFE = "".join(
+    (c if (c.isalnum() or c in ("-", "_", ".")) else "_") for c in model_tag
+).strip(".")
+
+# Helper to get output path in generated/ directory (base without model tag)
 def get_output_base(media_path: Path) -> Path:
     """Convert media path to output base in generated/ directory"""
     project_root = Path(os.environ.get("PROJECT_ROOT", "."))
     output_dir = project_root / "generated"
     output_dir.mkdir(exist_ok=True)
-    # Keep just the filename, drop the pull/ prefix
+    # Keep just the filename stem, drop pull/ prefix
     return output_dir / media_path.stem
 
 def probe_duration_seconds(path: Path):
@@ -799,10 +828,17 @@ while True:
     # Output base for generated files (in generated/)
     base = get_output_base(media)
 
-    out_txt = base.with_suffix(".txt")
+    # Apply model tag just before output suffix (e.g., turbo.vtt, medium.words.tsv)
+    tag = MODEL_TAG_SAFE
+    txt_suffix = f".{tag}.txt" if tag else ".txt"
+    vtt_suffix = f".{tag}.vtt" if tag else ".vtt"
+    srt_suffix = f".{tag}.srt" if tag else ".srt"
+    tslog_suffix = f".{tag}.tslog.txt" if tag else ".tslog.txt"
+
+    out_txt = base.with_suffix(txt_suffix)
     do_vtt = OUTFMT in ("vtt","both"); do_srt = OUTFMT in ("srt","both")
-    out_vtt = base.with_suffix(".vtt") if do_vtt else None
-    out_srt = base.with_suffix(".srt") if do_srt else None
+    out_vtt = base.with_suffix(vtt_suffix) if do_vtt else None
+    out_srt = base.with_suffix(srt_suffix) if do_srt else None
     lock = base.with_suffix(".transcribing.lock")
     success_marker = base.with_suffix(".transcribed")
 
@@ -971,14 +1007,22 @@ while True:
                         t=s.text.strip()
                         if t: f.write(apply_corrections(t, CORR) + "\n")
 
-                # NEW: write words.tsv with confidence scores
+                # NEW: write words.tsv with confidence scores, then retag filename with model
                 write_words_tsv_faster(base, segs, retried_set)
+                if tag:
+                    try:
+                        old_words = base.with_suffix(".words.tsv")
+                        new_words = base.with_suffix(f".{tag}.words.tsv")
+                        if old_words.exists():
+                            old_words.rename(new_words)
+                    except Exception as _e:
+                        print(f"[NV][WARN] failed to retag words.tsv with model: {_e}", flush=True)
 
                 # Captions + tslog
                 cap=None
                 if do_vtt: write_vtt(segs,out_vtt,retried_set); cap=out_vtt
                 if do_srt: write_srt(segs,out_srt); cap=cap or out_srt
-                if cap: make_tslog(cap, base.with_suffix(".tslog.txt"), MIN_TS)
+                if cap: make_tslog(cap, base.with_suffix(tslog_suffix), MIN_TS)
 
                 # Mark successful completion
                 success_marker.touch()
@@ -1927,7 +1971,11 @@ add_cuda12_shims || true
 if (( SETUP_VENVS )); then
   log "Setting up virtual environments..."
   ensure_nv_venv
-  ensure_amd_venv
+  if (( ENABLE_AMD )); then
+    ensure_amd_venv
+  else
+    log "Skipping AMD venv setup (ENABLE_AMD=0; legacy/ROCm path disabled)"
+  fi
 fi
 
 # Archive existing logs before starting
@@ -1970,7 +2018,10 @@ if [[ -n "${VALIDATOR_PID:-}" ]]; then
 fi
 
 NV_OK=0; command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1 && NV_OK=1
-AMD_OK=1
+AMD_OK=0
+if (( ENABLE_AMD )); then
+  AMD_OK=1
+fi
 
 # ----- NVIDIA worker -----
 if (( NV_OK )); then

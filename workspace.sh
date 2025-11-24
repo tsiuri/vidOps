@@ -427,7 +427,7 @@ USAGE
   ./workspace.sh transcribe [options]
 
 DESCRIPTION
-  Transcribes all media files in pull/ using NVIDIA + AMD GPUs in parallel
+  Transcribes all media files in pull/ using NVIDIA GPU in parallel (with optional legacy AMD/CPU workers)
   Outputs transcriptions to generated/ directory
 
 COMMON OPTIONS
@@ -464,6 +464,9 @@ EXAMPLES
 
   # Enable CPU worker alongside GPUs
   ENABLE_CPU=1 ./workspace.sh transcribe
+
+  # Enable legacy AMD/ROCm worker (deprecated, disabled by default)
+  ENABLE_AMD=1 ./workspace.sh transcribe
 
 INPUT
   Searches for media in: pull/ (or current dir if pull/ doesn't exist)
