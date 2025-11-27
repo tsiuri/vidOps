@@ -12,7 +12,7 @@ _workspace_sh_completion() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Main commands
-    commands="download clips voice transcribe stitch dl-subs dates gpu extra-utils info help"
+    commands="download clips voice diarize transcribe stitch dl-subs dates gpu extra-utils info help"
 
     # If we're completing the first argument
     if [[ $COMP_CWORD -eq 1 ]]; then
@@ -34,6 +34,15 @@ _workspace_sh_completion() {
         voice|filter)
             if [[ $COMP_CWORD -eq 2 ]]; then
                 COMPREPLY=( $(compgen -W "filter filter-simple filter-parallel filter-chunked extract" -- "$cur") )
+            fi
+            ;;
+        diarize)
+            if [[ $COMP_CWORD -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "--ytid --ytids-file --ytids-from-dir --device --workers --build-reference --chunk-seconds --overlap-seconds --similarity-threshold --gap-threshold --verbose" -- "$cur") )
+            elif [[ $COMP_CWORD -eq 3 && "${COMP_WORDS[2]}" == "--ytids-file" ]]; then
+                COMPREPLY=( $(compgen -f -- "$cur") )
+            elif [[ $COMP_CWORD -eq 3 && "${COMP_WORDS[2]}" == "--ytids-from-dir" ]]; then
+                COMPREPLY=( $(compgen -d -- "$cur") )
             fi
             ;;
         transcribe|trans)

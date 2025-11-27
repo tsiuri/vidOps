@@ -50,6 +50,7 @@ This allows you to:
 - Per-word timestamps and confidence scores
 - VTT, SRT, and TSV output formats
 - Low-confidence segment retry system
+- Default chunked mode to handle very long files (1h chunks with 5s overlap); disable with `--no-fragment`
 
 ### Search & Analysis
 - Full-text search across all transcripts
@@ -114,6 +115,17 @@ python3 ~/tools/vidops/scripts/utilities/map_ids_to_files.py
 # Or via the workspace wrapper
 ./workspace.sh extra-utils map_ids_to_files.py
 ```
+
+### Reference-Guided Diarization
+```bash
+~/tools/vidops/workspace.sh diarize --ytids-file ytids.txt --workers 3 --device cuda --verbose
+```
+Uses Resemblyzer to assign speakers; will prompt to build reference clips under `generated/diary_reference/<ytid>/` if none are present.
+You can also derive IDs from a folder of media files:
+```bash
+~/tools/vidops/workspace.sh diarize --ytids-from-dir pull/ --workers 3 --device cuda --verbose
+```
+Outputs land under `generated/diarization_resemblyzer/<ytid>/`.
 
 ### Video Stitching
 ```bash

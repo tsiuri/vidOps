@@ -67,6 +67,7 @@ COMMANDS
   dl-subs <action>            Download auto-generated subtitles/captions
   extra-utils <tool|help>     Run extra utilities (see EXTRA_UTILS.md)
   voice <action>              Voice filtering operations
+  diarize [options]           Reference-guided diarization (Resemblyzer)
   transcribe [options]        Multi-GPU transcription with Whisper (auto-detects NVIDIA GPUs)
   analyze <transcripts...>    AI-powered transcript analysis
   convert-captions            Convert VTT captions to words.yt.tsv
@@ -86,6 +87,9 @@ EXAMPLES
 
   # Filter by Hasan's voice
   ./workspace.sh voice filter --clips-dir media/clips/raw
+
+  # Reference-guided diarization (Resemblyzer)
+  ./workspace.sh diarize --ytids-file ytids.txt --workers 3 --device cuda --verbose
 
   # Stitch videos (batch method)
   ./workspace.sh stitch batch media/clips/input/ media/final/output.mp4
@@ -297,6 +301,46 @@ OUTPUT
   Extracted list: results/voice_filtered/hasan_clips.txt
 EOF
             ;;
+        diarize)
+            cat <<'EOF'
+DIARIZE - Reference-guided diarization (Resemblyzer)
+
+USAGE
+  ./workspace.sh diarize --ytid <id> [options]
+  ./workspace.sh diarize --ytids-file ytids.txt [options]
+
+DESCRIPTION
+  Wrapper for scripts/diarization/run_resemblyzer_diarization.py.
+  Requires audio in pull/ (or --audio), words TSV in generated/ (or --words),
+  and a reference under generated/diary_reference/<ytid>/reference.json.
+  If missing, you will be prompted to build reference clips interactively.
+  Multiple speakers are supported in a single pass when reference.json has
+  multiple speaker entries; the interactive helper gathers one named speaker
+  at a time, so add more clips/speakers to the reference if you want
+  multi-speaker labeling.
+
+OPTIONS
+  --ytid <id>                   Single YouTube ID to process
+  --ytids-file <file>           File with one ytid per line (batch)
+  --ytids-from-dir <dir>        Derive ytids from media filenames in a directory
+  --device <auto|cuda|cpu>      Encoder device [default: auto]
+  --workers <n>                 Parallel workers for batch runs [default: 1]
+  --build-reference             Force building reference clips before run
+  --chunk-seconds <sec>         Chunk length [default: 6.0]
+  --overlap-seconds <sec>       Chunk overlap [default: 1.0]
+  --similarity-threshold <f>    Cosine similarity threshold [default: 0.6]
+  --gap-threshold <sec>         Slack matching words to segments [default: 0.15]
+  --verbose                     Verbose logging
+
+EXAMPLE
+  ./workspace.sh diarize --ytids-file ytids.txt --workers 3 --device cuda --verbose
+
+OUTPUT
+  generated/diarization_resemblyzer/<ytid>/diarized_timestamps.tsv
+  generated/diarization_resemblyzer/<ytid>/speaker_words.tsv
+  generated/diarization_resemblyzer/<ytid>/diarization.json
+EOF
+            ;;
         dbupdate)
             cat <<'EOF'
 DBUPDATE - Full Postgres ingest/update pipeline
@@ -430,6 +474,7 @@ DESCRIPTION
   Transcribes all media files in pull/ using NVIDIA GPUs in parallel (with optional CPU workers)
   Automatically detects and uses all available NVIDIA GPUs
   Outputs transcriptions to generated/ directory
+  NEW: Fragmentation is enabled by default to split long files into chunks (sequential, single GPU, one model load).
 
 COMMON OPTIONS
   --model <size>              Whisper model (tiny|base|small|medium|large) [default: medium]
@@ -440,10 +485,17 @@ COMMON OPTIONS
   --batch-retry               Process retry manifests (re-transcribe low-confidence segments)
   --follow / --no-follow      Live-tail logs [default: --follow]
   --setup-venvs               Create/update virtual environments (first-time setup)
+  --no-fragment               Disable chunked mode and use legacy whole-file path
+  --chunk-len <seconds>       Chunk length (default: CHUNK_LEN=3600)
+  --chunk-overlap <seconds>   Overlap between chunks (default: CHUNK_OVERLAP=5)
+  --tmp-dir <path>            Temp dir for chunk media (default: PROJECT_ROOT/tmp/transcribe_chunks)
 
 MULTI-GPU CONTROL
   NUM_GPU_WORKERS=auto        auto=use all detected GPUs, or specify number (1, 2, 3, etc.)
   GPU_DEVICES=0,1             Comma-separated GPU indices to use (empty=use all detected)
+  FRAGMENT=0                  Disable fragmentation globally (defaults to on)
+  FRAG_TMPDIR=/path           Override temp chunk root
+  KEEP_FRAGMENTS=1            Keep extracted chunk media (debugging)
 
 EXAMPLES
   # First-time setup (creates virtual environments)
@@ -832,6 +884,10 @@ print(f\"Extracted to: $output_file\")
     esac
 }
 
+cmd_diarize() {
+    python3 "$TOOL_ROOT/scripts/diarization/run_resemblyzer_diarization.py" "$@"
+}
+
 cmd_transcribe() {
     # Helper: run hallucination detection to generate dupe_hallu retry manifests
     run_dupe_hallu_detection() {
@@ -847,6 +903,26 @@ cmd_transcribe() {
         python3 "$TOOL_ROOT/scripts/transcription/detect_dupe_hallu.py" "${manifests[@]}" || true
     }
 
+    local use_fragment=1
+    if [[ "${FRAGMENT:-1}" == "0" ]]; then
+        use_fragment=0
+    fi
+    local _args=()
+    for a in "$@"; do
+        case "$a" in
+            --no-fragment|--no-fragments|--no-chunk|--no-fragmented)
+                use_fragment=0
+                ;;
+            --fragment|--fragmented|--chunked)
+                use_fragment=1
+                ;;
+            *)
+                _args+=("$a")
+                ;;
+        esac
+    done
+    set -- "${_args[@]}"
+
     # Check if --batch-retry is requested
     for arg in "$@"; do
         if [[ "$arg" == "--batch-retry" ]]; then
@@ -855,7 +931,11 @@ cmd_transcribe() {
         fi
     done
     # Normal transcription
-    "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
+    if (( use_fragment )); then
+        python3 "$TOOL_ROOT/scripts/transcription/fragmented_transcribe.py" "$@"
+    else
+        "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
+    fi
     # Post-processing: generate dupe_hallu retry manifests (if any seed manifests exist)
     run_dupe_hallu_detection
 }
@@ -1031,6 +1111,9 @@ main() {
             ;;
         voice|filter)
             cmd_voice "$@"
+            ;;
+        diarize)
+            cmd_diarize "$@"
             ;;
         transcribe|trans)
             cmd_transcribe "$@"
