@@ -45,20 +45,8 @@ from transcribe_common import (
     make_tslog,
     claim_task,
 )
-from fragment_runner import run_fragmented_transcription
 
-def _build_log_prefix() -> str:
-    env_label = os.environ.get("WORKER_LABEL")
-    if env_label:
-        lab = env_label.strip("[]")
-        return f"[{lab}]"
-    num = os.environ.get("WORKER_NUM")
-    if num and num.isdigit():
-        return f"[CP{int(num):02d}]"
-    return "[CPU]"
-
-
-LOG_PREFIX = _build_log_prefix()
+LOG_PREFIX = "[CPU]"
 
 # Set CPU thread usage for CPU worker (needs many threads for inference)
 CPU_THREADS_VAL = int(os.environ.get("CPU_THREADS", "8"))
@@ -203,39 +191,58 @@ def main():
 
             # Delegation: use fragmented_transcribe.py for very long files
             FRAGMENTED_THRESHOLD = float(os.environ.get("FRAGMENTED_THRESHOLD", "3600"))  # 1 hour default
-            force_fragment = os.environ.get("FRAGMENT", "0") == "1" or os.environ.get("FRAGMENT_FORCE", "0") == "1"
-            if force_fragment or total > FRAGMENTED_THRESHOLD:
+            if total > FRAGMENTED_THRESHOLD:
                 print(
                     f"{LOG_PREFIX}[DELEGATE] File duration {total/3600:.2f}h exceeds threshold "
-                    f"{FRAGMENTED_THRESHOLD/3600:.2f}h, running in-process fragmented mode",
+                    f"{FRAGMENTED_THRESHOLD/3600:.2f}h, delegating to fragmented_transcribe.py",
                     flush=True
                 )
 
+                # Call fragmented_transcribe.py to handle processing
+                fragmented_script = SCRIPT_DIR / "fragmented_transcribe.py"
+                frag_cmd = [
+                    sys.executable,  # Use same python interpreter
+                    str(fragmented_script),
+                    "--single-file", str(media),
+                    "--skip-lock",  # Worker already holds the lock
+                    "--model", MODEL,
+                    "--language", LANG if LANG else "",
+                    "--outfmt", OUTFMT,
+                    # CPU worker doesn't use model tags
+                ]
+                if FORCE:
+                    frag_cmd.append("--force")
+
+                # Set FORCE_CPU for fragmented script
+                env = os.environ.copy()
+                env["FORCE_CPU"] = "1"
+
                 try:
-                    tmp_root = Path(os.environ.get("FRAG_TMPDIR", "")) or Path(os.environ.get("PROJECT_ROOT", ".")) / "tmp" / "transcribe_chunks"
-                    inline_retry_env = os.environ.get("INLINE_RETRY", "0")
-                    inline_retry_val = int(inline_retry_env) if inline_retry_env.isdigit() else 0
-                    run_fragmented_transcription(
-                        model=model,
-                        media=media,
-                        model_tag=None,
-                        lang=LANG,
-                        force=FORCE,
-                        outfmt=OUTFMT,
-                        chunk_len=float(os.environ.get("CHUNK_LEN", "3600")),
-                        overlap=float(os.environ.get("CHUNK_OVERLAP", "5")),
-                        tmp_root=tmp_root,
-                        initial_prompt=INITIAL_PROMPT,
-                        corrections=CORR,
-                        log_prefix=f"{LOG_PREFIX}[FRAG]",
-                        confidence_threshold=float(os.environ.get("NV_CONFIDENCE_THRESHOLD", "0.2")),
-                        inline_retry=inline_retry_val,
-                        min_ts_interval=int(os.environ.get("MIN_TS_INTERVAL", "10")),
-                        tag=None,
+                    # Run fragmented transcription in subprocess
+                    result = subprocess.run(
+                        frag_cmd,
+                        check=True,
+                        capture_output=False,  # Let output stream directly
+                        text=True,
+                        env=env
                     )
-                except Exception as e:
+                    print(f"{LOG_PREFIX}[DELEGATE] Fragmented transcription completed successfully", flush=True)
+
+                    # Verify outputs were created
+                    if not success_marker.exists():
+                        print(f"{LOG_PREFIX}[WARN] Fragmented transcription didn't create success marker", flush=True)
+                        raise Exception("Fragmented transcription failed to create success marker")
+
+                    # Success! Skip to cleanup
+                    continue
+
+                except subprocess.CalledProcessError as e:
                     print(f"{LOG_PREFIX}[FAIL] Fragmented transcription failed: {e}", flush=True)
-                continue
+                    # Fall through to cleanup/continue
+                    continue
+                except Exception as e:
+                    print(f"{LOG_PREFIX}[FAIL] Error delegating to fragmented_transcribe.py: {e}", flush=True)
+                    continue
 
             # Standard processing for files under threshold
             # Split long files into chunks to reduce memory usage

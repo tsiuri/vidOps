@@ -27,7 +27,6 @@ import sys
 import tempfile
 from dataclasses import dataclass
 import concurrent.futures
-import shutil
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -104,173 +103,6 @@ def resolve_db_path(path_str: str, prefix: Optional[str]) -> Path:
     return Path(path_str)
 
 
-def fetch_transcript_paths(ytid: str, db_params: Dict[str, object], mount_prefix: Optional[str] = None) -> List[Path]:
-    psycopg2 = _require_psycopg2()
-    conn = psycopg2.connect(**db_params)
-    out: List[Path] = []
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT path
-                FROM transcripts
-                WHERE ytid=%s AND path IS NOT NULL
-                  AND lower(kind) IN ('words_whisper','whisper','words_ytt','yt','ytt','words')
-                ORDER BY CASE WHEN lower(kind) IN ('words_whisper','whisper') THEN 0
-                              WHEN lower(kind) IN ('words_ytt','yt','ytt') THEN 1
-                              ELSE 2 END
-                """,
-                (ytid,),
-            )
-            for (path,) in cur.fetchall():
-                if not path:
-                    continue
-                path_str = str(path)
-                if mount_prefix is not None:
-                    out.append(resolve_db_path(path_str, mount_prefix))
-                out.append(Path(path_str))
-    finally:
-        conn.close()
-    # De-duplicate while preserving order
-    seen: set[Path] = set()
-    uniq = []
-    for p in out:
-        if p in seen:
-            continue
-        seen.add(p)
-        uniq.append(p)
-    return uniq
-
-
-def interactive_clip_selector(clips: List[Tuple[Path, str, float, float]], preselected: Optional[List[Path]] = None):
-    """
-    Minimal TUI to audition and select clips.
-    Controls:
-      Up/Down or j/k: navigate
-      Space/Enter: play current clip (from start)
-      a: toggle selection
-      s: stop playback
-      q: finish
-    Playback stops automatically when you leave a clip.
-    Returns a set of selected Paths or None on failure.
-    """
-    try:
-        import curses
-    except Exception:
-        return None
-
-    selected = set(preselected or [])
-    idx = 0
-    proc: Optional[subprocess.Popen] = None
-
-    def stop_playback():
-        nonlocal proc
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=0.5)
-            except Exception:
-                proc.kill()
-        proc = None
-
-    def play_clip(p: Path):
-        nonlocal proc
-        stop_playback()
-        cmd = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", str(p)]
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            proc = None
-
-    def draw(stdscr):
-        nonlocal idx
-        curses.curs_set(0)
-        stdscr.nodelay(False)
-        stdscr.keypad(True)
-        while True:
-            stdscr.erase()
-            h, w = stdscr.getmaxyx()
-            header = "Arrows/jk: move | Space/Enter: play | a: toggle | s: stop | q: done"
-            stdscr.addnstr(0, 0, header, w - 1)
-            for i, (clip_path, ytid, s, e) in enumerate(clips):
-                prefix = ">" if i == idx else " "
-                mark = "[x]" if clip_path in selected else "[ ]"
-                line = f"{prefix} {mark} {i+1}. {clip_path.name} ({s:.1f}-{e:.1f}s) {clip_path}"
-                if i + 1 < h:
-                    stdscr.addnstr(i + 1, 0, line, w - 1)
-            stdscr.refresh()
-            ch = stdscr.getch()
-            if ch in (curses.KEY_UP, ord("k")):
-                stop_playback()
-                idx = (idx - 1) % len(clips)
-            elif ch in (curses.KEY_DOWN, ord("j")):
-                stop_playback()
-                idx = (idx + 1) % len(clips)
-            elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
-                play_clip(clips[idx][0])
-            elif ch == ord("s"):
-                stop_playback()
-            elif ch == ord("a"):
-                clip_path = clips[idx][0]
-                if clip_path in selected:
-                    selected.remove(clip_path)
-                else:
-                    selected.add(clip_path)
-            elif ch == ord("q"):
-                stop_playback()
-                break
-        return selected
-
-    try:
-        curses.wrapper(draw)
-    except KeyboardInterrupt:
-        stop_playback()
-        return set(selected)
-    except Exception:
-        try:
-            stop_playback()
-        except Exception:
-            pass
-        return None
-    stop_playback()
-    return selected
-
-
-def choose_clips_and_speaker(generated: List[Tuple[Path, str, float, float]]):
-    """Unified flow: pick clips (interactive or manual), then prompt for speaker name."""
-    chosen: List[Path] = []
-    speaker_name = "speaker"
-    if sys.stdin.isatty():
-        try:
-            use_ui = input("Use interactive clip selector? [Y/n]: ").strip().lower()
-        except EOFError:
-            use_ui = "y"
-        if use_ui in ("", "y", "yes"):
-            ui_selected = interactive_clip_selector(generated)
-            if ui_selected:
-                chosen = [p for p, _y, _s, _e in generated if p in ui_selected]
-    if not chosen:
-        try:
-            chosen_str = input("Enter clip numbers (comma or space separated) to keep (blank for none): ").strip()
-        except EOFError:
-            chosen_str = ""
-        numbers = {c.strip() for c in re.split(r"[\\s,]+", chosen_str) if c.strip()} if chosen_str else set()
-        chosen = [p for p, _y, _s, _e in generated if p.stem.split("_")[0] in numbers or p.stem in numbers]
-    try:
-        speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
-    except EOFError:
-        speaker_name = "speaker"
-    return speaker_name, chosen
-
-
-def project_root_from_ref_dir(ref_dir: Path, fallback: Path) -> Path:
-    # Expected structure: <project>/generated/diary_reference/<ytid>
-    try:
-        return ref_dir.parents[2]
-    except Exception:
-        return fallback
-
-
 def build_db_params(dbname: str, host: str, port: int, user: Optional[str], password: Optional[str]):
     params = {"dbname": dbname, "host": host, "port": port}
     if user:
@@ -323,14 +155,10 @@ def fetch_words_from_db(ytid: str, db_params: Dict[str, object], preferred_sourc
                         continue
                     seen_paths.add(candidate)
                     if not candidate.exists():
-                        if verbose:
-                            print(f"[debug] USING DB WORDS; words path missing: {candidate}")
                         continue
                     try:
                         words = read_words(candidate)
                     except Exception:
-                        if verbose:
-                            print(f"[debug] USING DB WORDS; failed to read words at {candidate}")
                         continue
                     if words:
                         chosen_source = f"path:{candidate}"
@@ -552,7 +380,7 @@ def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
-def diarize_chunks(audio_path: Path, encoder: VoiceEncoder, speakers: Dict[str, np.ndarray], chunk_sec: float, overlap_sec: float, device: str, threshold: float, verbose: bool = False, ytid: str | None = None, worker_id: Optional[int] = None):
+def diarize_chunks(audio_path: Path, encoder: VoiceEncoder, speakers: Dict[str, np.ndarray], chunk_sec: float, overlap_sec: float, device: str, threshold: float, verbose: bool = False, ytid: str | None = None):
     segments = []
     for start, end, tmp_path in chunk_audio(audio_path, chunk_sec, overlap_sec):
         try:
@@ -578,8 +406,7 @@ def diarize_chunks(audio_path: Path, encoder: VoiceEncoder, speakers: Dict[str, 
             segments.append((best_spk, start, end, best_sim))
             if verbose:
                 tag = f"{ytid} " if ytid else ""
-                wid = f"[w{worker_id}] " if worker_id is not None else ""
-                print(f"[chunk] {wid}{tag}{start:.2f}-{end:.2f}s -> {best_spk} (sim {best_sim:.3f})")
+                print(f"[chunk] {tag}{start:.2f}-{end:.2f}s -> {best_spk} (sim {best_sim:.3f})")
         finally:
             try:
                 os.remove(tmp_path)
@@ -691,8 +518,9 @@ def run_single(
     db_path_prefix: Optional[str] = None,
     write_db: bool = False,
     db_append: bool = False,
-    worker_id: Optional[int] = None,
 ):
+    if not audio_path:
+        return (ytid, f"Audio missing for {ytid}")
     words: List[Word] = []
     words_source: Optional[str] = None
     if use_db_words:
@@ -726,13 +554,6 @@ def run_single(
             print(f"[info] processing {ytid} audio={audio_path} words={words_path}")
         words = read_words(words_path)
         words_source = str(words_path)
-        if not audio_path:
-            audio_path = find_audio_from_words_path(words_path, ytid, verbose=verbose)
-
-    if not audio_path:
-        if verbose:
-            print(f"[error] audio missing for {ytid}; words_source={words_source} project_root={root}")
-        return (ytid, f"Audio missing for {ytid}")
     # Each worker builds its own encoder to avoid pickling issues
     encoder = VoiceEncoder().to(encoder_device)
     segments = diarize_chunks(
@@ -745,7 +566,6 @@ def run_single(
         threshold=similarity_threshold,
         verbose=verbose,
         ytid=ytid,
-        worker_id=worker_id,
     )
     words_with_spk = assign_speakers(words, segments, gap_threshold)
     paths = write_outputs(
@@ -796,7 +616,6 @@ def process_one(
     db_path_prefix: Optional[str],
     write_db: bool,
     db_append: bool,
-    worker_id: Optional[int] = None,
 ):
     out_dir = get_out_dir(root, OUT_SUBDIR, ytid, from_db=use_db_words)
     marker = out_dir / COMPLETE_MARKER
@@ -823,7 +642,6 @@ def process_one(
         db_path_prefix=db_path_prefix,
         write_db=write_db,
         db_append=db_append,
-        worker_id=worker_id,
     )
 
 
@@ -926,7 +744,10 @@ def build_reference_batch(project_root: Path, ytids: List[str], audio_paths: Lis
     print("\nReference clips generated (batch):")
     for p, y, s, e in generated:
         print(f"  [{p.stem}] {p} (ytid={y} {s:.1f}-{e:.1f}s)")
-    speaker_name, chosen = choose_clips_and_speaker(generated)
+    speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
+    chosen_str = input(f"Enter clip numbers (comma or space separated) that belong to '{speaker_name}' (blank for none): ").strip()
+    numbers = {c.strip() for c in re.split(r"[\\s,]+", chosen_str) if c.strip()} if chosen_str else set()
+    chosen = [p for p, _y, _s, _e in generated if p.stem.split("_")[0] in numbers or p.stem in numbers]
 
     speakers = []
     if chosen:
@@ -947,68 +768,9 @@ def build_reference_batch(project_root: Path, ytids: List[str], audio_paths: Lis
     print(f"\nReference saved to {ref_dir}")
 
 
-def build_reference_single(project_root: Path, ytid: str, audio_path: Path, n_clips: int = 10, clip_duration: float = 6.0):
-    if audio_path is None:
-        raise SystemExit(f"Audio missing for {ytid}; cannot build reference.")
-    ref_dir = project_root / "generated" / "diary_reference" / ytid
-    clips_dir = ref_dir / "clips"
-    clips_dir.mkdir(parents=True, exist_ok=True)
-
-    dur = ffprobe_duration(audio_path)
-    generated = []
-    for idx in range(n_clips):
-        start = random.uniform(0, max(0.0, dur - clip_duration))
-        end = min(dur, start + clip_duration)
-        clip_path = clips_dir / f"{idx + 1}_{ytid}.wav"
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{start}",
-            "-to",
-            f"{end}",
-            "-i",
-            str(audio_path),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-vn",
-            "-y",
-            str(clip_path),
-        ]
-        subprocess.run(cmd, check=True)
-        generated.append((clip_path, ytid, start, end))
-
-    print("\nReference clips generated:")
-    for p, y, s, e in generated:
-        print(f"  [{p.stem}] {p} (ytid={y} {s:.1f}-{e:.1f}s)")
-    speaker_name, chosen = choose_clips_and_speaker(generated)
-
-    speakers = []
-    if chosen:
-        speakers.append({"name": speaker_name, "clips": [str(p.relative_to(ref_dir)) for p in chosen if p.exists()]})
-    elif generated:
-        speakers.append({"name": speaker_name, "clips": [str(p.relative_to(ref_dir)) for p, _y, _s, _e in generated if p.exists()]})
-
-    meta = {
-        "ytids": [ytid],
-        "speaker_name": speaker_name,
-        "audio_sources": [str(audio_path)],
-        "clips_generated": [str(p) for p, _y, _s, _e in generated],
-        "clips_selected": [str(p) for p in chosen],
-        "speakers": speakers,
-    }
-    ref_dir.mkdir(parents=True, exist_ok=True)
-    (ref_dir / "reference.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(f"\nReference saved to {ref_dir}")
-
-
 def main():
     parser = argparse.ArgumentParser(description="Reference-guided diarization using Resemblyzer (chunked).")
-    parser.add_argument("--ytid", help="YouTube ID (comma-separated supported) used to locate audio/words/reference")
+    parser.add_argument("--ytid", help="YouTube ID (used to locate audio/words/reference)")
     parser.add_argument("--ytids-file", type=Path, help="File with one ytid per line for batch processing")
     parser.add_argument("--ytids-from-dir", type=Path, help="Directory of media files; derive ytids from filenames")
     parser.add_argument("--audio", type=Path, help="Override audio path")
@@ -1023,7 +785,7 @@ def main():
     parser.add_argument("--db-path-prefix", default=None, help="Prefix to prepend to transcript paths stored in DB (e.g., /mnt)")
     parser.add_argument("--write-db", action="store_true", help="Insert diarized spans into diarized_timestamps")
     parser.add_argument("--db-append", action="store_true", help="Keep existing diarized spans instead of replacing them")
-    parser.add_argument("--project-root", type=Path, default=None, help="Project root for outputs/reference (default: current dir or repo root)")
+    parser.add_argument("--project-root", type=Path, default=None, help="Project root (default: repo root containing this script)")
     parser.add_argument("--chunk-seconds", type=float, default=6.0, help="Chunk length in seconds")
     parser.add_argument("--overlap-seconds", type=float, default=1.0, help="Chunk overlap in seconds")
     parser.add_argument("--similarity-threshold", type=float, default=0.6, help="Cosine similarity threshold to accept a speaker match")
@@ -1033,10 +795,10 @@ def main():
     parser.add_argument("--build-reference", action="store_true", help="Force building reference clips before diarization")
     parser.add_argument("--ref-clips", type=int, default=10, help="Number of random reference clips to generate")
     parser.add_argument("--ref-clip-duration", type=float, default=6.0, help="Length of each reference clip in seconds")
-    parser.add_argument("--workers", type=int, default=None, help="Parallel workers for batch mode (fallback: config diarization-workers, else 3)")
+    parser.add_argument("--workers", type=int, default=1, help="Parallel workers for batch mode")
     args = parser.parse_args()
 
-    env_root = os.environ.get("PROJECT_ROOT") or os.environ.get("VIDOPS_ROOT")
+    env_root = os.environ.get("VIDOPS_ROOT")
     root = args.project_root or (Path(env_root).expanduser() if env_root else None) or DEFAULT_PROJECT_ROOT
     ytids: List[str] = []
     if args.ytids_file:
@@ -1044,17 +806,19 @@ def main():
     if args.ytids_from_dir:
         ytids.extend(ytids_from_dir(args.ytids_from_dir))
     if args.ytid:
-        ytids.extend([t.strip() for t in re.split(r"[,\s]+", args.ytid) if t.strip()])
+        ytids.append(args.ytid)
     if ytids:
         seen = set()
         ytids = [y for y in ytids if not (y in seen or seen.add(y))]
     if not ytids:
         raise SystemExit("Provide --ytid, --ytids-file, or --ytids-from-dir.")
-    first_ytid = ytids[0]
+
+    device = args.device
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
     db_path_prefix: Optional[str] = None
     db_params: Optional[Dict[str, object]] = None
-    db_config: Dict[str, object] = {}
     if args.use_db_words or args.write_db:
         db_config = load_db_config(
             [
@@ -1064,8 +828,6 @@ def main():
                 root / "config" / "db.cfg",
                 root / "config" / "db.local.json",
                 root / "config" / "db.json",
-                DEFAULT_PROJECT_ROOT / "db.cfg",
-                DEFAULT_PROJECT_ROOT / "config" / "db.cfg",
             ]
         )
         db_host = args.db_host or db_config.get("db_host") or os.environ.get("DB_HOST") or DEFAULT_DB_HOST
@@ -1084,77 +846,27 @@ def main():
         if args.write_db and not args.use_db_words:
             print("[warn] --write-db requires --use-db-words; DB insert disabled for this run", file=sys.stderr)
             args.write_db = False
-    config_workers = None
-    if db_config:
-        config_workers = (
-            db_config.get("diarization-workers")
-            or db_config.get("diarization_workers")
-            or os.environ.get("DB_DIARIZATION_WORKERS")
-        )
-        try:
-            config_workers = int(config_workers) if config_workers is not None else None
-        except Exception:
-            config_workers = None
-    workers = args.workers or config_workers or 3
-
-    device = args.device
-    if device == "auto":
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[info] workers={workers} device={device}")
 
     # Resolve audio paths (shared reference will be under first ytid)
-    candidate_roots: List[Path] = [root]
-    transcript_paths: List[Path] = []
-    if args.use_db_words and db_params:
-        transcript_paths = fetch_transcript_paths(first_ytid, db_params, mount_prefix=db_path_prefix)
-        for tp in transcript_paths:
-            for parent in tp.parents:
-                if parent.name == "generated":
-                    proj = parent.parent
-                    if proj not in candidate_roots:
-                        candidate_roots.append(proj)
-                    break
-    if args.verbose and len(candidate_roots) > 1:
-        print(f"[info] candidate project roots for assets: {candidate_roots}")
-
-    def find_audio_multi(yt: str) -> Optional[Path]:
-        for r in candidate_roots:
-            p = find_audio(r, yt)
-            if p:
-                if args.verbose:
-                    print(f"[info] found audio for {yt} at {p} (root {r})")
-                return p
-        return None
-
-    audio_paths: List[Optional[Path]] = []
+    audio_paths: List[Path] = []
     if len(ytids) == 1 and args.audio:
         audio_paths.append(args.audio)
     else:
         for y in ytids:
-            p = find_audio_multi(y)
-            if not p and (args.use_db_words or args.write_db):
-                # Allow deferred discovery from DB paths when using DB words
-                audio_paths.append(None)
-                if args.verbose:
-                    print(f"[warn] audio not found under candidate roots for {y}; will try deriving from DB words path")
-            elif not p:
+            p = find_audio(root, y)
+            if not p:
                 raise SystemExit(f"Audio file not found for {y}; use --audio for single runs.")
-            else:
-                audio_paths.append(p)
+            audio_paths.append(p)
 
     first_ytid = ytids[0]
     ref_dir = root / "generated" / "diary_reference" / first_ytid
     ref_json = ref_dir / "reference.json"
-
-    if (not ref_json.exists()) and sys.stdin.isatty():
+    if (not ref_json.exists()) and build_reference_interactive:
         if args.build_reference or input("No reference found. Build reference clips? [y/N]: ").strip().lower() == "y":
-            target_root = project_root_from_ref_dir(ref_dir, root)
             if len(ytids) > 1:
-                build_reference_batch(target_root, ytids, [p for p in audio_paths if p], n_clips=args.ref_clips, clip_duration=args.ref_clip_duration)
+                build_reference_batch(root, ytids, audio_paths, n_clips=args.ref_clips, clip_duration=args.ref_clip_duration)
             else:
-                build_reference_single(target_root, first_ytid, audio_paths[0], n_clips=args.ref_clips, clip_duration=args.ref_clip_duration)
-            ref_json = (target_root / "generated" / "diary_reference" / first_ytid / "reference.json")
-            ref_dir = ref_json.parent
+                build_reference_interactive(root, first_ytid, audio_paths[0], n_clips=args.ref_clips, clip_duration=args.ref_clip_duration)
     if not ref_json.exists():
         raise SystemExit(f"Reference missing: {ref_json}")
 
@@ -1173,9 +885,9 @@ def main():
     results = []
     missing_words: List[Tuple[str, Optional[str]]] = []
     skipped: List[str] = []
-    if workers > 1 and len(ytids) > 1:
+    if args.workers > 1 and len(ytids) > 1:
         ctx = get_context("spawn")
-        with concurrent.futures.ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as ex:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers, mp_context=ctx) as ex:
             futs = [
                 ex.submit(
                     process_one,
@@ -1196,9 +908,8 @@ def main():
                     db_path_prefix,
                     args.write_db,
                     args.db_append,
-                    worker_id=idx + 1,
                 )
-                for idx, y in enumerate(ytids)
+                for y in ytids
             ]
             for fut in concurrent.futures.as_completed(futs):
                 results.append(fut.result())
@@ -1223,7 +934,6 @@ def main():
                     db_path_prefix,
                     args.write_db,
                     args.db_append,
-                    worker_id=1,
                 )
             )
 

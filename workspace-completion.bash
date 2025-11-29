@@ -38,7 +38,7 @@ _workspace_sh_completion() {
             ;;
         diarize)
             if [[ $COMP_CWORD -eq 2 ]]; then
-                COMPREPLY=( $(compgen -W "--ytid --ytids-file --ytids-from-dir --device --workers --build-reference --chunk-seconds --overlap-seconds --similarity-threshold --gap-threshold --verbose" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--ytid --ytids-file --ytids-from-dir --audio --words --use-db-words --db-words-source --db-host --db-port --db-name --db-user --db-password --db-path-prefix --write-db --db-append --project-root --device --workers --build-reference --chunk-seconds --overlap-seconds --similarity-threshold --gap-threshold --verbose" -- "$cur") )
             elif [[ $COMP_CWORD -eq 3 && "${COMP_WORDS[2]}" == "--ytids-file" ]]; then
                 COMPREPLY=( $(compgen -f -- "$cur") )
             elif [[ $COMP_CWORD -eq 3 && "${COMP_WORDS[2]}" == "--ytids-from-dir" ]]; then

@@ -306,13 +306,16 @@ EOF
 DIARIZE - Reference-guided diarization (Resemblyzer)
 
 USAGE
-  ./workspace.sh diarize --ytid <id> [options]
+  ./workspace.sh diarize --ytid <id[,id2,...]> [options]
   ./workspace.sh diarize --ytids-file ytids.txt [options]
 
 DESCRIPTION
   Wrapper for scripts/diarization/run_resemblyzer_diarization.py.
-  Requires audio in pull/ (or --audio), words TSV in generated/ (or --words),
-  and a reference under generated/diary_reference/<ytid>/reference.json.
+  Requires audio in pull/ (or --audio) and a reference under
+  generated/diary_reference/<ytid>/reference.json. Words can come from local
+  generated/*.words.tsv (default) or directly from PostgreSQL via
+  --use-db-words. You can also send spans to the DB with --write-db. When
+  reading from DB, local outputs are written to generated/from-db/<subdir>/.
   If missing, you will be prompted to build reference clips interactively.
   Multiple speakers are supported in a single pass when reference.json has
   multiple speaker entries; the interactive helper gathers one named speaker
@@ -320,11 +323,23 @@ DESCRIPTION
   multi-speaker labeling.
 
 OPTIONS
-  --ytid <id>                   Single YouTube ID to process
+  --ytid <id[,id2,...]>         Single or comma-separated YouTube ID(s) to process
   --ytids-file <file>           File with one ytid per line (batch)
   --ytids-from-dir <dir>        Derive ytids from media filenames in a directory
+  --audio <path>                Override audio path (single ytid runs)
+  --words <path>                Override words TSV path (local mode)
+  --use-db-words                Pull words from Postgres instead of local TSVs
+  --db-words-source <src>       Preferred words.source (whisper|yt) when using DB
+  --db-host <host>              DB host [default: ${DB_HOST:-192.168.0.187}]
+  --db-port <port>              DB port [default: ${DB_PORT:-5432}]
+  --db-name <name>              DB name [default: ${DB_NAME:-transcripts}]
+  --db-user <user>              DB user (optional)
+  --db-password <pw>            DB password (optional)
+  --db-path-prefix <path>       Prefix to prepend to DB transcript paths (e.g., /mnt)
+  --write-db                    Insert spans into diarized_timestamps table (requires --use-db-words)
+  --db-append                   Keep existing DB spans (default replaces per ytid)
   --device <auto|cuda|cpu>      Encoder device [default: auto]
-  --workers <n>                 Parallel workers for batch runs [default: 1]
+  --workers <n>                 Parallel workers for batch runs [default: config diarization-workers or 3]
   --build-reference             Force building reference clips before run
   --chunk-seconds <sec>         Chunk length [default: 6.0]
   --overlap-seconds <sec>       Chunk overlap [default: 1.0]
@@ -334,6 +349,7 @@ OPTIONS
 
 EXAMPLE
   ./workspace.sh diarize --ytids-file ytids.txt --workers 3 --device cuda --verbose
+  ./workspace.sh diarize --ytids-file ytids.txt --use-db-words --db-host 192.168.0.187 --write-db --verbose
 
 OUTPUT
   generated/diarization_resemblyzer/<ytid>/diarized_timestamps.tsv
@@ -930,12 +946,8 @@ cmd_transcribe() {
             return
         fi
     done
-    # Normal transcription
-    if (( use_fragment )); then
-        python3 "$TOOL_ROOT/scripts/transcription/fragmented_transcribe.py" "$@"
-    else
-        "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
-    fi
+    # Normal transcription: use multi-worker pipeline; fragmentation happens inside workers when needed
+    "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
     # Post-processing: generate dupe_hallu retry manifests (if any seed manifests exist)
     run_dupe_hallu_detection
 }

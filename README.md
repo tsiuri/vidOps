@@ -125,7 +125,12 @@ You can also derive IDs from a folder of media files:
 ```bash
 ~/tools/vidops/workspace.sh diarize --ytids-from-dir pull/ --workers 3 --device cuda --verbose
 ```
-Outputs land under `generated/diarization_resemblyzer/<ytid>/`.
+Pull words straight from the transcripts database and write spans back:
+```bash
+~/tools/vidops/workspace.sh diarize --ytids-file ytids.txt --use-db-words --db-host 192.168.0.187 --db-name transcripts --write-db --verbose
+```
+Local TSV/JSON outputs still write, and when pulling words from the DB they land under `generated/from-db/diarization_resemblyzer/<ytid>/`; DB insert only runs when `--use-db-words` is enabled.
+You can set defaults in `db.cfg` (db_host, db_port, db_name, db_user, db_password, db_path_prefix) at the repo root; `db_path_prefix` is prepended to transcript paths stored in the DB (e.g., `/mnt` for a remote mount).
 
 ### Video Stitching
 ```bash

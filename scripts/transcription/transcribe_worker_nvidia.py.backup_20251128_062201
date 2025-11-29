@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-transcribe_worker_cpu.py - CPU transcription worker
+transcribe_worker_nvidia.py - NVIDIA GPU transcription worker
 
-Standalone transcription worker for CPU using faster-whisper.
-Designed to work alongside GPU workers with reduced resource usage.
+Standalone transcription worker for NVIDIA GPUs using faster-whisper.
+Supports multi-GPU parallel transcription via queue-based task claiming.
 
 Usage:
-    transcribe_worker_cpu.py --queue-dir <path> --model <size> \\
-        --language <code>
+    transcribe_worker_nvidia.py --queue-dir <path> --model <size> \\
+        --language <code> --gpu-idx <N>
 
 Environment Variables:
     See dual_gpu_transcribe.sh for complete list of variables.
-    Key vars: FORCE, OUTFMT, CPU_COMPUTE, CPU_THREADS, INLINE_RETRY
+    Key vars: FORCE, OUTFMT, NV_COMPUTE, NV_VAD_FILTER, INLINE_RETRY
 
 Author: Extracted from dual_gpu_transcribe.sh (2025-11-26)
 """
@@ -23,6 +23,7 @@ import json
 import argparse
 import subprocess
 from pathlib import Path
+import gc
 
 # Add script directory to path for local imports
 SCRIPT_DIR = Path(__file__).parent
@@ -47,30 +48,44 @@ from transcribe_common import (
 )
 from fragment_runner import run_fragmented_transcription
 
+# GPU index for logging (set by launcher)
 def _build_log_prefix() -> str:
     env_label = os.environ.get("WORKER_LABEL")
     if env_label:
         lab = env_label.strip("[]")
         return f"[{lab}]"
-    num = os.environ.get("WORKER_NUM")
-    if num and num.isdigit():
-        return f"[CP{int(num):02d}]"
-    return "[CPU]"
+    num_env = os.environ.get("WORKER_NUM", "")
+    if num_env.isdigit():
+        return f"[NV{int(num_env):02d}]"
+    # Fallback: derive from GPU_IDX (1-based, zero-padded)
+    gpu_idx_raw = os.environ.get("GPU_IDX", "")
+    try:
+        gpu_num = int(gpu_idx_raw)
+        lab = f"NV{gpu_num + 1:02d}"
+    except ValueError:
+        lab = f"NV{gpu_idx_raw}"
+    return f"[{lab}]"
 
 
 LOG_PREFIX = _build_log_prefix()
 
-# Set CPU thread usage for CPU worker (needs many threads for inference)
-CPU_THREADS_VAL = int(os.environ.get("CPU_THREADS", "8"))
+# Limit CPU thread usage for GPU worker (GPU does the heavy lifting)
+GPU_THREADS = int(os.environ.get("OMP_NUM_THREADS", "16"))
 try:
     import torch
-    torch.set_num_threads(CPU_THREADS_VAL)
-    torch.set_num_interop_threads(CPU_THREADS_VAL)
+    torch.set_num_threads(GPU_THREADS)
+    torch.set_num_interop_threads(GPU_THREADS)
 except ImportError:
     pass
 
 from faster_whisper import WhisperModel
 import gc
+import tempfile
+import shutil
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 # Lightweight segment representation to avoid keeping full faster-whisper objects
@@ -102,13 +117,52 @@ class LightSegment:
             self.words = None
 
 
+def determine_model_tag(raw_model_name: str) -> str:
+    """
+    Determine model tag for output filenames.
+
+    Args:
+        raw_model_name: Raw model name from environment (e.g., "medium", "large-v3")
+
+    Returns:
+        Safe model tag for filenames (e.g., "medium", "large")
+    """
+    model_tag_override = os.environ.get("MODEL_TAG")
+    if model_tag_override:
+        model_tag = model_tag_override
+    else:
+        n = raw_model_name.lower()
+        if "turbo" in n:
+            model_tag = "turbo"
+        elif "medium" in n:
+            model_tag = "medium"
+        elif "small" in n:
+            model_tag = "small"
+        elif "base" in n:
+            model_tag = "base"
+        elif "tiny" in n:
+            model_tag = "tiny"
+        elif "large" in n:
+            model_tag = "large"
+        else:
+            model_tag = raw_model_name
+
+    # Sanitize for filenames
+    model_tag_safe = "".join(
+        (c if (c.isalnum() or c in ("-", "_", ".")) else "_") for c in model_tag
+    ).strip(".")
+
+    return model_tag_safe
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="CPU transcription worker using faster-whisper"
+        description="NVIDIA GPU transcription worker using faster-whisper"
     )
     parser.add_argument("--queue-dir", required=True, help="Queue directory path")
     parser.add_argument("--model", default="medium", help="Whisper model size")
     parser.add_argument("--language", default="en", help="Language code (empty=auto)")
+    parser.add_argument("--gpu-idx", default="0", help="GPU index (for logging)")
     args = parser.parse_args()
 
     # Environment variables
@@ -116,36 +170,41 @@ def main():
     LANG = args.language or None  # Empty string → None for auto-detect
     FORCE = os.environ.get("FORCE") == "1"
     OUTFMT = os.environ.get("OUTFMT", "vtt")
-    COMPUTE = os.environ.get("CPU_COMPUTE", "int8_float32")
-    CPU_THREADS = int(os.environ.get("CPU_THREADS", "8"))
+    COMPUTE = os.environ.get("NV_COMPUTE", "float16")
+    VAD_FILTER = os.environ.get("NV_VAD_FILTER", "1") == "1"
     MIN_TS = int(os.environ.get("MIN_TS_INTERVAL", "10"))
     QDIR = Path(args.queue_dir)
     PENDING = QDIR / "pending"
     INPROG = QDIR / "inprogress"
     DONE = QDIR / "done"
 
+    # Model tag for output filenames
+    MODEL_TAG_SAFE = determine_model_tag(MODEL)
+
     # Hotwords and corrections
     INITIAL_PROMPT = build_initial_prompt()
     CORR = load_corrections()
 
-    # Load faster-whisper model for CPU
-    print(f"{LOG_PREFIX} CPU threads set to {CPU_THREADS_VAL} (CPU worker needs many threads)", flush=True)
+    # Load faster-whisper model
+    print(f"{LOG_PREFIX} Worker starting at {time.strftime('%H:%M:%S')}", flush=True)
+    print(f"{LOG_PREFIX} Worker starting with {GPU_THREADS} CPU threads (GPU worker)", flush=True)
     print(
-        f"{LOG_PREFIX} loading faster-whisper model={MODEL} device=cpu "
-        f"compute={COMPUTE} threads={CPU_THREADS} num_workers={CPU_THREADS}",
+        f"{LOG_PREFIX} loading faster-whisper model={MODEL} device=cuda "
+        f"compute={COMPUTE} num_workers={GPU_THREADS}",
         flush=True
     )
-    model = WhisperModel(
-        MODEL,
-        device="cpu",
-        compute_type=COMPUTE,
-        cpu_threads=CPU_THREADS,
-        num_workers=CPU_THREADS
+    start_load = time.time()
+    model = WhisperModel(MODEL, device="cuda", compute_type=COMPUTE, num_workers=GPU_THREADS)
+    load_time = time.time() - start_load
+    print(
+        f"{LOG_PREFIX} Model loaded successfully in {load_time:.1f}s at "
+        f"{time.strftime('%H:%M:%S')}, entering main loop",
+        flush=True
     )
 
     # Main loop: process tasks from queue
     while True:
-        task = claim_task(QDIR, backend="cpu")
+        task = claim_task(QDIR, backend="nvidia")
         if not task:
             try:
                 # Quick check: if PENDING is empty and INPROG is empty, we're done
@@ -165,12 +224,18 @@ def main():
         # Output base for generated files (in generated/)
         base = get_output_base(media)
 
-        # CPU worker uses simpler naming (no model tags)
-        out_txt = base.with_suffix(".txt")
+        # Apply model tag just before output suffix (e.g., turbo.vtt, medium.words.tsv)
+        tag = MODEL_TAG_SAFE
+        txt_suffix = f".{tag}.txt" if tag else ".txt"
+        vtt_suffix = f".{tag}.vtt" if tag else ".vtt"
+        srt_suffix = f".{tag}.srt" if tag else ".srt"
+        tslog_suffix = f".{tag}.tslog.txt" if tag else ".tslog.txt"
+
+        out_txt = base.with_suffix(txt_suffix)
         do_vtt = OUTFMT in ("vtt", "both")
         do_srt = OUTFMT in ("srt", "both")
-        out_vtt = base.with_suffix(".vtt") if do_vtt else None
-        out_srt = base.with_suffix(".srt") if do_srt else None
+        out_vtt = base.with_suffix(vtt_suffix) if do_vtt else None
+        out_srt = base.with_suffix(srt_suffix) if do_srt else None
         lock = base.with_suffix(".transcribing.lock")
         success_marker = base.with_suffix(".transcribed")
 
@@ -210,7 +275,7 @@ def main():
                     f"{FRAGMENTED_THRESHOLD/3600:.2f}h, running in-process fragmented mode",
                     flush=True
                 )
-
+                # In-process fragmented transcription using existing model
                 try:
                     tmp_root = Path(os.environ.get("FRAG_TMPDIR", "")) or Path(os.environ.get("PROJECT_ROOT", ".")) / "tmp" / "transcribe_chunks"
                     inline_retry_env = os.environ.get("INLINE_RETRY", "0")
@@ -218,7 +283,7 @@ def main():
                     run_fragmented_transcription(
                         model=model,
                         media=media,
-                        model_tag=None,
+                        model_tag=MODEL_TAG_SAFE,
                         lang=LANG,
                         force=FORCE,
                         outfmt=OUTFMT,
@@ -249,8 +314,6 @@ def main():
                 all_segs = []  # Accumulate segments from all chunks
 
                 # Fast first pass: beam_size=1 (greedy decoding)
-                # CPU worker uses VAD_FILTER=True by default (same as GPU)
-                VAD_FILTER = os.environ.get("NV_VAD_FILTER", "1") == "1"
                 vad_status = "enabled" if VAD_FILTER else "DISABLED"
                 print(
                     f"{LOG_PREFIX}[PASS1] fast transcribe ({COMPUTE}, greedy, VAD {vad_status}) "
@@ -360,7 +423,7 @@ def main():
                 retried_set = set()  # No inline retries performed
 
             elif low_conf_indices and INLINE_RETRY == 1:
-                # Inline retry for low-confidence segments
+                # Inline retry (old behavior) for low-confidence segments
                 retry_start_time = time.time()
                 print(
                     f"{LOG_PREFIX}[RETRY] found {len(low_conf_indices)}/{len(segs)} "
@@ -464,8 +527,16 @@ def main():
                     if t:
                         f.write(apply_corrections(t, CORR) + "\n")
 
-            # Write words.tsv with confidence scores
+            # Write words.tsv with confidence scores, then retag filename with model
             write_words_tsv_faster(base, segs, retried_set, LOG_PREFIX)
+            if tag:
+                try:
+                    old_words = base.with_suffix(".words.tsv")
+                    new_words = base.with_suffix(f".{tag}.words.tsv")
+                    if old_words.exists():
+                        old_words.rename(new_words)
+                except Exception as e:
+                    print(f"{LOG_PREFIX}[WARN] failed to retag words.tsv with model: {e}", flush=True)
 
             # Captions + tslog
             cap = None
@@ -476,7 +547,7 @@ def main():
                 write_srt(segs, out_srt)
                 cap = cap or out_srt
             if cap:
-                make_tslog(cap, base.with_suffix(".tslog.txt"), MIN_TS)
+                make_tslog(cap, base.with_suffix(tslog_suffix), MIN_TS)
 
             # Mark successful completion
             success_marker.touch()

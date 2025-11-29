@@ -23,6 +23,7 @@ import json
 import argparse
 import subprocess
 from pathlib import Path
+import gc
 
 # Add script directory to path for local imports
 SCRIPT_DIR = Path(__file__).parent
@@ -32,6 +33,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from transcribe_common import (
     get_output_base,
     probe_duration_seconds,
+    split_audio_into_chunks,
     emit_progress,
     ensure_src_json,
     build_initial_prompt,
@@ -44,10 +46,28 @@ from transcribe_common import (
     make_tslog,
     claim_task,
 )
+from fragment_runner import run_fragmented_transcription
 
 # GPU index for logging (set by launcher)
-GPU_IDX = os.environ.get("GPU_IDX", "")
-LOG_PREFIX = f"[NV{GPU_IDX}]"
+def _build_log_prefix() -> str:
+    env_label = os.environ.get("WORKER_LABEL")
+    if env_label:
+        lab = env_label.strip("[]")
+        return f"[{lab}]"
+    num_env = os.environ.get("WORKER_NUM", "")
+    if num_env.isdigit():
+        return f"[NV{int(num_env):02d}]"
+    # Fallback: derive from GPU_IDX (1-based, zero-padded)
+    gpu_idx_raw = os.environ.get("GPU_IDX", "")
+    try:
+        gpu_num = int(gpu_idx_raw)
+        lab = f"NV{gpu_num + 1:02d}"
+    except ValueError:
+        lab = f"NV{gpu_idx_raw}"
+    return f"[{lab}]"
+
+
+LOG_PREFIX = _build_log_prefix()
 
 # Limit CPU thread usage for GPU worker (GPU does the heavy lifting)
 GPU_THREADS = int(os.environ.get("OMP_NUM_THREADS", "16"))
@@ -60,6 +80,12 @@ except ImportError:
 
 from faster_whisper import WhisperModel
 import gc
+import tempfile
+import shutil
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 # Lightweight segment representation to avoid keeping full faster-whisper objects
@@ -214,7 +240,7 @@ def main():
         success_marker = base.with_suffix(".transcribed")
 
         try:
-            # Check success marker first (faster than checking txt existence)
+            # Fast skip checks before any heavy work or delegation
             if success_marker.exists() and not FORCE:
                 print(f"{LOG_PREFIX}[SKIP]{media} (already transcribed)", flush=True)
                 continue
@@ -222,7 +248,7 @@ def main():
                 print(f"{LOG_PREFIX}[SKIP]{media} (txt exists)", flush=True)
                 continue
 
-            # Acquire lock
+            # Acquire lock early to avoid doing work on locked jobs
             try:
                 fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
                 os.close(fd)
@@ -240,56 +266,141 @@ def main():
             total = probe_duration_seconds(media) or 0.0
             print(f"{LOG_PREFIX}[INFO]{media} duration={total:.1f}s", flush=True)
 
-            next_mark = [0.10]  # 10%, 20%, … 90%
-            last_end = 0.0
+            # Delegation: use fragmented_transcribe.py for very long files
+            FRAGMENTED_THRESHOLD = float(os.environ.get("FRAGMENTED_THRESHOLD", "3600"))  # 1 hour default
+            force_fragment = os.environ.get("FRAGMENT", "0") == "1" or os.environ.get("FRAGMENT_FORCE", "0") == "1"
+            if force_fragment or total > FRAGMENTED_THRESHOLD:
+                print(
+                    f"{LOG_PREFIX}[DELEGATE] File duration {total/3600:.2f}h exceeds threshold "
+                    f"{FRAGMENTED_THRESHOLD/3600:.2f}h, running in-process fragmented mode",
+                    flush=True
+                )
+                # In-process fragmented transcription using existing model
+                try:
+                    tmp_root = Path(os.environ.get("FRAG_TMPDIR", "")) or Path(os.environ.get("PROJECT_ROOT", ".")) / "tmp" / "transcribe_chunks"
+                    inline_retry_env = os.environ.get("INLINE_RETRY", "0")
+                    inline_retry_val = int(inline_retry_env) if inline_retry_env.isdigit() else 0
+                    run_fragmented_transcription(
+                        model=model,
+                        media=media,
+                        model_tag=MODEL_TAG_SAFE,
+                        lang=LANG,
+                        force=FORCE,
+                        outfmt=OUTFMT,
+                        chunk_len=float(os.environ.get("CHUNK_LEN", "3600")),
+                        overlap=float(os.environ.get("CHUNK_OVERLAP", "5")),
+                        tmp_root=tmp_root,
+                        initial_prompt=INITIAL_PROMPT,
+                        corrections=CORR,
+                        log_prefix=f"{LOG_PREFIX}[FRAG]",
+                        confidence_threshold=float(os.environ.get("NV_CONFIDENCE_THRESHOLD", "0.2")),
+                        inline_retry=inline_retry_val,
+                        min_ts_interval=int(os.environ.get("MIN_TS_INTERVAL", "10")),
+                        tag=None,
+                    )
+                except Exception as e:
+                    print(f"{LOG_PREFIX}[FAIL] Fragmented transcription failed: {e}", flush=True)
+                continue
 
-            # Fast first pass: beam_size=1 (greedy decoding)
-            vad_status = "enabled" if VAD_FILTER else "DISABLED"
-            print(
-                f"{LOG_PREFIX}[PASS1] fast transcribe ({COMPUTE}, greedy, VAD {vad_status}) "
-                f"starting at {time.strftime('%H:%M:%S')}",
-                flush=True
-            )
-            pass1_start = time.time()
-            kwargs_fast = dict(
-                language=LANG,
-                vad_filter=VAD_FILTER,
-                initial_prompt=INITIAL_PROMPT,
-                condition_on_previous_text=False,
-                temperature=0.0,  # Greedy only
-                beam_size=1,      # Greedy search
-                word_timestamps=True,
-            )
-            segments, info = model.transcribe(str(media), **kwargs_fast)
+            # Standard processing for files under threshold
+            # Split long files into chunks to reduce memory usage
+            # Files > 1.5 hours are chunked into 1-hour segments
+            chunks = split_audio_into_chunks(media, chunk_duration=3600, log_prefix=LOG_PREFIX)
+            temp_dir_to_cleanup = chunks[0][2] if len(chunks) > 0 else None
 
-            # Use lightweight segment representation to reduce memory footprint
-            segs = []
-            for s in segments:  # streaming
-                # Extract only essential data, discard full faster-whisper object
-                light_seg = LightSegment(s)
-                segs.append(light_seg)
+            try:
+                next_mark = [0.10]  # 10%, 20%, … 90%
+                last_end = 0.0
+                all_segs = []  # Accumulate segments from all chunks
 
-                # Print segment text in real-time
-                text = light_seg.text.strip()
-                if text:
-                    print(f"{LOG_PREFIX}[TEXT] {text}", flush=True)
-                last_end = max(last_end, light_seg.end)
-                emit_progress(f"{LOG_PREFIX}[PROG]", last_end, total, next_mark)
+                # Fast first pass: beam_size=1 (greedy decoding)
+                vad_status = "enabled" if VAD_FILTER else "DISABLED"
+                print(
+                    f"{LOG_PREFIX}[PASS1] fast transcribe ({COMPUTE}, greedy, VAD {vad_status}) "
+                    f"starting at {time.strftime('%H:%M:%S')}",
+                    flush=True
+                )
+                pass1_start = time.time()
 
-            # Explicitly delete iterator and force garbage collection
-            # This releases ~6GB of internal buffers for long files
-            del segments
-            gc.collect()
+                # Process each chunk
+                for chunk_idx, (chunk_path, chunk_offset, _) in enumerate(chunks):
+                    if len(chunks) > 1:
+                        print(
+                            f"{LOG_PREFIX}[CHUNK {chunk_idx+1}/{len(chunks)}] "
+                            f"Processing chunk starting at {chunk_offset/3600:.2f}h",
+                            flush=True
+                        )
 
-            if total > 0:
-                print(f"{LOG_PREFIX}[100%] {total:.1f}s / {total:.1f}s", flush=True)
+                    kwargs_fast = dict(
+                        language=LANG,
+                        vad_filter=VAD_FILTER,
+                        initial_prompt=INITIAL_PROMPT,
+                        condition_on_previous_text=False,
+                        temperature=0.0,  # Greedy only
+                        beam_size=1,      # Greedy search
+                        word_timestamps=True,
+                    )
+                    segments, info = model.transcribe(str(chunk_path), **kwargs_fast)
 
-            pass1_elapsed = time.time() - pass1_start
-            print(
-                f"{LOG_PREFIX}[PASS1] completed in {pass1_elapsed:.1f}s at "
-                f"{time.strftime('%H:%M:%S')}",
-                flush=True
-            )
+                    # Use lightweight segment representation to reduce memory footprint
+                    chunk_segs = []
+                    for s in segments:  # streaming
+                        # Extract only essential data, discard full faster-whisper object
+                        light_seg = LightSegment(s)
+
+                        # Adjust timestamps by chunk offset
+                        light_seg.start += chunk_offset
+                        light_seg.end += chunk_offset
+                        if light_seg.words:
+                            for w in light_seg.words:
+                                w.start += chunk_offset
+                                w.end += chunk_offset
+
+                        chunk_segs.append(light_seg)
+
+                        # Print segment text in real-time
+                        text = light_seg.text.strip()
+                        if text:
+                            print(f"{LOG_PREFIX}[TEXT] {text}", flush=True)
+                        last_end = max(last_end, light_seg.end)
+                        emit_progress(f"{LOG_PREFIX}[PROG]", last_end, total, next_mark)
+
+                    # Explicitly delete iterator and force garbage collection
+                    # This releases ~6GB of internal buffers for long files
+                    del segments
+                    gc.collect()
+
+                    # Add chunk segments to accumulated list
+                    all_segs.extend(chunk_segs)
+
+                    if len(chunks) > 1:
+                        print(
+                            f"{LOG_PREFIX}[CHUNK {chunk_idx+1}/{len(chunks)}] "
+                            f"Completed, {len(chunk_segs)} segments",
+                            flush=True
+                        )
+
+                # Use accumulated segments for rest of processing
+                segs = all_segs
+
+                if total > 0:
+                    print(f"{LOG_PREFIX}[100%] {total:.1f}s / {total:.1f}s", flush=True)
+
+                pass1_elapsed = time.time() - pass1_start
+                print(
+                    f"{LOG_PREFIX}[PASS1] completed in {pass1_elapsed:.1f}s at "
+                    f"{time.strftime('%H:%M:%S')}",
+                    flush=True
+                )
+
+            finally:
+                # Clean up temporary chunk directory if it was created
+                if temp_dir_to_cleanup:
+                    try:
+                        shutil.rmtree(temp_dir_to_cleanup, ignore_errors=True)
+                        print(f"{LOG_PREFIX}[CLEANUP] Removed temporary chunks from {temp_dir_to_cleanup}", flush=True)
+                    except Exception as e:
+                        print(f"{LOG_PREFIX}[WARN] Failed to clean up temp dir: {e}", flush=True)
 
             # Check confidence scores and identify low-confidence segments
             CONFIDENCE_THRESHOLD = float(os.environ.get("NV_CONFIDENCE_THRESHOLD", "-0.7"))

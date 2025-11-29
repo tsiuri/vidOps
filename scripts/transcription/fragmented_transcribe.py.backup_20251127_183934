@@ -37,48 +37,6 @@ from transcribe_common import (  # noqa: E402
     emit_progress,
 )
 
-WORKER_LABEL = os.environ.get("WORKER_LABEL")
-BASE_PREFIX = f"[{WORKER_LABEL}]" if WORKER_LABEL else ""
-FRAG_PREFIX = f"{BASE_PREFIX}[FRAG]" if BASE_PREFIX else "[FRAG]"
-LOG_FILE = None
-
-
-class _Tee:
-    def __init__(self, *streams):
-        self.streams = streams
-
-    def write(self, data):
-        for s in self.streams:
-            try:
-                s.write(data)
-            except Exception:
-                pass
-
-    def flush(self):
-        for s in self.streams:
-            try:
-                s.flush()
-            except Exception:
-                pass
-
-
-def setup_logging(label: str, project_root: Path):
-    """Set global prefixes and tee stdout/stderr to logs/<label>.log."""
-    global WORKER_LABEL, BASE_PREFIX, FRAG_PREFIX, LOG_FILE
-    WORKER_LABEL = label
-    BASE_PREFIX = f"[{WORKER_LABEL}]" if WORKER_LABEL else ""
-    FRAG_PREFIX = f"{BASE_PREFIX}[FRAG]" if BASE_PREFIX else "[FRAG]"
-    log_dir = project_root / "logs"
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        logfile = log_dir / f"{WORKER_LABEL or 'FRAG'}.log"
-        fh = open(logfile, "a", encoding="utf-8")
-        LOG_FILE = logfile
-        sys.stdout = _Tee(sys.__stdout__, fh)
-        sys.stderr = _Tee(sys.__stderr__, fh)
-    except Exception:
-        LOG_FILE = None
-
 
 def maybe_reexec_with_nv_venv():
     """Re-exec into NV_VENV python if available (default ~/transcribe-nv)."""
@@ -98,7 +56,7 @@ def load_faster_whisper():
         from faster_whisper import WhisperModel  # type: ignore
         return WhisperModel
     except ModuleNotFoundError as e:
-        print(f"{FRAG_PREFIX}[ERROR] faster_whisper not installed. Run: ./workspace.sh transcribe --setup-venvs", file=sys.stderr)
+        print("[FRAG][ERROR] faster_whisper not installed. Run: ./workspace.sh transcribe --setup-venvs", file=sys.stderr)
         raise e
 
 
@@ -152,12 +110,12 @@ def _signal_handler(signum, frame):
     current = _cleanup_state["current_media"]
     media_str = f" (processing: {current})" if current else ""
 
-    print(f"\n{FRAG_PREFIX}[QUIT] Received {signame}{media_str}", flush=True)
-    print(f"{FRAG_PREFIX}[QUIT] Cleaning up temp files and locks...", flush=True)
+    print(f"\n[FRAG][QUIT] Received {signame}{media_str}", flush=True)
+    print("[FRAG][QUIT] Cleaning up temp files and locks...", flush=True)
 
     _cleanup_on_exit()
 
-    print(f"{FRAG_PREFIX}[QUIT] Clean exit.", flush=True)
+    print("[FRAG][QUIT] Clean exit.", flush=True)
     sys.exit(130 if signum == signal.SIGINT else 143)
 
 
@@ -229,9 +187,6 @@ def parse_args():
     parser.add_argument("--chunk-overlap", type=float, default=default_chunk_overlap,
                         help="Chunk overlap in seconds (default: %(default)s)")
     parser.add_argument("--tmp-dir", default=default_tmp, help="Temp directory for chunks (default: PROJECT_ROOT/tmp/transcribe_chunks or /tmp/vidops_fragments)")
-    parser.add_argument("--single-file", help="Process a single file (for worker delegation mode)")
-    parser.add_argument("--skip-lock", action="store_true", help="Skip lock acquisition (worker already holds it)")
-    parser.add_argument("--model-tag", help="Override model tag for output filenames (defaults to auto-detect from --model)")
     return parser.parse_args()
 
 
@@ -317,7 +272,7 @@ def extract_chunk(media: Path, chunk_path: Path, clip_start: float, clip_end: fl
         subprocess.run(cmd, check=True)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"{FRAG_PREFIX}[FAIL] ffmpeg chunk extraction failed for {media} ({clip_start:.1f}-{clip_end:.1f}s): {e}", flush=True)
+        print(f"[FRAG][FAIL] ffmpeg chunk extraction failed for {media} ({clip_start:.1f}-{clip_end:.1f}s): {e}", flush=True)
         return False
 
 
@@ -392,10 +347,10 @@ def transcribe_chunk(
         # Print transcribed text in real-time
         text = ls.text.strip()
         if text:
-            print(f"{FRAG_PREFIX}[TEXT] {text}", flush=True)
+            print(f"[FRAG][TEXT] {text}", flush=True)
 
         last_end = max(last_end, ls.end - keep_start)
-        emit_progress(f"{FRAG_PREFIX}[PROG]", last_end, chunk_total, next_mark)
+        emit_progress("[FRAG][PROG]", last_end, chunk_total, next_mark)
 
     return out, chunk_total
 
@@ -464,7 +419,7 @@ def inline_retry_segments(
                 )
                 retried.add(idx)
         except Exception as e:
-            print(f"{FRAG_PREFIX}[RETRY] segment {idx} failed: {e}", flush=True)
+            print(f"[FRAG][RETRY] segment {idx} failed: {e}", flush=True)
         finally:
             try:
                 clip_path.unlink()
@@ -485,7 +440,6 @@ def process_file(
     tmp_root: Path,
     initial_prompt: Optional[str],
     corrections,
-    skip_lock: bool = False,
 ) -> None:
     base = get_output_base(media)
     # Tagged filenames
@@ -504,26 +458,21 @@ def process_file(
     success_marker = base.with_suffix(".transcribed")
 
     if success_marker.exists() and not force:
-        print(f"{FRAG_PREFIX}[SKIP]{media} (already transcribed)", flush=True)
+        print(f"[FRAG][SKIP]{media} (already transcribed)", flush=True)
         return
     if out_txt.exists() and not force:
-        print(f"{FRAG_PREFIX}[SKIP]{media} (txt exists)", flush=True)
+        print(f"[FRAG][SKIP]{media} (txt exists)", flush=True)
         return
 
-    # Lock handling: skip if called by worker (worker already holds lock)
-    got_lock = False
-    if not skip_lock:
-        try:
-            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            os.close(fd)
-            got_lock = True
-        except FileExistsError:
-            print(f"{FRAG_PREFIX}[LOCK]{media} (held elsewhere) — skipping", flush=True)
-            return
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+    except FileExistsError:
+        print(f"[FRAG][LOCK]{media} (held elsewhere) — skipping", flush=True)
+        return
 
-        # Track lock for clean quit handling (only if we acquired it)
-        _cleanup_state["current_lock"] = lock
-
+    # Track lock and media for clean quit handling
+    _cleanup_state["current_lock"] = lock
     _cleanup_state["current_media"] = media
 
     media_base = media.with_suffix("")
@@ -531,23 +480,21 @@ def process_file(
 
     total = probe_duration_seconds(media)
     if not total or total <= 0:
-        print(f"{FRAG_PREFIX}[FAIL]{media} duration not found", flush=True)
-        if got_lock:
-            try:
-                os.unlink(lock)
-            except Exception:
-                pass
+        print(f"[FRAG][FAIL]{media} duration not found", flush=True)
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
         return
 
-    print(f"{FRAG_PREFIX}[RUN ]{media} duration={total:.1f}s", flush=True)
+    print(f"[FRAG][RUN ]{media} duration={total:.1f}s", flush=True)
     plan = chunk_plan(total, chunk_len, overlap)
     if not plan:
-        print(f"{FRAG_PREFIX}[WARN]{media} produced no chunk plan", flush=True)
-        if got_lock:
-            try:
-                os.unlink(lock)
-            except Exception:
-                pass
+        print(f"[FRAG][WARN]{media} produced no chunk plan", flush=True)
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
         return
 
     file_tmp = tmp_root / media.stem
@@ -569,14 +516,14 @@ def process_file(
     for chunk_num, (idx, keep_start, keep_end, clip_start, clip_end) in enumerate(plan, 1):
         # Check for quit request at start of each chunk
         if _cleanup_state["quit_requested"]:
-            print(f"{FRAG_PREFIX}[QUIT] Stopping at chunk {chunk_num} of {total_chunks}", flush=True)
+            print(f"[FRAG][QUIT] Stopping at chunk {chunk_num} of {total_chunks}", flush=True)
             return
 
         chunk_path = file_tmp / f"{media.stem}.chunk{idx:04d}.wav"
         if not extract_chunk(media, chunk_path, clip_start, clip_end):
             continue
 
-        print(f"{FRAG_PREFIX}[{chunk_num} of {total_chunks}][CHUNK]{idx} {keep_start:.1f}-{keep_end:.1f}s (clip {clip_start:.1f}-{clip_end:.1f}s)", flush=True)
+        print(f"[FRAG {chunk_num} of {total_chunks}][CHUNK]{idx} {keep_start:.1f}-{keep_end:.1f}s (clip {clip_start:.1f}-{clip_end:.1f}s)", flush=True)
         segs, _chunk_total = transcribe_chunk(
             model, chunk_path, clip_start, keep_start, keep_end, initial_prompt, vad_filter, lang
         )
@@ -595,12 +542,11 @@ def process_file(
                 pass
 
     if not all_segments:
-        print(f"{FRAG_PREFIX}[FAIL]{media} produced no segments", flush=True)
-        if got_lock:
-            try:
-                os.unlink(lock)
-            except Exception:
-                pass
+        print(f"[FRAG][FAIL]{media} produced no segments", flush=True)
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
         return
 
     retried_set: Set[int] = set()
@@ -616,7 +562,7 @@ def process_file(
             if t:
                 f.write(apply_corrections(t, corrections) + "\n")
 
-    write_words_tsv_faster(base, all_segments, retried_set, FRAG_PREFIX)
+    write_words_tsv_faster(base, all_segments, retried_set, "[FRAG]")
     if tag:
         try:
             old_words = base.with_suffix(".words.tsv")
@@ -624,7 +570,7 @@ def process_file(
             if old_words.exists():
                 old_words.rename(new_words)
         except Exception as e:
-            print(f"{FRAG_PREFIX}[WARN] failed to retag words.tsv with model: {e}", flush=True)
+            print(f"[FRAG][WARN] failed to retag words.tsv with model: {e}", flush=True)
 
     cap = None
     if do_vtt:
@@ -637,10 +583,10 @@ def process_file(
         make_tslog(cap, base.with_suffix(tslog_suffix), min_ts_interval)
 
     if low_conf_indices and not inline_retry:
-        write_retry_manifest(base, media, all_segments, low_conf_indices, confidence_threshold, FRAG_PREFIX)
+        write_retry_manifest(base, media, all_segments, low_conf_indices, confidence_threshold, "[FRAG]")
 
     success_marker.touch()
-    print(f"{FRAG_PREFIX}[DONE]{media}", flush=True)
+    print(f"[FRAG][DONE]{media}", flush=True)
 
     if not int(os.environ.get("KEEP_FRAGMENTS", "0")):
         try:
@@ -648,12 +594,10 @@ def process_file(
         except Exception:
             pass
 
-    # Only remove lock if we acquired it (not in skip_lock mode)
-    if got_lock:
-        try:
-            os.unlink(lock)
-        except Exception:
-            pass
+    try:
+        os.unlink(lock)
+    except Exception:
+        pass
 
     # Clear cleanup state after successful processing
     _cleanup_state["current_lock"] = None
@@ -670,9 +614,7 @@ def main():
     tmp_root = ensure_tmp_dir(project_root, args.tmp_dir)
     initial_prompt = build_initial_prompt()
     corrections = load_corrections()
-
-    # Use explicit model tag if provided, otherwise auto-detect
-    model_tag = args.model_tag if args.model_tag else determine_model_tag(args.model)
+    model_tag = determine_model_tag(args.model)
 
     # Select device
     # Device selection: default to CUDA; allow opt-out with FORCE_CPU=1
@@ -680,50 +622,22 @@ def main():
     if os.environ.get("FORCE_CPU", "0") == "1":
         device = "cpu"
 
-    # Derive worker label if not provided
-    if not WORKER_LABEL:
-        num_env = os.environ.get("WORKER_NUM")
-        if device == "cuda":
-            try:
-                num_int = int(num_env) if num_env else 1
-            except ValueError:
-                num_int = 1
-            label = f"NV{num_int:02d}"
-        else:
-            try:
-                num_int = int(num_env) if num_env else 1
-            except ValueError:
-                num_int = 1
-            label = f"CP{num_int:02d}"
-    else:
-        label = WORKER_LABEL
-
-    setup_logging(label, project_root)
-
     compute = os.environ.get("NV_COMPUTE", "float16" if device == "cuda" else "int8_float32")
     gpu_threads = int(os.environ.get("GPU_THREADS", os.environ.get("OMP_NUM_THREADS", "16")))
 
-    print(f"{FRAG_PREFIX} Model={args.model} device={device} compute={compute} chunk_len={args.chunk_len}s overlap={args.chunk_overlap}s", flush=True)
+    print(f"[FRAG] Model={args.model} device={device} compute={compute} chunk_len={args.chunk_len}s overlap={args.chunk_overlap}s", flush=True)
 
     model = WhisperModel(args.model, device=device, compute_type=compute, num_workers=gpu_threads)
 
-    # Single-file mode (for worker delegation)
-    if args.single_file:
-        media_list = [Path(args.single_file)]
-        if not media_list[0].is_file():
-            print(f"{FRAG_PREFIX}[ERROR] File not found: {args.single_file}", flush=True)
-            sys.exit(1)
-    else:
-        # Batch mode (standalone)
-        media_list = discover_media(project_root, extensions, Path(args.filelist) if args.filelist else None)
-        if not media_list:
-            print(f"{FRAG_PREFIX} No media files found.", flush=True)
-            return
+    media_list = discover_media(project_root, extensions, Path(args.filelist) if args.filelist else None)
+    if not media_list:
+        print("[FRAG] No media files found.", flush=True)
+        return
 
     for media in media_list:
         # Check for quit request before processing next file
         if _cleanup_state["quit_requested"]:
-            print(f"{FRAG_PREFIX}[QUIT] Stopping batch processing.", flush=True)
+            print("[FRAG][QUIT] Stopping batch processing.", flush=True)
             break
 
         process_file(
@@ -738,7 +652,6 @@ def main():
             tmp_root,
             initial_prompt,
             corrections,
-            skip_lock=args.skip_lock,
         )
 
 
