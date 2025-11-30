@@ -35,9 +35,14 @@ def verify_token(request: Request, settings=Depends(get_settings)):
     # Accept either a single token (str) or a dict mapping machine_alias -> token
     tokens = broker_cfg.shared_token
     valid = False
+    alias = None
     if isinstance(tokens, dict):
         # When per-worker map is provided, accept any token value present
-        valid = token in tokens.values()
+        for k, v in tokens.items():
+            if token == v:
+                valid = True
+                alias = k
+                break
     else:
         valid = bool(tokens) and (token == tokens)
 
@@ -46,6 +51,10 @@ def verify_token(request: Request, settings=Depends(get_settings)):
         xff = request.headers.get("X-Forwarded-For", "-")
         logger.warning("Unauthorized broker request src=%s xff=%s", src, xff)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing token.")
+    # record alias on request for logging
+    if alias:
+        request.state.worker_alias = alias
+    return True
 
 
 def _storage_path(relative_path: str, storage_root: str) -> Path:
@@ -69,7 +78,11 @@ async def upload_asset(
 
     data = await file.read()
     dest_path.write_bytes(data)
-    logger.info("Broker stored asset %s (%s)", relative_path, kind)
+    alias = getattr(request.state, "worker_alias", None)
+    if alias:
+        logger.info("Broker stored asset %s (%s) from %s", relative_path, kind, alias)
+    else:
+        logger.info("Broker stored asset %s (%s)", relative_path, kind)
 
     # Register asset in DB
     video_repo = VideoRepository()
@@ -92,6 +105,9 @@ async def download_asset(
     file_path = _storage_path(relative_path, storage_root)
     if not file_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    alias = getattr(request.state, "worker_alias", None)
+    if alias:
+        logger.info("Broker download asset %s to %s", relative_path, alias)
     return FileResponse(file_path)
 
 

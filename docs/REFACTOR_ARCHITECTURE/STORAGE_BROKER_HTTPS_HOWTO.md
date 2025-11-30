@@ -52,18 +52,20 @@ storage_broker:
 ```
 
 ## Worker Configuration
-On each worker, point to the proxy HTTPS URL and provide the token:
+On each worker, point to the proxy HTTPS URL and provide the token. Prefer a hostname that matches the proxy certificate SAN (e.g., `broker.internal`) and configure a trusted CA bundle so you do not need `-k`.
 
 ```
 storage_broker:
   enabled: true
-  base_url: https://192.168.0.187:8443
+  base_url: https://broker.internal:8443
   shared_token: "zz"
   request_timeout: 60
+  # Trust chain for HTTPS (avoid -k):
+  # For self-signed, copy the server cert (or CA bundle) to workers and set:
+  # mtls_ca_cert: "/etc/vidops/certs/broker-ca.pem"
   # Optional mTLS paths if the proxy enforces client certs
   # mtls_client_cert: "/etc/vidops/client.crt"
   # mtls_client_key:  "/etc/vidops/client.key"
-  # mtls_ca_cert:     "/etc/vidops/ca.pem"
 ```
 
 ## Deploy the Broker and Proxy (Server)
@@ -85,9 +87,14 @@ What the script does
 
 Manual steps (if not using the script)
 1) Nginx install (Arch): `sudo pacman -Sy --noconfirm nginx` (or Ubuntu: `sudo apt-get install -y nginx`)
-2) TLS certs:
+2) TLS certs (with SAN for hostname + IP):
    - `sudo install -d -m 0755 /etc/ssl/certs && sudo install -d -m 0700 /etc/ssl/private`
-   - `sudo openssl req -x509 -nodes -newkey rsa:2048 -days 825 -keyout /etc/ssl/private/broker.key -out /etc/ssl/certs/broker.crt -subj "/CN=broker.internal"`
+   - Create an OpenSSL config with SAN for broker.internal and the LAN IP:
+     - `/tmp/openssl.cnf` contents:
+       - `[ req ]\nreq_extensions = v3_req\nprompt = no\ndistinguished_name = dn\n[ dn ]\nCN = broker.internal\n[ v3_req ]\nsubjectAltName = @alt\n[ alt ]\nDNS.1 = broker.internal\nIP.1 = 192.168.0.187`
+   - Generate cert + key:
+     - `sudo openssl req -x509 -nodes -newkey rsa:2048 -days 825 -keyout /etc/ssl/private/broker.key -out /etc/ssl/certs/broker.crt -config /tmp/openssl.cnf`
+   - Distribute `/etc/ssl/certs/broker.crt` (or your CA bundle) to each worker and set `mtls_ca_cert` accordingly.
 3) Ensure nginx includes `/etc/nginx/conf.d/*.conf` (add to nginx.conf http{} block if missing).
 4) Install `config/nginx/vidops-broker.conf` to `/etc/nginx/conf.d/` and set `listen <LAN_IP>:8443`.
 5) Validate and start/reload nginx: `sudo nginx -t && sudo systemctl enable --now nginx && sudo systemctl reload nginx`.
@@ -99,8 +106,18 @@ Manual steps (if not using the script)
   - `curl -sS -H "Authorization: Bearer zz" http://127.0.0.1:8443/healthz`
 - From server (via HTTPS proxy):
   - `curl -ksS -H "Authorization: Bearer zz" https://192.168.0.187:8443/healthz`
-- From worker:
-  - `curl -ksS -H "Authorization: Bearer zz" https://192.168.0.187:8443/healthz`
+- From worker (no -k when mtls_ca_cert is configured):
+  - `curl --cacert /etc/vidops/certs/broker-ca.pem -sS -H "Authorization: Bearer zz" https://broker.internal:8443/healthz`
+
+## Optional: Quick Round-Trip Smoke
+- Upload via HTTPS:
+  - `curl --cacert /etc/vidops/certs/broker-ca.pem -sS -H "Authorization: Bearer zz" \\
+     -F ytid=test_https -F kind=analysis -F relative_path=analysis/test_https/probe.txt \\
+     -F file=@/etc/hosts https://broker.internal:8443/v1/assets/upload`
+- Download and compare:
+  - `curl --cacert /etc/vidops/certs/broker-ca.pem -sS -H "Authorization: Bearer zz" \\
+     -G --data-urlencode relative_path=analysis/test_https/probe.txt \\
+     https://broker.internal:8443/v1/assets/download -o /tmp/probe.txt && diff -q /etc/hosts /tmp/probe.txt`
 
 ## Troubleshooting
 Use the diagnostics collector to snapshot system state:
@@ -129,4 +146,3 @@ Common issues
 - Expand broker endpoints for asset request/download flows.
 - Add rate limiting and audit logging at the proxy.
 - Move from self‑signed to managed internal certs.
-
