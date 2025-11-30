@@ -40,3 +40,28 @@ Notes
 - Asset kinds must match server DB constraints; safe example: `analysis_json`.
 - If health/upload fail, run `bash scripts/deploy/collect_broker_diagnostics.sh --lan-ip 192.168.0.187 --token ${WORKER_TOKEN}` and send results back to the server operator.
 
+## Provisioned Tokens (Server-Side)
+The server token map already includes these aliases:
+- `daniel-pc`: `7b5ad9d80d4cc27cf9375dae4f8c8e0c6f52a9fdb4075c27`
+- `goliath-pc`: `1f687f6607b53fca1872ec848859ba6961245092b31a648a`
+- `worker-generic-01`: `c9307e30d76dd22410dc14e029a585e487a73cf7fac95b2c`
+- `worker-generic-02`: `ab0b3cb17bdb8f0388264549f43f64193ae1e7bce6cabf0d`
+- `mothership-arch`: `a75d8d57fd602724aa83e4cf7c9ac5f4a4047d26efaf2b0b`
+- `default`: `zz` (legacy; still accepted)
+
+## Quick Steps to Update a Worker
+1) Trust + hostname (run as root or with sudo):
+   ```
+   sudo bash scripts/deploy/worker_trust_broker.sh --lan-ip 192.168.0.187 --ca /path/to/broker-ca.pem --config config.yaml
+   ```
+2) Edit `config.yaml`:
+   - `workers.machine_alias`: set to one of the aliases above.
+   - `storage_broker.base_url`: `https://broker.internal:8443`
+   - `storage_broker.mtls_ca_cert`: `/etc/vidops/certs/broker-ca.pem`
+   - `storage_broker.shared_token`: the token matching the alias above.
+3) Health check (no `-k`):
+   ```
+   TOKEN=<token_from_above>
+   curl --cacert /etc/vidops/certs/broker-ca.pem -sS -H "Authorization: Bearer ${TOKEN}" https://broker.internal:8443/healthz
+   ```
+   Expect `{"status":"ok"}`. If desired, run the upload/download probe from the steps above.
