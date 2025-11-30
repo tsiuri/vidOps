@@ -59,6 +59,7 @@ This is the canonical status and working instructions for the refactor to the da
 - Agent responsibilities summary: `docs/REFACTOR_ARCHITECTURE/AGENT_ROLES.md` (now includes Atlas).
 - Database maintenance guide: `docs/DB_MAINTENANCE.md`.
 - Storage broker concept: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_DESIGN.md`.
+- Storage broker over internal HTTPS (no SSH tunnel): `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS.md` (reverse proxy + tokens/mTLS, internal IP bind).
 - Storage interface documentation: `docs/STORAGE_INTERFACE.md` - read this before implementing storage access in any service (now documents clips/analysis/stitch directories).
 - Overlord monitoring guide: `docs/OVERLORD_MONITORING.md` covers responsibilities, thresholds, CLI commands, and troubleshooting flows.
 - Use this file as the single reference for priorities and status. If you need historical context, consult files under `archived/`; do not treat them as requirements.
