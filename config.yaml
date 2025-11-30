@@ -1,0 +1,68 @@
+# VidOps Configuration
+#
+# This file centralizes the configuration for the VidOps toolkit.
+# Settings are defined here with sensible defaults.
+#
+# Precedence Order:
+# 1. Default values in the Config classes (`vidops/config.py`)
+# 2. Values in this `config.yaml` file
+# 3. Environment variables (e.g., VIDOPS_DB_HOST)
+#
+
+# --- Database Configuration ---
+# Connection details for the central PostgreSQL database.
+database:
+  host: "192.168.0.187"
+  port: 5432
+  name: "transcripts"
+  user: "billie"
+  password: "z" # For local development; use env var in production
+
+# --- Storage Configuration ---
+# Paths for local and central (long-term) storage.
+paths:
+  # The root directory for the central, long-term media archive.
+  # This should be a network-mounted path accessible by all workers.
+  central_storage_root: "/mnt/mainroot/mnt/13tb_sas/vidops/storage"
+  # The local directory where temporary files (like downloaded media before
+  # being moved to central storage) are kept. This can be relative to the
+  # project root.
+  local_temp_dir: "tmp"
+
+
+# --- Transcription Worker Configuration ---
+# Default settings for all transcription workers.
+transcription:
+  # Default Whisper model to use. (tiny, base, small, medium, large-v2, etc.)
+  model: "small"
+  # Default language for transcription. 'en' for English, or leave empty to auto-detect.
+  language: "en"
+
+  # NVIDIA (faster-whisper) specific settings
+  nvidia:
+    # float16 is a good balance of speed and accuracy.
+    # Other options: int8_float16, int8
+    compute_type: "float16"
+    # Use Voice Activity Detection to filter out silence.
+    vad_filter: true
+    # Average log probability threshold for a segment to be considered low-confidence.
+    # Segments below this threshold will be marked for retry.
+    confidence_threshold: -0.7
+
+  # CPU specific settings
+  cpu:
+    # Compute type for CPU workers.
+    compute_type: "int8_float32"
+    # Number of threads for the CPU worker.
+    threads: 8
+
+# --- Worker Configuration ---
+# General settings applicable to all types of workers.
+workers:
+  # How often (in seconds) a worker should send a heartbeat to the database.
+  heartbeat_interval: 60
+  # How many jobs a worker should process before exiting. 0 means run forever.
+  max_jobs: 0
+  # A user-friendly name for the machine this worker is running on.
+  # If not set, the hostname will be used.
+  machine_alias: "mothership-arch"

@@ -70,6 +70,7 @@ This allows you to:
 - See `AGENTS.md` (contributors), `EXTRA_UTILS.md` (standalone tools), and `DB_README.md` (database pipeline)
 - **REFACTORING_COMPLETE.txt** - Architecture details and full feature list
 - **REFACTORING_INSTRUCTIONS_FOR_AI.txt** - Detailed implementation guide
+- **docs/SMOKE_TESTS.md** - Reproducible smoke-test suite and troubleshooting tips
 
 ## 🚀 Usage Examples
 

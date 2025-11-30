@@ -1,0 +1,240 @@
+# vidops/dal/jobs.py
+
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta, timezone
+from psycopg2.extras import Json
+
+from vidops.db import get_connection
+from vidops.models import Job, JobStatus, Worker
+
+class JobRepository:
+    """
+    Data Access Layer for job queues.
+    Handles all database operations for job tables (e.g., 'transcribe_jobs').
+    """
+    
+    def __init__(self, table_name: str = "jobs"):
+        # Using generic 'jobs' table for all job types (Overlord System v2)
+        if not table_name.isidentifier():
+             raise ValueError("Invalid table name for JobRepository")
+        self.table_name = table_name
+
+    def get(self, job_id: str) -> Optional[Job]:
+        """
+        Retrieves a single job by its ID.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # SELECT * will return all columns, then we remap
+                cur.execute(f"SELECT * FROM {self.table_name} WHERE job_id = %s", (job_id,))
+                row = cur.fetchone()
+                if row:
+                    # Convert psycopg2.extras.DictRow to dict for easier manipulation
+                    row_dict = dict(row)
+                    
+                    # Apply remapping for Job.from_row
+                    row_dict['job_type'] = 'transcription' # Implicit for transcribe_jobs table
+                    row_dict['config'] = row_dict.pop('options', {})
+                    row_dict['error_message'] = row_dict.pop('last_error', None)
+                    row_dict['claimed_by'] = row_dict.pop('worker_id', None) # Map worker_id to claimed_by
+                    # worker_type is in DB schema, but not directly mapped to a Job field on retrieval,
+                    # as job_type is already set to 'transcription'.
+                    return Job.from_row(row_dict)
+                return None
+
+    def create(self, job: Job) -> Job:
+        """
+        Creates a new job in the specified job table.
+        """
+        job_dict = job.to_dict()
+        # Adapt dictionaries to JSON for psycopg2
+        job_dict['config'] = Json(job_dict['config'])
+        job_dict['result'] = Json(job_dict['result']) # Not inserted, but adapted to avoid errors if present
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.table_name} (
+                        job_id, media_path, ytid, model, language,
+                        priority, options, status, created_at,
+                        claimed_at, started_at, completed_at,
+                        lease_expires_at, attempts, max_attempts,
+                        last_error, worker_id, worker_type
+                    )
+                    VALUES (
+                        %(job_id)s, %(media_path)s, %(ytid)s, %(model)s, %(language)s,
+                        %(priority)s, %(config)s, %(status)s, %(created_at)s,
+                        %(claimed_at)s, %(started_at)s, %(completed_at)s,
+                        %(lease_expires_at)s, %(attempts)s, %(max_attempts)s,
+                        %(error_message)s, %(claimed_by)s, %(worker_type)s
+                    )
+                    RETURNING
+                        id, job_id, media_path, ytid, model, language,
+                        priority, options AS config, status, created_at,
+                        claimed_at, started_at, completed_at,
+                        lease_expires_at, attempts, max_attempts,
+                        last_error AS error_message, worker_id AS claimed_by, worker_type;
+                    """,
+                    {
+                        "job_id": job_dict.get("job_id"),
+                        "media_path": job_dict.get("media_path"),
+                        "ytid": job_dict.get("ytid"),
+                        "model": job_dict.get("model", "medium"), # Default from schema
+                        "language": job_dict.get("language", "en"), # Default from schema
+                        "priority": job_dict.get("priority"),
+                        "config": job_dict.get("config"), # Maps to 'options' in DB
+                        "status": job_dict.get("status"),
+                        "created_at": job_dict.get("created_at"),
+                        "claimed_at": None, # Initial creation, not claimed
+                        # started_at and completed_at are set by DB functions or update_status
+                        "started_at": None, # Initial creation, not started
+                        "completed_at": None, # Initial creation, not completed
+                        "lease_expires_at": None, # Initial creation, no lease
+                        "attempts": job_dict.get("attempts", 0), # Default from schema
+                        "max_attempts": job_dict.get("max_attempts", 3), # Default from schema
+                        "error_message": job_dict.get("error_message"), # Maps to 'last_error' in DB
+                        "claimed_by": None, # Initial creation, no worker claims it
+                        "worker_type": None, # Initial creation, no worker_type assigned
+                    }
+                )
+                created_row = cur.fetchone()
+                if created_row:
+                    created_row_dict = dict(created_row) # Convert to dict if it's a Row object
+                    created_row_dict['error_message'] = created_row_dict.pop('last_error', None)
+                    created_row_dict['claimed_by'] = created_row_dict.pop('worker_id', None)
+                    created_row_dict['job_type'] = "transcription" # Implicit for transcribe_jobs
+                    return Job.from_row(created_row_dict)
+                return None # Should not happen if INSERT is successful
+
+    def claim_next(self, worker: Worker, lease_duration: timedelta = timedelta(hours=1)) -> Optional[Job]:
+        """
+        Atomically claims the next available job from the queue.
+        This uses 'SELECT FOR UPDATE SKIP LOCKED' to prevent race conditions
+        between multiple workers.
+        
+        Args:
+            worker: The worker attempting to claim the job.
+            lease_duration: How long the job should be "leased" before it's
+                            considered stale.
+        
+        Returns:
+            A Job object if one was successfully claimed, otherwise None.
+        """
+        stale_threshold = datetime.now(timezone.utc) - lease_duration
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET
+                        status = %s,
+                        worker_id = %s, -- Maps to claimed_by
+                        worker_type = %s, -- Store the type of worker that claimed the job
+                        claimed_at = NOW(),
+                        lease_expires_at = NOW() + INTERVAL '{lease_duration.total_seconds()} seconds'
+                    WHERE job_id = (
+                        SELECT job_id
+                        FROM {self.table_name}
+                        WHERE
+                            status = %s OR 
+                            (status = %s AND lease_expires_at < %s)
+                        ORDER BY priority DESC, created_at ASC
+                        LIMIT 1
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    RETURNING *;
+                    """,
+                    (
+                        JobStatus.CLAIMED.value,
+                        worker.worker_id,
+                        worker.worker_type, # Add worker.worker_type here
+                        JobStatus.PENDING.value,
+                        JobStatus.CLAIMED.value, # To reclaim stale jobs
+                        stale_threshold,
+                    ),
+                )
+                claimed_row = cur.fetchone()
+                if claimed_row:
+                    claimed_row_dict = dict(claimed_row)
+                    claimed_row_dict['job_type'] = 'transcription'
+                    claimed_row_dict['config'] = claimed_row_dict.pop('options', {})
+                    claimed_row_dict['error_message'] = claimed_row_dict.pop('last_error', None)
+                    claimed_row_dict['claimed_by'] = claimed_row_dict.pop('worker_id', None)
+                    return Job.from_row(claimed_row_dict)
+                return None
+    
+    def update_status(self, job_id: str, status: JobStatus, error_message: Optional[str] = None) -> Optional[Job]:
+        """
+        Updates the status of a job.
+        
+        Args:
+            job_id: The ID of the job to update.
+            status: The new status for the job.
+            error_message: An optional error message if the job failed.
+            
+        Returns:
+            The updated Job object, or None if the job was not found.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET
+                        status = %s,
+                        last_error = %s, -- Maps to error_message
+                        -- updated_at is implicitly handled by NOW() default or specific functions
+                        started_at = CASE WHEN %s = '{JobStatus.RUNNING.value}' THEN NOW() ELSE started_at END,
+                        completed_at = CASE WHEN %s IN ('{JobStatus.COMPLETED.value}', '{JobStatus.FAILED.value}', '{JobStatus.CANCELLED.value}') THEN NOW() ELSE completed_at END
+                    WHERE job_id = %s
+                    RETURNING *;
+                    """,
+                    (
+                        status.value,
+                        error_message,
+                        status.value,
+                        status.value,
+                        job_id
+                    )
+                )
+                row = cur.fetchone()
+                if row:
+                    row_dict = dict(row)
+                    row_dict['job_type'] = 'transcription'
+                    row_dict['config'] = row_dict.pop('options', {})
+                    row_dict['error_message'] = row_dict.pop('last_error', None)
+                    row_dict['claimed_by'] = row_dict.pop('worker_id', None)
+                    return Job.from_row(row_dict)
+                return None
+
+    def release(self, job_id: str) -> Optional[Job]:
+        """
+        Releases a claimed job back to the 'pending' state.
+        This is useful if a worker fails gracefully before starting processing.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET
+                        status = %s,
+                        worker_id = NULL, -- Maps to claimed_by
+                        claimed_at = NULL,
+                        lease_expires_at = NULL
+                    WHERE job_id = %s
+                    RETURNING *;
+                    """,
+                    (JobStatus.PENDING.value, job_id)
+                )
+                row = cur.fetchone()
+                if row:
+                    row_dict = dict(row)
+                    row_dict['job_type'] = 'transcription'
+                    row_dict['config'] = row_dict.pop('options', {})
+                    row_dict['error_message'] = row_dict.pop('last_error', None)
+                    row_dict['claimed_by'] = row_dict.pop('worker_id', None)
+                    return Job.from_row(row_dict)
+                return None

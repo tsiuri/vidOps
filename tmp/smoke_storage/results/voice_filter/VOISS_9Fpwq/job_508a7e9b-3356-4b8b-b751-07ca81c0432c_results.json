@@ -1,0 +1,18 @@
+{
+  "job_id": "job_508a7e9b-3356-4b8b-b751-07ca81c0432c",
+  "ytid": "VOISS_9Fpwq",
+  "clips_path": "/home/billie/tools/vidops/tmp/smoke_media/VOISS_9Fpwq",
+  "reference_count": 1,
+  "threshold": 0.1,
+  "clips_processed": 1,
+  "matches": 1,
+  "duration_seconds": 69.525,
+  "results": [
+    {
+      "clip_path": "/home/billie/tools/vidops/tmp/smoke_media/VOISS_9Fpwq/VOISS_9Fpwq_clip.wav",
+      "similarity": 1.0,
+      "is_match": true,
+      "error": null
+    }
+  ]
+}

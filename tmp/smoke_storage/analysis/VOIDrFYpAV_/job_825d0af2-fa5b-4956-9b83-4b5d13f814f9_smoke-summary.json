@@ -1,0 +1,13 @@
+{
+  "ytid": "VOIDrFYpAV_",
+  "model": "smoke-summary",
+  "transcript_kind": "words_whisper_tiny",
+  "summary": "WEBVTT 00:00:00.000 --> 00:00:01.000 Hello world",
+  "char_count": 50,
+  "word_source": "whisper-tiny",
+  "word_count": 2,
+  "top_terms": [
+    "hello",
+    "world"
+  ]
+}

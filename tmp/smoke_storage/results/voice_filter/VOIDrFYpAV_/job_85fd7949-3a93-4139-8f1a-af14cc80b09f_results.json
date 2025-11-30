@@ -1,0 +1,18 @@
+{
+  "job_id": "job_85fd7949-3a93-4139-8f1a-af14cc80b09f",
+  "ytid": "VOIDrFYpAV_",
+  "clips_path": "/home/billie/tools/vidops/tmp/smoke_media/VOIDrFYpAV_",
+  "reference_count": 1,
+  "threshold": 0.1,
+  "clips_processed": 1,
+  "matches": 1,
+  "duration_seconds": 6.716,
+  "results": [
+    {
+      "clip_path": "/home/billie/tools/vidops/tmp/smoke_media/VOIDrFYpAV_/VOIDrFYpAV__clip.wav",
+      "similarity": 1.0,
+      "is_match": true,
+      "error": null
+    }
+  ]
+}

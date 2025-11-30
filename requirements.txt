@@ -1,0 +1,14 @@
+# Core dependencies for the VidOps toolkit
+PyYAML>=6.0
+psycopg2-binary>=2.9
+click>=8.0
+yt-dlp>=2023.11.14
+faster-whisper>=0.10.0
+torch>=2.1.0
+torchaudio>=2.1.0
+resemblyzer>=0.1.1
+
+# Testing dependencies
+pytest>=7.0
+pytest-timeout>=2.3.1
+pytest-mock>=3.0 # For mocking objects
