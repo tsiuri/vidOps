@@ -59,3 +59,4 @@ The stitching worker uses ffmpeg concat, writes the final file back to `storage/
 - Storage reference: see `docs/STORAGE_INTERFACE.md` for the new clip/analysis/stitch directories
 - Status: `python3 vo_cli.py status jobs --detail` shows queue pressure by job type
 - Workers: `python3 vo_cli.py worker start <type>` uses the same queue entries as the CLI above
+- Storage Broker over HTTPS: health check with `curl -ksS -H "Authorization: Bearer <token>" https://<server-lan-ip>:8443/healthz`. Full guide: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`

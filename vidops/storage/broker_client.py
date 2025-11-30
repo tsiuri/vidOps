@@ -24,7 +24,8 @@ class StorageBrokerClient:
         self.timeout = config.request_timeout
 
     def _headers(self) -> dict:
-        return {"X-Worker-Token": self.token}
+        # Use standard Bearer token auth
+        return {"Authorization": f"Bearer {self.token}"}
 
     def upload_asset(
         self,
@@ -44,7 +45,19 @@ class StorageBrokerClient:
         url = f"{self.base_url}/v1/assets/upload"
 
         try:
-            with httpx.Client(timeout=self.timeout) as client, local_path.open("rb") as fh:
+            client_kwargs = {"timeout": self.timeout}
+            # Optional mTLS/CA settings if configured (available via global config)
+            from vidops.config import load_config
+            cfg = load_config()
+            mtls_cert = getattr(cfg.storage_broker, "mtls_client_cert", None)
+            mtls_key = getattr(cfg.storage_broker, "mtls_client_key", None)
+            ca_bundle = getattr(cfg.storage_broker, "mtls_ca_cert", None)
+            if ca_bundle:
+                client_kwargs["verify"] = ca_bundle
+            if mtls_cert and mtls_key:
+                client_kwargs["cert"] = (mtls_cert, mtls_key)
+
+            with httpx.Client(**client_kwargs) as client, local_path.open("rb") as fh:
                 files = {"file": (local_path.name, fh)}
                 data = {"ytid": ytid, "kind": kind, "relative_path": rel}
                 resp = client.post(url, headers=self._headers(), data=data, files=files)
@@ -66,7 +79,19 @@ class StorageBrokerClient:
         url = f"{self.base_url}/v1/assets/download"
         params = {"relative_path": relative_path}
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            client_kwargs = {"timeout": self.timeout}
+            # Optional mTLS/CA settings if configured (available via global config)
+            from vidops.config import load_config
+            cfg = load_config()
+            mtls_cert = getattr(cfg.storage_broker, "mtls_client_cert", None)
+            mtls_key = getattr(cfg.storage_broker, "mtls_client_key", None)
+            ca_bundle = getattr(cfg.storage_broker, "mtls_ca_cert", None)
+            if ca_bundle:
+                client_kwargs["verify"] = ca_bundle
+            if mtls_cert and mtls_key:
+                client_kwargs["cert"] = (mtls_cert, mtls_key)
+
+            with httpx.Client(**client_kwargs) as client:
                 resp = client.get(url, headers=self._headers(), params=params)
                 resp.raise_for_status()
                 destination.parent.mkdir(parents=True, exist_ok=True)

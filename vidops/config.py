@@ -86,8 +86,13 @@ class StorageBrokerConfig:
     base_url: str = "http://127.0.0.1:8443"
     listen_host: str = "127.0.0.1"
     listen_port: int = 8443
-    shared_token: Optional[str] = None
+    # Either a single shared token (str) or a per-worker map {machine_alias: token}
+    shared_token: Optional[object] = None
     request_timeout: float = 60.0
+    # Optional mTLS support for HTTPS client connections to reverse proxy
+    mtls_client_cert: Optional[str] = None
+    mtls_client_key: Optional[str] = None
+    mtls_ca_cert: Optional[str] = None
 
 
 @dataclass
@@ -143,6 +148,9 @@ def _apply_env_overrides(config_obj):
         "storage_broker.listen_host": ["VIDOPS_BROKER_HOST"],
         "storage_broker.listen_port": ["VIDOPS_BROKER_PORT"],
         "storage_broker.shared_token": ["VIDOPS_BROKER_TOKEN"],
+        "storage_broker.mtls_client_cert": ["VIDOPS_BROKER_MTLS_CLIENT_CERT"],
+        "storage_broker.mtls_client_key": ["VIDOPS_BROKER_MTLS_CLIENT_KEY"],
+        "storage_broker.mtls_ca_cert": ["VIDOPS_BROKER_MTLS_CA_CERT"],
     }
 
     for path, env_vars in ENV_MAP.items():

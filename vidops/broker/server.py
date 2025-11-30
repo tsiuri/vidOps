@@ -26,9 +26,25 @@ def get_settings():
 
 def verify_token(request: Request, settings=Depends(get_settings)):
     broker_cfg, _ = settings
-    header_token = request.headers.get("X-Worker-Token")
-    if not broker_cfg.shared_token or header_token != broker_cfg.shared_token:
-        logger.warning("Unauthorized broker request from %s", request.client.host if request.client else "unknown")
+    # Expect Authorization: Bearer <token>
+    auth = request.headers.get("Authorization", "")
+    token = ""
+    if auth.startswith("Bearer "):
+        token = auth[len("Bearer ") :].strip()
+
+    # Accept either a single token (str) or a dict mapping machine_alias -> token
+    tokens = broker_cfg.shared_token
+    valid = False
+    if isinstance(tokens, dict):
+        # When per-worker map is provided, accept any token value present
+        valid = token in tokens.values()
+    else:
+        valid = bool(tokens) and (token == tokens)
+
+    if not valid:
+        src = request.client.host if request.client else "unknown"
+        xff = request.headers.get("X-Forwarded-For", "-")
+        logger.warning("Unauthorized broker request src=%s xff=%s", src, xff)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing token.")
 
 
@@ -77,6 +93,12 @@ async def download_asset(
     if not file_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
     return FileResponse(file_path)
+
+
+@app.get("/healthz")
+async def healthz():
+    # Lightweight health endpoint for proxy checks
+    return JSONResponse({"status": "ok"})
 
 
 def run():

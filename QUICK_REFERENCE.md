@@ -19,3 +19,10 @@
 - Clips: `storage/clips/<ytid>/<label>_<start>-<end>.mp4` (`asset.kind = clip`)  
 - Stitch: `storage/stitch/<output-name>.mp4` (`asset.kind = stitched`)  
 - Analysis: `storage/analysis/<ytid>/<job_id>_<model>.json`
+
+## Storage Broker HTTPS
+- Health check: `curl -ksS -H "Authorization: Bearer <token>" https://<server-lan-ip>:8443/healthz`
+- Server example config: `config/examples/config.server.yaml`
+- Worker example config: `config/examples/config.worker.yaml`
+- Nginx site: `config/nginx/vidops-broker.conf`; Systemd unit: `config/systemd/storage-broker.service`
+- Full how‑to: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`

@@ -11,6 +11,7 @@ This is the canonical status and working instructions for the refactor to the da
 - **Transcription:** ✅ REAL. `vidops/services/transcription.py` now runs faster-whisper, streams media via `FilesystemCache`, writes real VTT + `.words.tsv`, bulk-ingests `words` rows, upserts model-specific transcripts, and registers transcript assets under `transcripts/`.
 - **Voice filtering:** ✅ QUEUE/STORE READY. `VoiceFilterService` + `VoiceFilterWorker` consume jobs from the generic `jobs` table, run Resemblyzer against operator-provided reference clips, and persist JSON/matched lists under `results/voice_filter/<ytid>/`.
 - **Assets:** ✅ REGISTRATION WORKING. DownloadService registers media assets; Clipping/Stitching/Analysis services now persist outputs under `storage/{clips,stitch,analysis}` and auto-register the resulting files.
+- **Storage Broker HTTPS:** ✅ DEPLOYED. Broker binds to localhost while nginx terminates TLS on the internal LAN IP with 192.168.0.0/24 allowlist and Authorization: Bearer tokens. `/healthz` is available for checks. See `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`.
 - **Orchestration:** ✅ AUTOMATED. Overlord polls the generic queue to chain completed transcription jobs into analysis jobs, releases stale leases after ~2h, and marks heartbeat-missing workers as STALE.
 - **Monitoring CLI:** ✅ UPDATED. `vo_cli.py status workers` and `status jobs` hit the unified tables, expose heartbeat ages/stale counts, and support per-`job_type` breakdowns.
 - **Clips/Stitch CLI:** ✅ UPDATED. `vo_cli.py clips hits/cut` replaces the legacy workspace flow (DAL-backed phrase search + TSV-driven enqueue) and `vo_cli.py stitch enqueue` handles manifest-based concatenation jobs.
@@ -59,7 +60,7 @@ This is the canonical status and working instructions for the refactor to the da
 - Agent responsibilities summary: `docs/REFACTOR_ARCHITECTURE/AGENT_ROLES.md` (now includes Atlas).
 - Database maintenance guide: `docs/DB_MAINTENANCE.md`.
 - Storage broker concept: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_DESIGN.md`.
-- Storage broker over internal HTTPS (no SSH tunnel): `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS.md` (reverse proxy + tokens/mTLS, internal IP bind).
+- Storage broker over internal HTTPS (no SSH tunnel): `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS.md` (reverse proxy + tokens/mTLS, internal IP bind). Full how‑to: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`. See also: `config/nginx/vidops-broker.conf`, `config/systemd/storage-broker.service`, and example YAMLs under `config/examples/`.
 - Storage interface documentation: `docs/STORAGE_INTERFACE.md` - read this before implementing storage access in any service (now documents clips/analysis/stitch directories).
 - Overlord monitoring guide: `docs/OVERLORD_MONITORING.md` covers responsibilities, thresholds, CLI commands, and troubleshooting flows.
 - Use this file as the single reference for priorities and status. If you need historical context, consult files under `archived/`; do not treat them as requirements.

@@ -1,0 +1,17 @@
+[Unit]
+Description=VidOps Storage Broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=billie
+WorkingDirectory=/home/billie/tools/vidops
+Environment=PYTHONPATH=/home/billie/tools/vidops
+ExecStart=/home/billie/tools/vidops/.venv/bin/python scripts/storage_broker_server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+

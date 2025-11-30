@@ -71,6 +71,7 @@ This allows you to:
 - **REFACTORING_COMPLETE.txt** - Architecture details and full feature list
 - **REFACTORING_INSTRUCTIONS_FOR_AI.txt** - Detailed implementation guide
 - **docs/SMOKE_TESTS.md** - Reproducible smoke-test suite and troubleshooting tips
+- **docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md** - Deploy the Storage Broker over internal HTTPS (nginx, TLS, tokens, health)
 
 ## 🚀 Usage Examples
 
