@@ -12,3 +12,4 @@ __pycache__/
 backups/
 analyzed/
 .venv_cli/
+config.yaml
