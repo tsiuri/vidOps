@@ -8,7 +8,7 @@ database:
   password: "z"
 
 paths:
-  central_storage_root: "/mnt/mainroot/mnt/13tb_sas/vidops/storage"
+  central_storage_root: "/mnt/13tb_sas/vidops/storage"
   local_temp_dir: "tmp"
 
 workers:
@@ -24,4 +24,3 @@ storage_broker:
   # Single shared token (or map); rotate periodically
   shared_token: "choose-a-random-secret"
   request_timeout: 60
-

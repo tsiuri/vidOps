@@ -22,8 +22,8 @@ database:
 # Paths for local and central (long-term) storage.
 paths:
   # The root directory for the central, long-term media archive.
-  # This should be a network-mounted path accessible by all workers.
-  central_storage_root: "/mnt/mainroot/mnt/13tb_sas/vidops/storage"
+  # This should be accessible by the broker service on the server.
+  central_storage_root: "/mnt/13tb_sas/vidops/storage"
   # The local directory where temporary files (like downloaded media before
   # being moved to central storage) are kept. This can be relative to the
   # project root.
@@ -74,5 +74,7 @@ storage_broker:
   listen_host: 127.0.0.1
   listen_port: 8443
   base_url: http://127.0.0.1:8443
-  shared_token: "zz"
+  # Per-worker token map. Keep a default until all workers are updated.
+  shared_token:
+    default: "zz"
   request_timeout: 60

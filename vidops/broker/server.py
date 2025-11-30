@@ -98,6 +98,7 @@ async def upload_asset(
 @app.get("/v1/assets/download")
 async def download_asset(
     relative_path: str,
+    request: Request,
     token=Depends(verify_token),
     settings=Depends(get_settings),
 ):
