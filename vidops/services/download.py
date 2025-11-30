@@ -74,9 +74,8 @@ class DownloadService:
 
             logger.info(f"Downloading video from {url}")
 
-            # Get download directory from storage manager
-            download_dir = self.fs_cache.get_central_path("raw")
-            download_dir.mkdir(parents=True, exist_ok=True)
+            # Download into local cache first (avoids relying on mounted storage)
+            download_dir = self.fs_cache.ensure_local_dir("downloads/raw")
 
             # yt-dlp options
             ydl_opts = {
@@ -121,26 +120,21 @@ class DownloadService:
                 # Upsert video to database
                 self.video_repo.upsert(video)
 
-                # Get downloaded file path
+                # Persist downloaded file into central storage (or broker)
                 downloaded_file = Path(ydl.prepare_filename(info))
-
-                # Register downloaded media as asset in database
-                if downloaded_file.exists():
-                    # Calculate relative path from central storage root
-                    relative_path = downloaded_file.relative_to(self.fs_cache.central_storage_root)
-                    self.fs_cache.register_asset(
-                        video_repo=self.video_repo,
-                        relative_path=str(relative_path),
-                        ytid=info['id'],
-                        kind='media'
-                    )
-                    logger.info(f"Registered media asset: {relative_path}")
+                relative_path = str(Path("raw") / downloaded_file.name)
+                self.fs_cache.persist_local_artifact(
+                    local_path=downloaded_file,
+                    relative_path=relative_path,
+                    video_repo=self.video_repo,
+                    ytid=info['id'],
+                    kind='media'
+                )
 
                 # Update job status to COMPLETED with result data
                 result = {
                     "ytid": info['id'],
-                    "filepath": str(downloaded_file),
-                    "relative_path": str(relative_path) if downloaded_file.exists() else None,
+                    "relative_path": relative_path,
                     "title": info.get('title'),
                     "duration_sec": info.get('duration'),
                     "filesize_bytes": downloaded_file.stat().st_size if downloaded_file.exists() else None

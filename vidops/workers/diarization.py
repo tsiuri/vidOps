@@ -26,7 +26,7 @@ class DiarizeWorker:
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
         self.worker_repo = WorkerRepository(table_name="diarization_workers") # Dedicated worker table
-        self.job_repo = JobRepository(table_name="diarization_jobs") # Dedicated job table
+        self.job_repo = JobRepository()
         self.diarization_service = get_diarization_service()
         self.running = False
         self.current_job_id: Optional[str] = None

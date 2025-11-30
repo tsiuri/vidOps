@@ -61,27 +61,30 @@ class Asset:
     """
     path: str
     ytid: str
-    kind: str # e.g., 'media', 'transcript_vtt', 'info_json'
+    kind: str  # e.g., 'media', 'transcript_vtt', 'info_json'
     size_bytes: Optional[int] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    
+
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "Asset":
         """Creates an Asset instance from a database row."""
         if not all(k in row for k in ['path', 'ytid', 'kind']):
             raise ValueError("Row is missing required fields for Asset model")
-        
+
         return cls(
             path=row.get('path'),
             ytid=row.get('ytid'),
             kind=row.get('kind'),
-            size_bytes=row.get('size_bytes'),
+            size_bytes=row.get('bytes'),
             created_at=row.get('created_at', datetime.now(UTC))
         )
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts the Asset instance to a dictionary."""
-        return asdict(self)
+        data = asdict(self)
+        # Database column is named 'bytes'
+        data['bytes'] = data.pop('size_bytes')
+        return data
 
 if __name__ == '__main__':
     # Example Usage and Testing

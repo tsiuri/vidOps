@@ -80,12 +80,24 @@ class WorkerConfig:
 
 
 @dataclass
+class StorageBrokerConfig:
+    """Settings for the optional storage broker service."""
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:8443"
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 8443
+    shared_token: Optional[str] = None
+    request_timeout: float = 60.0
+
+
+@dataclass
 class Config:
     """Root configuration object for the VidOps application."""
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     workers: WorkerConfig = field(default_factory=WorkerConfig)
+    storage_broker: StorageBrokerConfig = field(default_factory=StorageBrokerConfig)
 
 
 # --- Loading Logic ---
@@ -126,6 +138,11 @@ def _apply_env_overrides(config_obj):
         "transcription.nvidia.vad_filter": ["NV_VAD_FILTER"],
         "workers.machine_alias": ["VIDOPS_MACHINE_ALIAS"],
         "workers.max_jobs": ["VIDOPS_WORKER_MAX_JOBS"],
+        "storage_broker.enabled": ["VIDOPS_BROKER_ENABLED"],
+        "storage_broker.base_url": ["VIDOPS_BROKER_BASE_URL"],
+        "storage_broker.listen_host": ["VIDOPS_BROKER_HOST"],
+        "storage_broker.listen_port": ["VIDOPS_BROKER_PORT"],
+        "storage_broker.shared_token": ["VIDOPS_BROKER_TOKEN"],
     }
 
     for path, env_vars in ENV_MAP.items():
@@ -187,6 +204,8 @@ def load_config(config_path: str = "config.yaml") -> Config:
                         if 'nvidia' in trans_data: config.transcription.nvidia = _load_config_from_dict(NvidiaConfig, trans_data['nvidia'])
                         if 'cpu' in trans_data: config.transcription.cpu = _load_config_from_dict(CpuConfig, trans_data['cpu'])
                     if 'workers' in yaml_data: config.workers = _load_config_from_dict(WorkerConfig, yaml_data['workers'])
+                    if 'storage_broker' in yaml_data:
+                        config.storage_broker = _load_config_from_dict(StorageBrokerConfig, yaml_data['storage_broker'])
 
             except yaml.YAMLError as e:
                 _logger.warning(f"Could not parse '{config_path}': {e}") # <--- MODIFIED: Use _logger

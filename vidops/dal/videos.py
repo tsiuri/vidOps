@@ -124,12 +124,12 @@ class VideoRepository:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO assets (path, ytid, kind, size_bytes)
-                    VALUES (%(path)s, %(ytid)s, %(kind)s, %(size_bytes)s)
+                    INSERT INTO assets (path, ytid, kind, bytes)
+                    VALUES (%(path)s, %(ytid)s, %(kind)s, %(bytes)s)
                     ON CONFLICT (path) DO UPDATE SET
                         ytid = EXCLUDED.ytid,
                         kind = EXCLUDED.kind,
-                        size_bytes = EXCLUDED.size_bytes
+                        bytes = EXCLUDED.bytes
                     RETURNING *;
                     """,
                     asset_dict

@@ -34,8 +34,23 @@ Use this checklist to bring a fresh machine online as a VidOps Overlord worker. 
 
 ## 3. Storage Mount & Cache
 1. Ensure the machine can reach `/mnt/mainroot/mnt/13tb_sas/vidops/storage` (videos and large artifacts live there, not in the repo). Mount or bind-mount as needed; verify read/write access.
-2. Create the local cache directory (`paths.local_temp_dir`) and ensure sufficient disk space.
-3. Verify permissions by touching a file in the cache and listing the central storage `raw/` directory.
+2. **Optional:** if you prefer not to mount storage directly, use the storage broker tunnel (see section 3.1) to proxy uploads/downloads.
+3. Create the local cache directory (`paths.local_temp_dir`) and ensure sufficient disk space.
+4. Verify permissions by touching a file in the cache and listing the central storage `raw/` directory.
+
+### 3.1 Storage Broker Tunnel (optional)
+1. On the storage/DB host, run the broker server:  
+   `PYTHONPATH=$(pwd) .venv/bin/python scripts/storage_broker_server.py`
+2. On each worker machine, create an SSH tunnel before starting workers:  
+   `ssh -N -L 8443:127.0.0.1:8443 <broker-host>`
+3. Update `config.yaml`:
+   ```yaml
+   storage_broker:
+     enabled: true
+     base_url: http://127.0.0.1:8443
+     shared_token: "set-a-random-token-here"
+   ```
+4. Workers will automatically prefer the broker for uploading artifacts (transcripts, clips, analysis outputs). As more services adopt the broker, fewer mounts will be required.
 
 ## 4. Database Connectivity
 1. Test credentials:

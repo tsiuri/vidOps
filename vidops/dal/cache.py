@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Optional
 from vidops.config import load_config
 from vidops.models import Video, Transcript, Asset
+from vidops.storage.broker_client import StorageBrokerClient
+from vidops.storage.broker_client import StorageBrokerClient
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ class FilesystemCache:
         # Ensure local cache exists
         self.local_cache_root.mkdir(parents=True, exist_ok=True)
         logger.info(f"FilesystemCache initialized: central={self.central_storage_root}, local={self.local_cache_root}")
+        self.broker_client = StorageBrokerClient(config.storage_broker)
+        self.broker_client = StorageBrokerClient(config.storage_broker)
 
     def get_central_path(self, relative_path: str) -> Path:
         """
@@ -125,33 +129,46 @@ class FilesystemCache:
             logger.warning("Video has no ytid, cannot locate media")
             return None
 
-        # Standard naming: {ytid}__{upload_date} - {title}.{ext}
-        # For simplicity, look for any file starting with ytid in raw/ directory
-        central_raw_dir = self.central_storage_root / "raw"
+        relative_path = None
+        try:
+            from vidops.dal.videos import VideoRepository
 
-        if not central_raw_dir.exists():
-            logger.warning(f"Central raw directory not found: {central_raw_dir}")
-            return None
+            repo = VideoRepository()
+            asset = repo.get_primary_asset(video.ytid, "media")
+            if asset:
+                relative_path = Path(asset.path)
+        except Exception as exc:
+            logger.warning("Failed to load media asset metadata for %s: %s", video.ytid, exc)
 
-        # Find file matching ytid pattern
-        matching_files = list(central_raw_dir.glob(f"{video.ytid}__*.mp4"))
-        if not matching_files:
-            # Try without date suffix
-            matching_files = list(central_raw_dir.glob(f"{video.ytid}.mp4"))
-
-        if not matching_files:
-            logger.warning(f"No media file found for ytid={video.ytid}")
-            return None
-
-        # Use first match
-        central_path = matching_files[0]
+        if not relative_path:
+            # Fallback to filesystem glob
+            central_raw_dir = self.central_storage_root / "raw"
+            if not central_raw_dir.exists():
+                logger.warning(f"Central raw directory not found: {central_raw_dir}")
+                return None
+            matching_files = list(central_raw_dir.glob(f"{video.ytid}__*.mp4"))
+            if not matching_files:
+                matching_files = list(central_raw_dir.glob(f"{video.ytid}.mp4"))
+            if not matching_files:
+                logger.warning(f"No media file found for ytid={video.ytid}")
+                return None
+            central_path = matching_files[0]
+            relative_path = central_path.relative_to(self.central_storage_root)
+        else:
+            central_path = self.get_central_path(str(relative_path))
 
         if pull_to_local:
-            # Pull to local cache
-            relative_path = central_path.relative_to(self.central_storage_root)
-            return self.pull_to_cache(str(relative_path))
+            local_path = self.get_local_path(str(relative_path))
+            if self.broker_client.enabled:
+                if self.broker_client.download_asset(str(relative_path), local_path):
+                    return local_path
+                logger.warning("Broker download failed for %s, falling back to direct copy", relative_path)
+            try:
+                return self.pull_to_cache(str(relative_path))
+            except FileNotFoundError:
+                logger.error("Central storage path missing for %s and broker download failed.", relative_path)
+                return None
         else:
-            # Return central path directly
             return central_path
 
     def write_transcript(self, transcript: Transcript, content: str, extension: str = "vtt") -> Path:
@@ -214,6 +231,12 @@ class FilesystemCache:
         """
         Copy a local cache file into central storage and register it as an asset.
         """
+        if self.broker_client.enabled:
+            uploaded = self.broker_client.upload_asset(local_path, ytid, kind, relative_path)
+            if uploaded:
+                return Path(uploaded)
+            logger.warning("Broker upload failed for %s; falling back to direct copy", relative_path)
+
         central_path = self.push_local_to_central(local_path, relative_path)
         try:
             self.register_asset(

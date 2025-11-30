@@ -26,7 +26,7 @@ class ClippingWorker:
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
         self.worker_repo = WorkerRepository(table_name="clipping_workers") # Dedicated worker table
-        self.job_repo = JobRepository(table_name="clipping_jobs") # Dedicated job table
+        self.job_repo = JobRepository() # Uses generic jobs table
         self.clipping_service = get_clipping_service()
         self.running = False
         self.current_job_id: Optional[str] = None

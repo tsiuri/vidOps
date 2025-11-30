@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import signal
+from datetime import timedelta
 from typing import Optional
 
 from vidops.config import load_config
@@ -25,8 +26,8 @@ class TranscriptionWorker:
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
-        self.worker_repo = WorkerRepository(table_name="transcribe_workers")
-        self.job_repo = JobRepository(table_name="transcribe_jobs")
+        self.worker_repo = WorkerRepository()
+        self.job_repo = JobRepository()
         self.transcription_service = get_transcription_service()
         self.running = False
         self.current_job_id: Optional[str] = None

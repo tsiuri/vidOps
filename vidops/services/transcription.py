@@ -471,16 +471,11 @@ class TranscriptionService:
 
     def _persist_transcript_asset(self, local_path: Path, ytid: str, asset_kind: str) -> Path:
         relative = Path("transcripts") / local_path.name
-        central_path = self.fs_cache.get_central_path(str(relative))
-        central_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(local_path, central_path)
-        try:
-            self.fs_cache.register_asset(
-                video_repo=self.video_repo,
-                relative_path=str(relative),
-                ytid=ytid,
-                kind=asset_kind,
-            )
-        except Exception as exc:
-            logger.warning("Failed to register asset %s (%s): %s", local_path, asset_kind, exc)
-        return relative
+        stored_path = self.fs_cache.persist_local_artifact(
+            local_path=local_path,
+            relative_path=str(relative),
+            video_repo=self.video_repo,
+            ytid=ytid,
+            kind=asset_kind,
+        )
+        return Path(stored_path)

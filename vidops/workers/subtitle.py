@@ -26,7 +26,7 @@ class SubtitleWorker:
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
         self.worker_repo = WorkerRepository(table_name="subtitle_workers") # Dedicated worker table
-        self.job_repo = JobRepository(table_name="subtitle_download_jobs") # Dedicated job table
+        self.job_repo = JobRepository()
         self.subtitle_service = get_subtitle_service()
         self.running = False
         self.current_job_id: Optional[str] = None
