@@ -15,8 +15,10 @@ from .diarization import DiarizeWorker
 from .stitching import StitchWorker
 from .subtitle import SubtitleWorker # Import the new SubtitleWorker
 from .voice import VoiceFilterWorker
+from .general import GenericWorker
 
 __all__ = [
+    "GenericWorker",
     "DownloadWorker",
     "TranscriptionWorker",
     "ClippingWorker",

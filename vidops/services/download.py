@@ -76,6 +76,7 @@ class DownloadService:
 
             # Download into local cache first (avoids relying on mounted storage)
             download_dir = self.fs_cache.ensure_local_dir("downloads/raw")
+            logger.info("Download staging dir: %s", download_dir)
 
             # yt-dlp options
             ydl_opts = {
@@ -89,6 +90,7 @@ class DownloadService:
             # Download and extract info
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
+                logger.info("yt-dlp finished for %s (id=%s)", url, info.get("id") if info else "unknown")
 
                 if not info:
                     raise RuntimeError("yt-dlp returned no video info")
@@ -123,13 +125,15 @@ class DownloadService:
                 # Persist downloaded file into central storage (or broker)
                 downloaded_file = Path(ydl.prepare_filename(info))
                 relative_path = str(Path("raw") / downloaded_file.name)
-                self.fs_cache.persist_local_artifact(
+                logger.info("Uploading media to storage/broker: %s -> %s", downloaded_file, relative_path)
+                stored_path = self.fs_cache.persist_local_artifact(
                     local_path=downloaded_file,
                     relative_path=relative_path,
                     video_repo=self.video_repo,
                     ytid=info['id'],
                     kind='media'
                 )
+                logger.info("Media persisted at %s", stored_path)
 
                 # Update job status to COMPLETED with result data
                 result = {

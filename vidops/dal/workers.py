@@ -74,11 +74,18 @@ class WorkerRepository:
                     (worker_id,)
                 )
 
-    def update_status(self, worker_id: str, status: WorkerStatus, current_job_id: Optional[str] = None) -> Optional[Worker]:
+    def update_status(
+        self,
+        worker_id: str,
+        status: WorkerStatus,
+        current_job_id: Optional[str] = None,
+        worker_type: Optional[str] = None,
+    ) -> Optional[Worker]:
         """
         Updates a worker's status and the job it's currently processing.
         Also implicitly updates the heartbeat.
         """
+        type_fragment = ", worker_type = %s" if worker_type is not None else ""
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -88,10 +95,15 @@ class WorkerRepository:
                         status = %s,
                         current_job_id = %s,
                         last_heartbeat = NOW()
+                        {type_fragment}
                     WHERE worker_id = %s
                     RETURNING *;
                     """,
-                    (status.value, current_job_id, worker_id)
+                    tuple(
+                        [status.value, current_job_id]
+                        + ([worker_type] if worker_type is not None else [])
+                        + [worker_id]
+                    )
                 )
                 row = cur.fetchone()
                 return Worker.from_row(row) if row else None

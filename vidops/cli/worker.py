@@ -2,6 +2,7 @@
 
 import click
 from vidops.workers import (
+    GenericWorker,
     TranscriptionWorker,
     ClippingWorker,
     AnalysisWorker,
@@ -23,8 +24,19 @@ def worker():
 @worker.command("start")
 @click.argument(
     "worker_type",
-    type=click.Choice(['download', 'transcription', 'clipping', 'analysis', 'diarization', 'stitching', 'subtitle', 'voice']),
-    default='transcription'
+    required=False,
+    default="general",
+    type=click.Choice([
+        'general',
+        'download',
+        'transcription',
+        'clipping',
+        'analysis',
+        'diarization',
+        'stitching',
+        'subtitle',
+        'voice',
+    ]),
 )
 def start_worker(worker_type: str):
     """Start a worker process."""
@@ -34,7 +46,10 @@ def start_worker(worker_type: str):
     # you might want to use process management tools like systemd or supervisor
     # which would call the worker script directly.
     
-    if worker_type == "download":
+    if worker_type == "general":
+        worker_instance = GenericWorker()
+        worker_instance.run()
+    elif worker_type == "download":
         worker_instance = DownloadWorker()
         worker_instance.run()
     elif worker_type == "transcription":

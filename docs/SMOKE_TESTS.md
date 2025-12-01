@@ -4,6 +4,8 @@ Updated: 2025-12-01
 
 This suite validates the queue-backed workflows end-to-end using synthetic media. It is safe to run on development machines because it generates small (<200 KB) audio files and writes all artifacts under `tmp/` and `logs/smoke/`.
 
+**Legacy bridge reminder:** Production workers (including transcription) must follow the DB→legacy→DB flow: read `jobs.config`, rebuild the legacy file inputs in their original locations, invoke the legacy `workspace.sh` path, listen for its completion signal, then ingest outputs into the database and push artifacts to central storage before marking jobs complete. Smoke tests may short-circuit with in-process services, but the required production contract stays the same.
+
 ## Prerequisites
 
 1. Python virtual environment with the main requirements installed:

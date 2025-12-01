@@ -4,6 +4,7 @@ Read before coding:
 1. `SOURCE_OF_TRUTH.md` for current state.
 2. `AGENT_ROLES.md` to avoid scope overlap (Claude owns asset pipelines/CLI parity, Atlas owns DAL tests, Codex handles docs).
 3. Your last changelog (`logs/changelog/2025-11-29_gemini_transcription_test.txt`) so you stay consistent with the faster-whisper integration work.
+4. **Legacy bridge rule:** Every worker runs through DB→legacy→DB: read `jobs.config`, rebuild legacy inputs in their original locations, call the legacy `workspace.sh` command, listen for a minimal completion signal, then ingest outputs into the DB and push artifacts to central storage before closing the job. No new bespoke server-side logic.
 
 ## Tasks (exclusive to you)
 

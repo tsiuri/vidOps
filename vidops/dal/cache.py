@@ -237,6 +237,11 @@ class FilesystemCache:
                 return Path(uploaded)
             logger.warning("Broker upload failed for %s; falling back to direct copy", relative_path)
 
+        if not self.central_storage_root.exists():
+            raise RuntimeError(
+                f"Central storage root missing or offline: {self.central_storage_root}"
+            )
+
         central_path = self.push_local_to_central(local_path, relative_path)
         try:
             self.register_asset(

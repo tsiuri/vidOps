@@ -5,7 +5,7 @@ Updated: 2025-12-01 (Asset Pipeline, Voice Filter & Smoke Suite)
 This is the canonical status and working instructions for the refactor to the database-first, remote-worker Overlord system. Read this before touching any other doc. All superseded plans/logs are in `docs/REFACTOR_ARCHITECTURE/archived/`. The latest execution log is `docs/REFACTOR_ARCHITECTURE/FIRST_VIDEO_COMPLETE.md`. Latest changelog: `logs/changelog/2025-11-30_claude_overlord.txt`.
 
 ## Current State (based on most recent docs and code)
-- **Jobs/workers:** ✅ COMPLETE. Single `jobs` queue plus `workers` registry with `job_type` discriminators. `JobRepository` defaults to `jobs`, no transcribe_jobs references. Migration 002 applied. All service factories use generic JobRepository(). Forward-only, no legacy compatibility.
+- **Jobs/workers:** ✅ COMPLETE. Single `jobs` queue plus `workers` registry with `job_type` discriminators. `JobRepository` defaults to `jobs`, no transcribe_jobs references. Migration 002 applied. All service factories use generic JobRepository(). Forward-only, no legacy compatibility. Default `vo worker start` now runs a generic worker that claims any job type and resets to the starter state after each completion.
 - **Download:** ✅ OPERATIONAL. `vo worker start download` successfully fetches videos, registers in database, and registers assets. Downloads to `/mnt/mainroot/mnt/13tb_sas/vidops/storage/raw/`. Worker registration uses `workers` table. Job results stored in jobs.result JSONB.
 - **Storage/Cache Manager:** ✅ IMPLEMENTED. FilesystemCache provides two-tier storage (central + local cache), pull_to_cache(), asset registration, path resolution. Documented in `docs/STORAGE_INTERFACE.md`. Integrated into DownloadService. Ready for other services to use.
 - **Transcription:** ✅ REAL. `vidops/services/transcription.py` now runs faster-whisper, streams media via `FilesystemCache`, writes real VTT + `.words.tsv`, bulk-ingests `words` rows, upserts model-specific transcripts, and registers transcript assets under `transcripts/`.
@@ -18,10 +18,33 @@ This is the canonical status and working instructions for the refactor to the da
 - **Tests:** ⚠️ PARTIAL. DAL coverage now includes JobRepository/WorkerRepository and FilesystemCache (see `tests/dal/`). The smoke harness (`tests/smoke/`, documented in `docs/SMOKE_TESTS.md`) covers both the transcription queue worker and the new voice+analysis flow (`PYTHONPATH=. .venv/bin/pytest tests/smoke -m smoke`). Broader CI-friendly storage + Overlord flows still pending.
 
 ## Decisions and Rules
-- Database job system is forward-only: drop legacy file-queue compatibility; use the generic `jobs`/`workers` tables for all task types.
+- Database job system is forward-only: drop legacy file-queue compatibility; use the generic `jobs`/`workers` tables for all task types. Legacy `workspace.sh` modules may be invoked only as an implementation detail with DB-provided inputs and post-run ingestion into the database.
 - Media/transcript/word tables remain authoritative; respect their schemas during migrations.
 - New docs or plans must update this file first; if you create a major replacement, move the superseded doc to `archived/` immediately.
 - Storage is two-tier: central storage (`/mnt/mainroot/mnt/13tb_sas/vidops/storage`) is authoritative, local cache (`~/vidops_cache`) is for temporary processing.
+
+## Legacy Workspace Bridge (mandate)
+- Workers/CLI commands pull job config from the database, materialize the old-style inputs expected by the corresponding `workspace.sh` script (TSV manifests, path lists, etc.) via `FilesystemCache`, and invoke the legacy script with DB-sourced arguments.
+- Outputs from the legacy script are treated as cache: write to the local cache, push to central storage, then translate artifacts into database transactions (asset registration, transcript/word ingestion, job `result` updates).
+- Do not bypass the DB queue or rely on legacy file queues; the DB remains the source of truth even when the execution path calls legacy shell modules.
+- When adding new commands, document which legacy script is invoked and the input/output translation steps; ensure central storage paths are used for any exchanged files.
+- **Download worker rule:** The DB enqueue step writes the legacy yt-dlp args into `jobs.config`; the download worker reads that JSON, shells into the lightly patched legacy download script, and relies on its existing "success" marker to decide job completion. On success, the worker pushes downloaded files to central storage (via the existing cert-auth file transfer path) and marks the DB job complete. No bespoke server-side download logic is permitted.
+
+### Legacy command → DB bridge outline (applies to every worker)
+Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2) reconstructs the legacy file inputs in the exact legacy locations, (3) shells into the legacy script with the DB-provided arguments, (4) relies on a minimal patch that signals completion back to the worker, and (5) ingests outputs into the DB and pushes artifacts to central storage. This applies to every legacy command; nothing skips the DB queue or reimplements new logic server-side.
+
+- **download** (`workspace.sh download` / `scripts/utilities/clips_templates/pull.sh`): Rehydrate yt-dlp args/pacing into the legacy env/paths, run the legacy downloader, wait for its success marker, then push media to central storage and register assets; job completion is reported only after upload/registration.
+- **clips hits / cut-local / cut-net / refine** (`workspace.sh clips …`): Rebuild the TSV/manifest files under `results/` and `media/clips/` that the legacy clips pipeline expects, run the legacy `clips.sh` subcommand with DB args, rely on its completion marker, then register clip assets (hits TSV, raw clips, refined clips) and push them to storage before completing the job.
+- **dl-subs** (`workspace.sh dl-subs …`): Materialize URL lists/ytid lists exactly as legacy expects, invoke the legacy subtitle downloader, wait for its success marker, then register subtitle/transcript assets and push them to storage; mark the job complete only after DB ingestion.
+- **voice** (`workspace.sh voice …`): Stage reference clips/target clips in legacy paths, run the legacy voice filter variant from `voice` subcommands with DB args, wait for completion, then ingest matched lists/JSON into the DB as assets and push outputs to storage before closing the job.
+- **diarize** (`workspace.sh diarize …`): Pull media/words into the legacy diarization working dir, run the legacy diarization runner with DB args, rely on its success marker, then insert diarization spans/outputs into the DB and push artifacts to storage.
+- **transcribe** (`workspace.sh transcribe …`): Stage media in legacy pull paths, invoke the legacy transcription runner with DB args, wait for completion, then ingest VTT/words into transcripts/words tables, register transcript assets, and push artifacts to storage before marking complete.
+- **analyze** (`workspace.sh analyze …`): Stage transcripts/words in the legacy analysis working dir, run the legacy analyzer with DB args, wait for completion, then ingest analysis JSON/TSV outputs into the DB and register analysis assets in storage prior to completion.
+- **convert-captions** (`workspace.sh convert-captions`): Supply legacy caption inputs from cache, run the converter, then ingest the produced words TSVs into the DB and register assets before completing the job.
+- **stitch** (`workspace.sh stitch …`): Recreate manifest/list files in the legacy stitcher locations, invoke the legacy stitcher with DB args, rely on completion marker, then register stitched outputs and push to storage before marking complete.
+- **dates** (`workspace.sh dates …`): If queued, reconstruct date lists/inputs, run the legacy helper, treat produced manifests as cache, and register any outputs to the DB/storage before completion.
+- **extra-utils** (`workspace.sh extra-utils …`): Only wrap via DB queue if explicitly enabled; when wrapped, follow the same pattern—rebuild inputs, run legacy tool, ingest outputs, push to storage, then mark the job complete.
+- **dbupdate/info/gpu/help**: Operator/local-only; not queued. If ever wrapped, they must still follow the same bridge pattern (DB config → legacy inputs → legacy execution → completion signal → DB/store ingestion) but today remain manual/local.
 
 ## Immediate Priorities
 
@@ -56,6 +79,8 @@ This is the canonical status and working instructions for the refactor to the da
 - Overlord automation & monitoring: See `logs/changelog/2025-11-30_claude_overlord.txt` for the job chaining, stale lease recovery, and CLI work log.
 - Asset pipeline + CLI parity: See `logs/changelog/2025-12-01_claude_asset_cli.txt` plus `START_HERE.md` / `QUICK_REFERENCE.md` for the updated flows.
 - Remote worker onboarding guide: `docs/REFACTOR_ARCHITECTURE/REMOTE_WORKER_BOOTSTRAP.md` (code stays under `/home/billie/tools/vidops`; `/mnt/mainroot/mnt/13tb_sas/vidops/storage` is for media).
+- Storage broker trust installer: `scripts/deploy/worker_trust_broker.sh` plus docs in `docs/REFACTOR_ARCHITECTURE/REMOTE_WORKER_BOOTSTRAP.md` and `WORKER_STORAGE_BROKER_SETUP.md` describe the standard way to provision broker certs/hosts on every worker.
+- Download configuration plan: `docs/REFACTOR_ARCHITECTURE/DOWNLOAD_ENQUEUE_CONFIG.md` covers playlist explosion (one job per entry), storing all yt-dlp arguments inside `job.config`, rate-limited enqueue flow, batch inserts + `enqueue_batch_id` management commands, and the requirement that workers fail loudly if the config JSON is malformed/missing.
 - Manual operations checklist: `docs/REFACTOR_ARCHITECTURE/OPERATIONS_CHECKLIST.md`.
 - Agent responsibilities summary: `docs/REFACTOR_ARCHITECTURE/AGENT_ROLES.md` (now includes Atlas).
 - Database maintenance guide: `docs/DB_MAINTENANCE.md`.

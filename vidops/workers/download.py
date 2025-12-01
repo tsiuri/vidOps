@@ -34,8 +34,8 @@ class DownloadWorker:
             status=WorkerStatus.REGISTERING
         )
 
-        self.poll_interval = 5  # seconds
-        self.heartbeat_interval = self.config.workers.heartbeat_interval
+        self.poll_interval = 2  # seconds
+        self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
         self.last_heartbeat = 0
         self._shutdown_requested = False
         self.max_jobs = self.config.workers.max_jobs  # 0 = infinite

@@ -56,7 +56,11 @@ The stitching worker uses ffmpeg concat, writes the final file back to `storage/
 ## Helpful Tips
 
 - Logs: every session should add an entry under `logs/changelog/YYYY-MM-DD_<task>.txt`
+- Legacy bridge (all workers, including transcription): jobs are enqueued in the DB with legacy args; workers rebuild legacy inputs in their original paths, call the legacy `workspace.sh` command, wait for its completion marker, then ingest outputs into the DB and push artifacts to central storage before marking complete. No alternative server-side logic.
 - Storage reference: see `docs/STORAGE_INTERFACE.md` for the new clip/analysis/stitch directories
 - Status: `python3 vo_cli.py status jobs --detail` shows queue pressure by job type
-- Workers: `python3 vo_cli.py worker start <type>` uses the same queue entries as the CLI above
-- Storage Broker over HTTPS: health check with `curl -ksS -H "Authorization: Bearer <token>" https://<server-lan-ip>:8443/healthz`. Full guide: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`
+- Workers: `python3 vo_cli.py worker start` launches the generic worker, which claims any job and resets to "general" after each run. Append a type (e.g., `python3 vo_cli.py worker start download`) only when you need to pin a machine to a specific queue.
+- Storage Broker over HTTPS:
+  - Every worker must run the installer: `sudo bash scripts/deploy/worker_trust_broker.sh --lan-ip 192.168.0.187 --ca ~/broker-ca.pem --config config.yaml`
+  - Health check once installed: `curl --cacert /etc/vidops/certs/broker-ca.pem -sS -H "Authorization: Bearer <token>" https://broker.internal:8443/healthz`
+  - Full docs: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md` and `WORKER_STORAGE_BROKER_SETUP.md`

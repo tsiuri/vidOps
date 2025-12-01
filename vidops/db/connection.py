@@ -35,7 +35,8 @@ def init_pool():
             dbname=db_config.name,
             user=db_config.user,
             password=db_config.password,
-            cursor_factory=DictCursor  # Use dictionary-like cursors
+            cursor_factory=DictCursor,  # Use dictionary-like cursors
+            connect_timeout=5,  # fail fast instead of hanging when host is unreachable
         )
     except psycopg2.OperationalError as e:
         print(f"Error: Could not connect to database: {e}")

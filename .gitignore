@@ -13,3 +13,4 @@ backups/
 analyzed/
 .venv_cli/
 config.yaml
+tmp/

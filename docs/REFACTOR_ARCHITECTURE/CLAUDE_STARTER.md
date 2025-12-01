@@ -4,6 +4,7 @@ Read before working:
 1. `SOURCE_OF_TRUTH.md` for current system status.
 2. `AGENT_ROLES.md` for scopes (Codex/docs, Gemini/transcription, Atlas/tests).
 3. Your last log (`logs/changelog/2025-11-30_claude_overlord.txt`) so you stay consistent with prior decisions.
+4. **Legacy bridge rule:** All work must honor the DB→legacy→DB path—read `jobs.config`, recreate legacy inputs, run the legacy `workspace.sh` command, rely on a minimal completion signal, then ingest outputs into the DB and push artifacts to central storage before marking the job complete. Do not introduce new server-side logic paths.
 
 ## Tasks (exclusive to you)
 

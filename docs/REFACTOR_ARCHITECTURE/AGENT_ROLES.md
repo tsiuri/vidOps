@@ -4,6 +4,8 @@ Last updated: 2025-11-29
 
 Use this document to understand who owns which portion of the Overlord refactor. Check `SOURCE_OF_TRUTH.md` for current system status before editing anything.
 
+**Legacy bridge rule (all agents):** Every worker/CLI path must follow DB→legacy→DB: read `jobs.config`, recreate legacy inputs in their original paths, call the legacy `workspace.sh` command, wait for a minimal completion signal, then ingest outputs into the DB and push artifacts to central storage before marking the job complete. Do not design, code, or test any flow that bypasses this pattern.
+
 ## Codex (you are here)
 - Scope: documentation, coordination, operational checklists, Source-of-Truth upkeep, remote worker onboarding.
 - Deliverables to date:

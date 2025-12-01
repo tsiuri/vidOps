@@ -8,6 +8,8 @@ Assumptions
 - Server proxy cert available at: /etc/ssl/certs/broker.crt (copy to worker)
 - This repo is present on the worker and you have sudo
 
+Official installer: `scripts/deploy/worker_trust_broker.sh` (run with sudo). It performs every host, CA, and config change described below and is safe to re-run on any worker.
+
 Steps
 1) Install trust + hostname mapping
    - Copy the proxy cert from server to worker:

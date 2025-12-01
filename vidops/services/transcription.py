@@ -4,12 +4,12 @@ import gc
 import logging
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
 from faster_whisper import WhisperModel
-
 from vidops.config import load_config
 from vidops.dal import (
     VideoRepository,
@@ -43,7 +43,7 @@ class TranscriptionService:
         self.fs_cache = fs_cache
         self.config = load_config()
 
-        # Whisper model cache
+        # Whisper model cache (retained for compatibility with any direct invocations)
         self._model: Optional[WhisperModel] = None
         self._loaded_model_name: Optional[str] = None
         self._loaded_device: Optional[str] = None
@@ -160,41 +160,56 @@ class TranscriptionService:
             # 2. Update job status to RUNNING
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING)
 
-            # 3. Execute transcription with faster-whisper
+            # 3. Reconstruct legacy inputs and run the legacy transcribe path
             model_name = self._resolve_model_name(job.config)
             language = self._resolve_language(job.config)
-            vad_filter = self._resolve_vad_filter(job.config)
-
+            legacy_workspace, legacy_media_path, filelist_path = self._prepare_legacy_inputs(
+                Path(media_local_path), job
+            )
             logger.info(
-                "Starting transcription for %s using model=%s, language=%s",
+                "Launching legacy transcription for %s using model=%s language=%s",
                 job.ytid,
                 model_name,
                 language or "auto",
             )
-
             start_time = time.time()
-            segments = self._run_whisper(
-                media_path=Path(media_local_path),
+            legacy_result = self._run_legacy_transcribe(
+                workspace_root=legacy_workspace,
+                filelist_path=filelist_path,
                 model_name=model_name,
                 language=language,
-                vad_filter=vad_filter,
-                config=job.config,
+                job=job,
             )
-            if not segments:
-                logger.warning("Whisper produced no segments for %s. Continuing with empty transcript.", job.ytid)
+            if legacy_result.returncode != 0:
+                stderr = (getattr(legacy_result, "stderr", "") or "").strip()
+                stdout = (getattr(legacy_result, "stdout", "") or "").strip()
+                known_safe = "ROCm unavailable; skipping AMD worker."
+                if known_safe in stderr or known_safe in stdout:
+                    logger.warning(
+                        "Legacy transcribe returned %s with known-safe warning (%s); ingesting outputs",
+                        legacy_result.returncode,
+                        known_safe,
+                    )
+                else:
+                    logger.warning(
+                        "Legacy transcribe exited with code %s; attempting to ingest outputs anyway (stderr=%s)",
+                        legacy_result.returncode,
+                        stderr,
+                    )
 
-            # 4. Persist transcripts + words
-            words = self._segments_to_words(job.ytid, model_name, segments)
+            # 4. Ingest legacy outputs
+            vtt_path, words_path = self._locate_legacy_outputs(legacy_workspace, job.ytid)
+            words = self._parse_legacy_words(words_path, job.ytid, model_name)
             words_count = len(words)
-            segment_count = len(segments)
+            segment_count = self._estimate_segments(words)
 
             if words_count:
                 self.word_repo.bulk_insert(words)
             else:
-                logger.warning("Transcription produced no per-word entries for %s", job.ytid)
+                logger.warning("Legacy transcription produced no per-word entries for %s", job.ytid)
 
-            vtt_content = self._segments_to_vtt(segments)
-            words_tsv_content = self._words_to_tsv(words)
+            vtt_content = Path(vtt_path).read_text(encoding="utf-8")
+            words_tsv_content = Path(words_path).read_text(encoding="utf-8")
 
             # 5. Store transcripts via storage manager and register assets
             vtt_kind = f"vtt_whisper_{model_name}"
@@ -215,11 +230,8 @@ class TranscriptionService:
                 segment_count=segment_count,
             )
 
-            local_vtt = self.fs_cache.write_transcript(vtt_transcript, vtt_content, "vtt")
-            local_words = self.fs_cache.write_transcript(words_transcript, words_tsv_content, "words.tsv")
-
-            vtt_rel = self._persist_transcript_asset(Path(local_vtt), job.ytid, "transcript_vtt")
-            words_rel = self._persist_transcript_asset(Path(local_words), job.ytid, "transcript_words")
+            vtt_rel = self._persist_transcript_asset(Path(vtt_path), job.ytid, "transcript_vtt")
+            words_rel = self._persist_transcript_asset(Path(words_path), job.ytid, "transcript_words")
 
             vtt_transcript.path = str(vtt_rel)
             words_transcript.path = str(words_rel)
@@ -240,7 +252,7 @@ class TranscriptionService:
             }
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
             logger.info(
-                "Successfully transcribed %s with model %s in %.2fs",
+                "Successfully transcribed %s with model %s in %.2fs via legacy runner",
                 job.ytid,
                 model_name,
                 processing_time,
@@ -466,7 +478,7 @@ class TranscriptionService:
                 f"{token}\t"
                 f"{word.segment_id if word.segment_id is not None else 0}\t"
                 f"{(word.confidence or 0.0):.3f}\t0"
-            )
+        )
         return "\n".join(lines) + ("\n" if lines else "")
 
     def _persist_transcript_asset(self, local_path: Path, ytid: str, asset_kind: str) -> Path:
@@ -479,3 +491,149 @@ class TranscriptionService:
             kind=asset_kind,
         )
         return Path(stored_path)
+
+    def _prepare_legacy_inputs(self, media_local_path: Path, job: Job) -> Tuple[Path, Path, Path]:
+        """
+        Place media where legacy scripts expect it (PROJECT_ROOT/pull) and build a filelist for workspace.sh.
+        Returns (workspace_root, legacy_media_path, filelist_path).
+        """
+        # Reconstruct exactly where legacy expects files: under the project root, not the cache root
+        workspace_root = Path(
+            os.environ.get("VIDOPS_PROJECT_ROOT", "")
+        ).resolve() if os.environ.get("VIDOPS_PROJECT_ROOT") else Path(__file__).resolve().parents[2]
+
+        pull_dir = workspace_root / "pull"
+        generated_dir = workspace_root / "generated"
+        logs_dir = workspace_root / "logs" / "transcribe"
+        tmp_dir = workspace_root / "tmp"
+
+        for d in (pull_dir, generated_dir, logs_dir, tmp_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+        legacy_media_path = pull_dir / media_local_path.name
+        if not legacy_media_path.exists():
+            shutil.copy2(media_local_path, legacy_media_path)
+
+        filelist_path = tmp_dir / f"{job.job_id}_filelist.txt"
+        filelist_path.write_text(str(legacy_media_path) + "\n", encoding="utf-8")
+        return workspace_root, legacy_media_path, filelist_path
+
+    def _run_legacy_transcribe(
+        self,
+        workspace_root: Path,
+        filelist_path: Path,
+        model_name: str,
+        language: Optional[str],
+        job: Job,
+    ) -> subprocess.CompletedProcess:
+        """Invoke the legacy workspace.sh transcribe path with DB-provided args."""
+        workspace_sh = Path(__file__).resolve().parents[2] / "workspace.sh"
+        cmd = [
+            "bash",
+            str(workspace_sh),
+            "transcribe",
+            "--model",
+            model_name,
+            "--filelist",
+            str(filelist_path),
+            "--outfmt",
+            "both",
+            "--force",
+        ]
+        if language:
+            cmd.extend(["--language", language])
+
+        env = os.environ.copy()
+        # Keep PROJECT_ROOT aligned with the legacy path (project root, not cache)
+        env["PROJECT_ROOT"] = str(workspace_root)
+        logger.info("Running legacy transcribe command: %s", " ".join(cmd))
+        result = subprocess.run(
+            cmd,
+            cwd=workspace_root,
+            env=env,
+            capture_output=False,  # inherit stdout/stderr so operators can see progress
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            logger.info("Legacy transcribe completed for job %s", job.job_id)
+        else:
+            logger.warning(
+                "Legacy transcribe returned %s for job %s",
+                result.returncode,
+                job.job_id,
+            )
+        return result
+
+    def _locate_legacy_outputs(self, workspace_root: Path, ytid: str) -> Tuple[Path, Path]:
+        """Find VTT and words outputs produced by the legacy runner."""
+        generated_dir = workspace_root / "generated"
+        if not generated_dir.exists():
+            raise FileNotFoundError(f"Legacy generated dir missing: {generated_dir}")
+
+        vtt_candidates = list(generated_dir.rglob(f"*{ytid}*.vtt"))
+        words_candidates = []
+        words_candidates.extend(generated_dir.rglob(f"*{ytid}*.words.tsv"))
+        words_candidates.extend(generated_dir.rglob(f"*{ytid}*.words.yt.tsv"))
+        words_candidates.extend(generated_dir.rglob(f"*{ytid}*.words.*.tsv"))
+
+        if not vtt_candidates:
+            raise FileNotFoundError(f"No VTT output found for {ytid} in {generated_dir}")
+        if not words_candidates:
+            raise FileNotFoundError(f"No words TSV output found for {ytid} in {generated_dir}")
+
+        vtt_path = max(vtt_candidates, key=lambda p: p.stat().st_mtime)
+        words_path = max(words_candidates, key=lambda p: p.stat().st_mtime)
+        return vtt_path, words_path
+
+    def _parse_legacy_words(self, words_path: Path, ytid: str, model_name: str) -> List[Word]:
+        """Parse a legacy words TSV into Word models."""
+        lines = [ln.strip() for ln in words_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        if not lines:
+            return []
+
+        header = lines[0].split("\t")
+        has_header = all(k.lower() in {h.lower() for h in header} for k in ("start", "end", "word"))
+        rows = lines[1:] if has_header else lines
+        col_index = {name.lower(): idx for idx, name in enumerate(header)} if has_header else {}
+
+        def _get(row_parts: List[str], key: str, default_idx: Optional[int] = None) -> Optional[str]:
+            key = key.lower()
+            if key in col_index:
+                idx = col_index[key]
+                return row_parts[idx] if idx < len(row_parts) else None
+            if default_idx is not None and default_idx < len(row_parts):
+                return row_parts[default_idx]
+            return None
+
+        words: List[Word] = []
+        for idx, row in enumerate(rows):
+            parts = row.split("\t")
+            start_val = _get(parts, "start", 0)
+            end_val = _get(parts, "end", 1)
+            token_val = _get(parts, "word", 2)
+            if not (start_val and end_val and token_val):
+                continue
+            confidence_val = _get(parts, "confidence")
+            segment_val = _get(parts, "seg", 3)
+            try:
+                word = Word(
+                    ytid=ytid,
+                    source=f"whisper-{model_name}",
+                    idx=idx,
+                    word=token_val.strip(),
+                    start_sec=float(start_val),
+                    end_sec=float(end_val),
+                    confidence=float(confidence_val) if confidence_val else None,
+                    segment_id=int(segment_val) if segment_val is not None and segment_val != "" else None,
+                )
+                words.append(word)
+            except ValueError:
+                logger.warning("Skipping malformed legacy word row: %s", row)
+                continue
+        return words
+
+    def _estimate_segments(self, words: List[Word]) -> int:
+        """Approximate segment count from word segment IDs."""
+        segment_ids = {w.segment_id for w in words if w.segment_id is not None}
+        return max(segment_ids) + 1 if segment_ids else 0

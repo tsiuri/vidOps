@@ -2,6 +2,8 @@
 
 Context: Queue alignment (Claude), transcription+smoke tests (Gemini), and documentation/coordination (Codex) are in flight. Your work must not conflict with those efforts. Before touching code, read `SOURCE_OF_TRUTH.md`, `AGENT_ROLES.md`, and the most recent logs under `logs/changelog/`.
 
+**Legacy bridge rule:** Tests/docs must reflect that every worker consumes DB jobs, reconstructs legacy inputs, runs the legacy `workspace.sh` path with `jobs.config` args, waits for a minimal completion signal, then ingests outputs into the DB and pushes artifacts to central storage before marking completion. Do not endorse or test any flow that bypasses this pattern.
+
 ## Tasks (non-overlapping with Claude/Gemini/Codex)
 
 ### 1. DAL & Storage Tests

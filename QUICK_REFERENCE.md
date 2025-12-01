@@ -7,7 +7,8 @@
 | `python3 vo_cli.py clips enqueue --media-asset raw/...` | Manually enqueue a single clip when you already know the asset path. |
 | `python3 vo_cli.py stitch enqueue --clips-file manifest.tsv --output-name reel.mp4` | Enqueue a stitching job that concatenates previously generated clip assets. |
 | `python3 vo_cli.py status jobs --job-type clipping --detail` | Check how many clip jobs are pending/running/completed. |
-| `python3 vo_cli.py worker start clipping` | Launch a worker that consumes clip jobs, writes to central storage, and registers each clip asset. |
+| `python3 vo_cli.py worker start` | Launch the generic worker (claims any job, resets to general state after each completion). |
+| `python3 vo_cli.py worker start clipping` | Launch a worker pinned to clip jobs; writes to central storage and registers each clip asset. (Run `scripts/deploy/worker_trust_broker.sh` first for HTTPS broker trust.) |
 | `python3 vo_cli.py worker start stitching` | Launch a worker for stitch jobs; outputs land in `storage/stitch/` with asset kind `stitched`. |
 | `python3 vo_cli.py status workers --all` | Show worker heartbeat ages to ensure clip/stitch workers stay healthy. |
 
@@ -21,8 +22,9 @@
 - Analysis: `storage/analysis/<ytid>/<job_id>_<model>.json`
 
 ## Storage Broker HTTPS
-- Health check: `curl -ksS -H "Authorization: Bearer <token>" https://<server-lan-ip>:8443/healthz`
+- Installer (run on every worker): `sudo bash scripts/deploy/worker_trust_broker.sh --lan-ip 192.168.0.187 --ca ~/broker-ca.pem --config config.yaml`
+- Health check (after installer): `curl --cacert /etc/vidops/certs/broker-ca.pem -sS -H "Authorization: Bearer <token>" https://broker.internal:8443/healthz`
 - Server example config: `config/examples/config.server.yaml`
 - Worker example config: `config/examples/config.worker.yaml`
 - Nginx site: `config/nginx/vidops-broker.conf`; Systemd unit: `config/systemd/storage-broker.service`
-- Full how‑to: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`
+- Full how‑to: `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md` and `WORKER_STORAGE_BROKER_SETUP.md`

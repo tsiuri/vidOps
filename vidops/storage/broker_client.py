@@ -21,7 +21,8 @@ class StorageBrokerClient:
         self.enabled = bool(config.enabled and config.base_url and config.shared_token)
         self.base_url = config.base_url.rstrip("/") if config.base_url else ""
         self.token = config.shared_token or ""
-        self.timeout = config.request_timeout
+        # Keep requests bounded so workers don't hang when broker is unreachable
+        self.timeout = config.request_timeout or 15
 
     def _headers(self) -> dict:
         # Use standard Bearer token auth
