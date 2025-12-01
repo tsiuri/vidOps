@@ -77,11 +77,12 @@ def reset_smoke_state(ytids: Sequence[str]) -> None:
             )
             if ytids:
                 cur.execute(
-                    "DELETE FROM jobs WHERE ytid = ANY(%s) AND job_type IN ('analysis', 'voice', 'download')",
+                    "DELETE FROM jobs WHERE ytid = ANY(%s) AND job_type IN ('analysis', 'voice', 'download', 'diarization')",
                     (list(ytids),),
                 )
                 cur.execute("DELETE FROM words WHERE ytid = ANY(%s)", (list(ytids),))
                 cur.execute("DELETE FROM transcripts WHERE ytid = ANY(%s)", (list(ytids),))
+                cur.execute("DELETE FROM assets WHERE ytid = ANY(%s)", (list(ytids),))
 
     generated_root = Path("generated")
     if generated_root.exists():
@@ -98,6 +99,13 @@ def cleanup_voice_results(ytids: Sequence[str], storage_root: Path) -> None:
         voice_dir = storage_root / "results" / "voice_filter" / ytid
         if voice_dir.exists():
             shutil.rmtree(voice_dir, ignore_errors=True)
+
+
+def cleanup_diarization_results(ytids: Sequence[str], storage_root: Path) -> None:
+    for ytid in ytids:
+        diar_root = storage_root / "generated" / "diarization_resemblyzer" / ytid
+        if diar_root.exists():
+            shutil.rmtree(diar_root, ignore_errors=True)
 
 
 def run_worker_with_logs(test_name: str, label: str, cmd: List[str], env: dict) -> subprocess.CompletedProcess:

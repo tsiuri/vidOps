@@ -1,10 +1,11 @@
 # vidops/services/stitching.py
 
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from vidops.dal import VideoRepository, JobRepository, FilesystemCache
 from vidops.models import Job, JobStatus
@@ -13,8 +14,9 @@ logger = logging.getLogger(__name__)
 
 class StitchingService:
     """
-    Orchestrates the video stitching process, managing job creation,
-    dispatch, and result handling.
+    Bridge DB-backed stitch jobs into the legacy workspace.sh stitch runner.
+    Inputs are materialized under media/clips/, the legacy script is invoked,
+    and outputs are pushed to central storage with asset registration.
     """
 
     def __init__(
@@ -53,7 +55,7 @@ class StitchingService:
             raise ValueError("Input list for stitching cannot be empty.")
         if not output_filename:
             raise ValueError("Output filename cannot be empty.")
-        
+
         output_relative = str(Path("stitch") / output_filename)
 
         config = {
@@ -61,16 +63,14 @@ class StitchingService:
             "output_filename": output_filename,
             "stitch_method": stitch_method,
             "output_relative_path": output_relative,
+            "sort_method": "date_timestamp",
         }
 
-        # For stitching, we might not have a single 'ytid' or 'media_path'
-        # if stitching multiple sources. We'll use a generic job_id as the primary identifier.
-        # However, the Job model still expects ytid, so we'll use a placeholder or the first input's ytid.
         first_input_id = input_ytids_or_clip_paths[0]
-        
+
         job = Job(
             job_type="stitching",
-            ytid=first_input_id, # Placeholder; can be None or more complex logic
+            ytid=first_input_id,  # Placeholder; can be None or more complex logic
             config=config,
             priority=priority,
             status=JobStatus.PENDING
@@ -81,45 +81,86 @@ class StitchingService:
         """
         Processes a single stitching job claimed by a worker.
         """
-        if not job.config.get('input_sources') or not job.config.get('output_filename'):
-            self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Stitching job config is missing input sources or output filename.")
+        sources = job.config.get("input_sources") or []
+        output_filename = job.config.get("output_filename")
+        if not sources or not output_filename:
+            self.job_repo.update_status(
+                job.job_id,
+                JobStatus.FAILED,
+                error_message="Stitching job config is missing input sources or output filename.",
+            )
             return
 
         try:
-            input_paths = self._resolve_input_paths(job.config['input_sources'])
-            if not input_paths:
-                raise FileNotFoundError("No valid input media files found for stitching job.")
-
-            local_inputs = [self._ensure_local_path(path) for path in input_paths]
-
-            # 2. Update job status to RUNNING
-            self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting stitching.")
-
-            # 3. Execute stitching via ffmpeg concat
-            local_output = self.fs_cache.prepare_local_path(f"stitch/tmp/{job.job_id}.mp4")
-            self._run_stitch(local_inputs, local_output, job.config.get('stitch_method', 'batch'))
-
-            relative_output = job.config.get("output_relative_path") or str(
-                Path("stitch") / job.config['output_filename']
+            project_root = self._project_root()
+            stage_dir, staged_files = self._stage_inputs(
+                project_root,
+                sources,
+                output_filename,
+                job.job_id,
             )
-            self.fs_cache.persist_local_artifact(
-                local_output,
-                relative_output,
+            if not staged_files:
+                raise FileNotFoundError("No valid inputs could be materialized for stitching.")
+
+            output_relative = job.config.get("output_relative_path") or str(
+                Path("stitch") / output_filename
+            )
+            output_local = self._local_output_path(project_root, output_filename)
+            method = job.config.get("stitch_method", "batch")
+            sort_method = job.config.get("sort_method", "date_timestamp")
+
+            self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting stitching.")
+            result = self._run_legacy_stitch(project_root, stage_dir, output_local, method, sort_method)
+            stdout_tail = (result.stdout or "").strip()[-500:]
+            stderr_tail = (result.stderr or "").strip()[-500:]
+
+            if result.returncode != 0:
+                job_result = {
+                    "stitched_path": None,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                }
+                self.job_repo.update_status(
+                    job.job_id,
+                    JobStatus.FAILED,
+                    error_message=f"Legacy stitch exited {result.returncode}",
+                    result=job_result,
+                )
+                return
+
+            if not output_local.exists() or output_local.stat().st_size == 0:
+                job_result = {
+                    "stitched_path": None,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "error": "Legacy stitch produced no output",
+                }
+                self.job_repo.update_status(
+                    job.job_id,
+                    JobStatus.FAILED,
+                    error_message="Legacy stitch produced no output",
+                    result=job_result,
+                )
+                return
+
+            stored_path = self.fs_cache.persist_local_artifact(
+                output_local,
+                output_relative,
                 video_repo=self.video_repo,
                 ytid=job.ytid or "stitch",
-                kind="stitched"
+                kind="stitched",
             )
 
-            # 4. Update job status to COMPLETED
             job_result = {
-                "stitched_path": relative_output,
-                "input_count": len(local_inputs)
+                "stitched_path": str(Path(output_relative)),
+                "stored_path": str(Path(stored_path)),
+                "input_count": len(staged_files),
+                "stage_dir": str(stage_dir.relative_to(project_root)),
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
             }
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
-            logger.info("Successfully stitched %s -> %s", job.job_id, relative_output)
-
-            if local_output.exists():
-                local_output.unlink()
+            logger.info("Successfully stitched %s -> %s", job.job_id, output_relative)
 
         except Exception as e:
             error_msg = f"Stitching failed for job {job.job_id}: {e}"
@@ -130,58 +171,90 @@ class StitchingService:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _resolve_input_paths(self, sources: List[str]) -> List[Path]:
-        resolved: List[Path] = []
-        for source in sources:
+    def _project_root(self) -> Path:
+        return Path(os.environ.get("VIDOPS_PROJECT_ROOT") or Path(__file__).resolve().parents[2])
+
+    def _stage_inputs(
+        self,
+        project_root: Path,
+        sources: List[str],
+        output_filename: str,
+        job_id: str,
+    ) -> tuple[Path, List[Path]]:
+        run_name = Path(output_filename).stem or "stitch"
+        stage_dir = project_root / "media" / "clips" / f"{self._sanitize(run_name)}_{job_id[:8]}"
+        stage_dir.mkdir(parents=True, exist_ok=True)
+
+        staged: List[Path] = []
+        for idx, source in enumerate(sources):
+            staged_file = self._stage_single_source(source, stage_dir, idx)
+            if staged_file:
+                staged.append(staged_file)
+        return stage_dir, staged
+
+    def _stage_single_source(self, source: str, stage_dir: Path, idx: int) -> Optional[Path]:
+        try:
             if "/" in source:
-                candidate = self.fs_cache.get_central_path(source)
-                if candidate.exists():
-                    resolved.append(candidate)
-                else:
-                    logger.warning("Clip asset missing from storage: %s", source)
+                rel_path = source.lstrip("/")
+                local_source = self.fs_cache.pull_to_cache(rel_path)
             else:
                 video = self.video_repo.get(source)
                 if not video:
                     logger.warning("Video %s missing for stitching input.", source)
-                    continue
-                media_path = self.fs_cache.get_media_path(video)
-                if media_path and media_path.exists():
-                    resolved.append(media_path)
-                else:
+                    return None
+                local_source = self.fs_cache.get_media_path(video, pull_to_local=True)
+                if not local_source:
                     logger.warning("Media not found for %s", source)
-        return resolved
+                    return None
+            target_name = f"{idx:03d}_{self._sanitize(Path(local_source).name)}"
+            target = stage_dir / target_name
+            if local_source.resolve() != target.resolve():
+                shutil.copy2(local_source, target)
+            return target
+        except Exception as exc:
+            logger.warning("Failed to stage %s: %s", source, exc)
+            return None
 
-    def _ensure_local_path(self, path: Path) -> Path:
-        try:
-            relative = path.relative_to(self.fs_cache.central_storage_root)
-            return self.fs_cache.pull_to_cache(str(relative))
-        except ValueError:
-            return path
-
-    def _run_stitch(self, inputs: List[Path], output_path: Path, method: str) -> None:
-        manifest = self.fs_cache.prepare_local_path(f"stitch/manifests/{output_path.stem}.txt")
-        manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text("\n".join(f"file '{path}'" for path in inputs), encoding="utf-8")
-
+    def _run_legacy_stitch(
+        self,
+        project_root: Path,
+        input_dir: Path,
+        output_path: Path,
+        method: str,
+        sort_method: str,
+    ) -> subprocess.CompletedProcess:
+        workspace_sh = project_root / "workspace.sh"
         cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(manifest),
-            "-c", "copy",
+            "bash",
+            str(workspace_sh),
+            "stitch",
+            method,
+            str(input_dir),
             str(output_path),
+            sort_method,
         ]
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(project_root)
+        logger.info("Running legacy stitch: %s", " ".join(cmd))
+        return subprocess.run(
+            cmd,
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-        try:
-            subprocess.run(cmd, check=True)
-        except FileNotFoundError:
-            # Fallback: naive copy of first file
-            shutil.copy2(inputs[0], output_path)
-        except subprocess.CalledProcessError as exc:
-            logger.error("ffmpeg stitching failed (%s).", exc)
-            raise
-        finally:
-            if manifest.exists():
-                manifest.unlink()
+    def _sanitize(self, name: str) -> str:
+        safe = []
+        for ch in name:
+            safe.append(ch if ord(ch) < 128 else "-")
+        cleaned = "".join(safe)
+        while "--" in cleaned:
+            cleaned = cleaned.replace("--", "-")
+        return cleaned.strip("-") or "clip"
+
+    def _local_output_path(self, project_root: Path, output_filename: str) -> Path:
+        target = project_root / "media" / "final" / output_filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target

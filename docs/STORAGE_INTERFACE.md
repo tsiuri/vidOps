@@ -260,6 +260,7 @@ Common asset `kind` values:
 - `diarization` - Speaker diarization output
 - `subtitle` - Generated subtitle file
 - `stitched` - Final stitched compilations
+- `voice_match` - Voice filtering outputs (JSON + matched lists)
 
 ---
 

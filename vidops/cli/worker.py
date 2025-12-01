@@ -11,6 +11,8 @@ from vidops.workers import (
     SubtitleWorker,
     DownloadWorker,
     VoiceFilterWorker,
+    DatesWorker,
+    ExtraUtilsWorker,
 )
 import logging
 
@@ -36,6 +38,8 @@ def worker():
         'stitching',
         'subtitle',
         'voice',
+        'dates',
+        'extra_utils',
     ]),
 )
 def start_worker(worker_type: str):
@@ -72,6 +76,12 @@ def start_worker(worker_type: str):
         worker_instance.run()
     elif worker_type == "voice":
         worker_instance = VoiceFilterWorker()
+        worker_instance.run()
+    elif worker_type == "dates":
+        worker_instance = DatesWorker()
+        worker_instance.run()
+    elif worker_type == "extra_utils":
+        worker_instance = ExtraUtilsWorker()
         worker_instance.run()
     else:
         click.echo(click.style(f"Error: Unknown worker type '{worker_type}'", fg="red"), err=True)

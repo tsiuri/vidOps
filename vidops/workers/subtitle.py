@@ -2,41 +2,44 @@
 
 import logging
 import os
-import time
 import signal
-from typing import Optional
+import time
+from datetime import timedelta
+from typing import Optional, Sequence
 
 from vidops.config import load_config
+from vidops.dal import JobRepository, WorkerRepository
 from vidops.models import Worker, WorkerStatus, JobStatus
-from vidops.dal import WorkerRepository, JobRepository
 from vidops.services import get_subtitle_service
 
 logger = logging.getLogger(__name__)
 
+
 class SubtitleWorker:
     """
-    A worker process that claims and processes subtitle download jobs from the database.
+    Worker dedicated to subtitle pipeline jobs (dl-subs + convert-captions).
     """
-    
+
     def __init__(self):
         self.config = load_config()
-        self.worker_id = f"{self.config.workers.machine_alias}-subtitle-{os.getpid()}"
-        self.worker_type = "subtitle_download"
+        self.worker_repo = WorkerRepository()
+        self.job_repo = JobRepository()
+        self.subtitle_service = get_subtitle_service()
+        self.worker_type = "subtitle"
+        self.worker_id = f"{self.config.workers.machine_alias}-{self.worker_type}-{os.getpid()}"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
-        self.worker_repo = WorkerRepository(table_name="subtitle_workers") # Dedicated worker table
-        self.job_repo = JobRepository()
-        self.subtitle_service = get_subtitle_service()
+        self.job_types: Sequence[str] = ("dl_subs", "convert_captions")
         self.running = False
         self.current_job_id: Optional[str] = None
-        
-        # Configure logging
-        logging.basicConfig(level=logging.INFO,
-                            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
 
     def _register_worker(self):
-        """Registers or updates the worker's presence in the database."""
         worker_model = Worker(
             worker_id=self.worker_id,
             machine_alias=self.machine_alias,
@@ -44,89 +47,81 @@ class SubtitleWorker:
             status=WorkerStatus.IDLE,
             pid=self.pid,
             hostname=self.hostname,
-            capabilities=["yt_dlp"] # Placeholder
+            capabilities=["yt_dlp"],
         )
         self.worker_repo.register(worker_model)
-        logger.info(f"SubtitleWorker '{self.worker_id}' registered as {WorkerStatus.IDLE.value}.")
+        logger.info("SubtitleWorker %s registered (%s)", self.worker_id, WorkerStatus.IDLE.value)
 
     def _heartbeat(self):
-        """Sends a heartbeat to the database."""
         self.worker_repo.heartbeat(self.worker_id)
+        logger.info("Heartbeat for %s", self.worker_id)
 
     def _update_status(self, status: WorkerStatus, job_id: Optional[str] = None):
-        """Updates the worker's status in the database."""
-        self.worker_repo.update_status(self.worker_id, status, job_id)
+        self.worker_repo.update_status(self.worker_id, status, current_job_id=job_id, worker_type=self.worker_type)
 
-    def _process_single_job(self):
-        """Claims and processes a single job."""
-        job = self.job_repo.claim_next(worker=self._get_self_worker_model(), lease_duration=timedelta(minutes=self.config.workers.heartbeat_interval * 2))
-        
-        if job:
-            self.current_job_id = job.job_id
-            logger.info(f"SubtitleWorker '{self.worker_id}' claimed job '{job.job_id}' (YTID: {job.ytid}).")
-            self._update_status(WorkerStatus.BUSY, job.job_id)
-            try:
-                self.subtitle_service.process_job(job)
-                logger.info(f"Job '{job.job_id}' (YTID: {job.ytid}) completed successfully.")
-            except Exception as e:
-                logger.error(f"Error processing job '{job.job_id}': {e}", exc_info=True)
-                # The service.process_job method already updates job status to FAILED on error
-            finally:
-                self.current_job_id = None
-                self._update_status(WorkerStatus.IDLE)
-        else:
-            logger.debug(f"SubtitleWorker '{self.worker_id}' found no pending jobs.")
+    def _process_single_job(self) -> bool:
+        job = self.job_repo.claim_next(
+            worker=self._worker_model(),
+            lease_duration=timedelta(seconds=self.config.workers.heartbeat_interval * 4),
+            job_types=list(self.job_types),
+        )
+        if not job:
+            return False
+
+        self.current_job_id = job.job_id
+        self._update_status(WorkerStatus.BUSY, job.job_id)
+        try:
+            self.subtitle_service.process_job(job)
+        except Exception as exc:
+            logger.error("Error processing job %s: %s", job.job_id, exc, exc_info=True)
+            self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_message=str(exc))
+        finally:
+            self.current_job_id = None
             self._update_status(WorkerStatus.IDLE)
-        return bool(job) # Return True if a job was processed, False otherwise
+        return True
 
-    def _get_self_worker_model(self) -> Worker:
-        """Constructs a Worker model for the current worker instance."""
+    def _worker_model(self) -> Worker:
         return Worker(
             worker_id=self.worker_id,
             machine_alias=self.machine_alias,
             worker_type=self.worker_type,
             pid=self.pid,
             hostname=self.hostname,
-            capabilities=["yt_dlp"] # Dummy capabilities for now
+            capabilities=["yt_dlp"],
         )
 
     def run(self):
-        """Main loop for the worker."""
-        logger.info(f"Starting SubtitleWorker '{self.worker_id}'...")
+        logger.info("Starting SubtitleWorker %s", self.worker_id)
         self.running = True
-        
-        # Signal handling
+
         signal.signal(signal.SIGINT, self._handle_shutdown_signal)
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
 
         self._register_worker()
 
-        processed_jobs_count = 0
+        processed = 0
         while self.running:
             try:
                 if self._process_single_job():
-                    processed_jobs_count += 1
-                    # If max_jobs is set and reached, gracefully shut down
-                    if self.config.workers.max_jobs > 0 and processed_jobs_count >= self.config.workers.max_jobs:
-                        logger.info(f"Processed {processed_jobs_count} jobs, reaching max_jobs limit. Shutting down.")
-                        self.running = False
+                    processed += 1
+                    if 0 < self.config.workers.max_jobs <= processed:
+                        logger.info("Processed %s jobs (max=%s); stopping", processed, self.config.workers.max_jobs)
+                        break
                 else:
-                    # No job claimed, send heartbeat and sleep
                     self._heartbeat()
                     time.sleep(self.config.workers.heartbeat_interval)
-            except Exception as e:
-                logger.error(f"Unhandled error in worker main loop: {e}", exc_info=True)
-                self.running = False # Exit on unhandled errors
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("Unhandled error in subtitle worker loop: %s", exc, exc_info=True)
                 self._update_status(WorkerStatus.ERRORED)
+                break
 
-        logger.info(f"SubtitleWorker '{self.worker_id}' shutting down.")
+        logger.info("SubtitleWorker %s shutting down", self.worker_id)
         self._update_status(WorkerStatus.STOPPING)
-        time.sleep(1) # Give some time for status update to commit
+        time.sleep(1)
 
     def _handle_shutdown_signal(self, signum, frame):
-        """Gracefully shuts down the worker on receiving a signal."""
-        logger.warning(f"Received signal {signum}. Initiating graceful shutdown...")
+        logger.warning("Received signal %s; shutting down", signum)
         self.running = False
         if self.current_job_id:
-            logger.info(f"Releasing current job '{self.current_job_id}' before shutdown.")
+            logger.info("Releasing job %s before exit", self.current_job_id)
             self.job_repo.release(self.current_job_id)

@@ -3,6 +3,7 @@
 import logging
 import os
 import time
+from datetime import timedelta
 import signal
 from typing import Optional
 
@@ -25,7 +26,7 @@ class ClippingWorker:
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
-        self.worker_repo = WorkerRepository(table_name="clipping_workers") # Dedicated worker table
+        self.worker_repo = WorkerRepository() # Uses generic workers table
         self.job_repo = JobRepository() # Uses generic jobs table
         self.clipping_service = get_clipping_service()
         self.running = False
@@ -61,23 +62,24 @@ class ClippingWorker:
         """Claims and processes a single job."""
         job = self.job_repo.claim_next(worker=self._get_self_worker_model(), lease_duration=timedelta(minutes=self.config.workers.heartbeat_interval * 2))
         
-        if job:
-            self.current_job_id = job.job_id
-            logger.info(f"ClippingWorker '{self.worker_id}' claimed job '{job.job_id}' (YTID: {job.ytid}).")
-            self._update_status(WorkerStatus.BUSY, job.job_id)
-            try:
-                self.clipping_service.process_job(job)
-                logger.info(f"Job '{job.job_id}' (YTID: {job.ytid}) completed successfully.")
-            except Exception as e:
-                logger.error(f"Error processing job '{job.job_id}': {e}", exc_info=True)
-                # The service.process_job method already updates job status to FAILED on error
-            finally:
-                self.current_job_id = None
-                self._update_status(WorkerStatus.IDLE)
-        else:
+        if not job:
             logger.debug(f"ClippingWorker '{self.worker_id}' found no pending jobs.")
             self._update_status(WorkerStatus.IDLE)
-        return bool(job) # Return True if a job was processed, False otherwise
+            return False
+
+        self.current_job_id = job.job_id
+        logger.info(f"ClippingWorker '{self.worker_id}' claimed job '{job.job_id}' (YTID: {job.ytid}).")
+        self._update_status(WorkerStatus.BUSY, job.job_id)
+        try:
+            self.clipping_service.process_job(job)
+            logger.info(f"Job '{job.job_id}' (YTID: {job.ytid}) completed successfully.")
+        except Exception as e:
+            logger.error(f"Error processing job '{job.job_id}': {e}", exc_info=True)
+            # The service.process_job method already updates job status to FAILED on error
+        finally:
+            self.current_job_id = None
+            self._update_status(WorkerStatus.IDLE)
+        return True
 
     def _get_self_worker_model(self) -> Worker:
         """Constructs a Worker model for the current worker instance."""

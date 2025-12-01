@@ -44,11 +44,21 @@ class DownloadService:
         ytid = self._extract_ytid(url)
 
         # Create download job
+        dl_cfg = self.config.download
         job = Job(
             job_type="download",
             ytid=ytid,
             media_path=url,
-            config={"url": url},
+            config={
+                "url": url,
+                "ytdlp": {
+                    "format": dl_cfg.format,
+                    "audio_only": dl_cfg.audio_only,
+                    "audio_format": dl_cfg.audio_format,
+                    "audio_quality": dl_cfg.audio_quality,
+                    "embed_metadata": dl_cfg.embed_metadata,
+                },
+            },
             priority=priority,
             status=JobStatus.PENDING
         )
@@ -78,14 +88,33 @@ class DownloadService:
             download_dir = self.fs_cache.ensure_local_dir("downloads/raw")
             logger.info("Download staging dir: %s", download_dir)
 
-            # yt-dlp options
+            # yt-dlp options (configurable)
+            cfg = self.config.download
+            ytdlp_cfg = job.config.get("ytdlp", {}) if isinstance(job.config, dict) else {}
+            audio_only = bool(ytdlp_cfg.get("audio_only", cfg.audio_only))
+            fmt = ytdlp_cfg.get("format") or cfg.format
+            audio_format = ytdlp_cfg.get("audio_format") or cfg.audio_format
+            audio_quality = ytdlp_cfg.get("audio_quality") or cfg.audio_quality
+            embed_metadata = bool(ytdlp_cfg.get("embed_metadata", cfg.embed_metadata))
+
             ydl_opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'outtmpl': str(download_dir / '%(id)s__%(upload_date)s - %(title)s.%(ext)s'),
-                'writeinfojson': True,
-                'quiet': False,
-                'no_warnings': False,
+                "format": fmt,
+                "outtmpl": str(download_dir / "%(id)s__%(upload_date)s - %(title)s.%(ext)s"),
+                "writeinfojson": True,
+                "quiet": False,
+                "no_warnings": False,
             }
+            if embed_metadata:
+                ydl_opts["embedmetadata"] = True
+            if audio_only:
+                ydl_opts["format"] = fmt or "bestaudio/best"
+                ydl_opts["postprocessors"] = [
+                    {
+                        "key": "FFmpegExtractAudio",
+                        "preferredcodec": audio_format,
+                        "preferredquality": audio_quality,
+                    }
+                ]
 
             # Download and extract info
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -94,6 +123,14 @@ class DownloadService:
 
                 if not info:
                     raise RuntimeError("yt-dlp returned no video info")
+
+                # Resolve the actual output file (handles postprocessors/extension changes)
+                downloaded_file = Path(ydl.prepare_filename(info))
+                if not downloaded_file.exists():
+                    stem = f"{info.get('id')}__"
+                    candidates = sorted(download_dir.glob(f"{stem}*"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    if candidates:
+                        downloaded_file = candidates[0]
 
                 # Parse upload_date (YYYYMMDD format)
                 upload_date_str = info.get('upload_date')
@@ -123,7 +160,6 @@ class DownloadService:
                 self.video_repo.upsert(video)
 
                 # Persist downloaded file into central storage (or broker)
-                downloaded_file = Path(ydl.prepare_filename(info))
                 relative_path = str(Path("raw") / downloaded_file.name)
                 logger.info("Uploading media to storage/broker: %s -> %s", downloaded_file, relative_path)
                 stored_path = self.fs_cache.persist_local_artifact(
@@ -139,6 +175,7 @@ class DownloadService:
                 result = {
                     "ytid": info['id'],
                     "relative_path": relative_path,
+                    "absolute_path": str(self.fs_cache.get_central_path(relative_path)),
                     "title": info.get('title'),
                     "duration_sec": info.get('duration'),
                     "filesize_bytes": downloaded_file.stat().st_size if downloaded_file.exists() else None

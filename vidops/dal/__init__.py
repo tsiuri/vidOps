@@ -14,6 +14,7 @@ from .jobs import JobRepository
 from .workers import WorkerRepository
 from .transcripts import TranscriptRepository, WordRepository
 from .cache import FilesystemCache
+from .hits import HitsRepository
 
 __all__ = [
     "VideoRepository",

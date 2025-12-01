@@ -5,7 +5,7 @@ from typing import List, Dict, Optional
 
 import click
 
-from vidops.dal import WordRepository, VideoRepository
+from vidops.dal import WordRepository, VideoRepository, HitsRepository
 from vidops.services import get_clipping_service
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ HIT_HEADERS = [
     "phrase",
     "source",
     "media_asset_path",
+    "run_name",
 ]
 
 
@@ -30,11 +31,13 @@ def clips():
 
 @clips.command("hits")
 @click.option("-q", "--query", required=True, help="Comma-separated phrases to search for.")
-@click.option("--source", default="whisper-medium", show_default=True, help="Word source to search (e.g. whisper-medium).")
+@click.option("--source", default=None, show_default=True, help="Word source to search (e.g. whisper-medium). If omitted, will choose automatically when only one source exists for the target videos.")
 @click.option("--limit", type=int, default=100, show_default=True, help="Maximum hits per phrase.")
 @click.option("--exact/--fuzzy", default=False, show_default=True, help="Exact token match or substring match.")
-@click.option("-o", "--output", type=click.Path(), help="Optional TSV output path.")
-def clips_hits(query: str, source: str, limit: int, exact: bool, output: Optional[str]):
+@click.option("--name", required=True, help="Required name for this hits run (used for output paths).")
+@click.option("-o", "--output", type=click.Path(), help="Optional TSV output path (default: generated/hits/<name>/hits.tsv).")
+@click.option("--ytid", multiple=True, help="Limit search to one or more specific YTIDs.")
+def clips_hits(query: str, source: Optional[str], limit: int, exact: bool, name: str, output: Optional[str], ytid: tuple):
     """Search the words table for matching phrases and emit a TSV manifest."""
     phrases = [token.strip() for token in query.split(",") if token.strip()]
     if not phrases:
@@ -43,12 +46,28 @@ def clips_hits(query: str, source: str, limit: int, exact: bool, output: Optiona
 
     repo = WordRepository()
     video_repo = VideoRepository()
+    hits_repo = HitsRepository()
+
+    # Auto-resolve source if not provided and we have scoped ytids
+    resolved_source = source
+    if not source and ytid:
+        resolved_source = repo.auto_resolve_source(list(ytid))
+    elif not source:
+        resolved_source = repo.auto_resolve_source(None)
+
+    if not resolved_source:
+        click.echo(click.style("✗ No word source available for the requested scope.", fg="red"), err=True)
+        return
+
+    if resolved_source != source and source:
+        click.echo(click.style(f"⚠ Source '{source}' not found for given ytids; using '{resolved_source}'", fg="yellow"), err=True)
+    source = resolved_source
     rows: List[Dict[str, str]] = []
 
     click.echo(f"Searching {len(phrases)} phrase(s) against source '{source}'...")
     for phrase in phrases:
         tokens = phrase.split()
-        hits = repo.find_phrase_hits(tokens, source=source, limit=limit, exact=exact)
+        hits = repo.find_phrase_hits(tokens, source=source, limit=limit, exact=exact, ytids=list(ytid) if ytid else None)
         for hit in hits:
             media_asset = video_repo.get_primary_asset(hit["ytid"], "media")
             duration = float(hit["end_sec"]) - float(hit["start_sec"])
@@ -62,6 +81,7 @@ def clips_hits(query: str, source: str, limit: int, exact: bool, output: Optiona
                     "phrase": hit["phrase"],
                     "source": hit["source"],
                     "media_asset_path": media_asset.path if media_asset else "",
+                    "run_name": name,
                 }
             )
 
@@ -69,51 +89,66 @@ def clips_hits(query: str, source: str, limit: int, exact: bool, output: Optiona
         click.echo(click.style("No hits found.", fg="yellow"))
         return
 
-    if output:
-        dest = Path(output)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with dest.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=HIT_HEADERS, delimiter="\t")
-            writer.writeheader()
-            writer.writerows(rows)
-        click.echo(click.style(f"✓ Wrote {len(rows)} hits to {dest}", fg="green"))
-    else:
-        writer = csv.DictWriter(click.get_text_stream("stdout"), fieldnames=HIT_HEADERS, delimiter="\t")
+    dest = Path(output) if output else Path("generated") / "hits" / name / "hits.tsv"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=HIT_HEADERS, delimiter="\t")
         writer.writeheader()
         writer.writerows(rows)
+    click.echo(click.style(f"✓ Wrote {len(rows)} hits to {dest}", fg="green"))
+
+    # Persist hits metadata in DB
+    try:
+        inserted = hits_repo.bulk_insert(rows)
+        click.echo(click.style(f"✓ Recorded {inserted} hits in DB (run: {name})", fg="green"))
+    except Exception as exc:
+        logger.warning("Failed to insert hits into DB: %s", exc)
+        click.echo(click.style("⚠ Failed to record hits in DB", fg="yellow"))
 
 
 @clips.command("cut")
 @click.argument("hits_file", type=click.Path(exists=True))
+@click.option("--name", help="Run name; if omitted, derived from hits_file run_name column.")
 @click.option("--priority", type=int, default=0, show_default=True, help="Job priority for enqueued clips.")
 @click.option("--limit", type=int, default=None, help="Max rows to enqueue from the TSV.")
-def clips_cut(hits_file: str, priority: int, limit: Optional[int]):
+@click.option("--mode", type=click.Choice(["net", "local"]), default="net", show_default=True, help="Use legacy cut-net (default) or cut-local.")
+def clips_cut(hits_file: str, name: Optional[str], priority: int, limit: Optional[int], mode: str):
     """
-    Enqueue clipping jobs from a TSV manifest generated by 'clips hits'.
+    Enqueue a single clipping job for a TSV manifest generated by 'clips hits'.
     """
     rows = _read_hits_file(Path(hits_file))
     if limit:
         rows = rows[:limit]
 
-    service = get_clipping_service()
-    enqueued = 0
-    for row in rows:
-        try:
-            job = service.enqueue_clip_job(
-                ytid=row["ytid"],
-                start_sec=float(row["start_sec"]),
-                end_sec=float(row["end_sec"]),
-                label=row.get("label") or "clip",
-                priority=priority,
-                media_relative_path=row.get("media_asset_path") or None,
-            )
-            click.echo(click.style(f"✓ Enqueued clip job {job.job_id} for {row['ytid']}", fg="green"))
-            enqueued += 1
-        except Exception as exc:
-            logger.error("Failed to enqueue clip for %s: %s", row.get("ytid"), exc, exc_info=True)
-            click.echo(click.style(f"✗ Failed to enqueue clip for {row.get('ytid')}: {exc}", fg="red"), err=True)
+    run_names = {r.get("run_name") for r in rows if r.get("run_name")}
+    if name:
+        run_name = name
+    elif len(run_names) == 1:
+        run_name = run_names.pop()
+    else:
+        raise click.UsageError("Run name is required (use --name or include run_name column with a single value).")
 
-    click.echo(click.style(f"Total jobs enqueued: {enqueued}", fg="cyan"))
+    # Use first ytid for job ytid context
+    first_ytid = rows[0]["ytid"] if rows else None
+    if not first_ytid:
+        raise click.UsageError("Hits file missing ytid values.")
+
+    # Default output alongside the hits manifest
+    output_dir = Path("generated") / "hits" / run_name
+    service = get_clipping_service()
+    try:
+        job = service.enqueue_manifest_job(
+            manifest_path=str(Path(hits_file).resolve()),
+            run_name=run_name,
+            output_dir=str(output_dir),
+            ytid=first_ytid,
+            priority=priority,
+            mode=mode,
+        )
+        click.echo(click.style(f"✓ Enqueued clipping job {job.job_id} for manifest {hits_file}", fg="green"))
+    except Exception as exc:
+        logger.error("Failed to enqueue clipping job: %s", exc, exc_info=True)
+        click.echo(click.style(f"✗ Failed to enqueue clipping job: {exc}", fg="red"), err=True)
 
 
 @clips.command("enqueue")
@@ -153,7 +188,28 @@ def _read_hits_file(path: Path) -> List[Dict[str, str]]:
     with path.open("r", encoding="utf-8") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         rows = [row for row in reader]
-    missing = [col for col in ("ytid", "start_sec", "end_sec") if col not in reader.fieldnames]
-    if missing:
-        raise ValueError(f"Hits file missing required columns: {', '.join(missing)}")
-    return rows
+    headers = [h.strip().lower() for h in reader.fieldnames or []]
+    new_required = {"ytid", "start_sec", "end_sec"}
+    legacy_required = {"url", "start", "end"}
+    if new_required.issubset(headers):
+        return rows
+    if legacy_required.issubset(headers):
+        # normalize legacy headers to new keys so downstream can consume them
+        norm_rows = []
+        for r in rows:
+            norm_rows.append(
+                {
+                    "ytid": r.get("ytid", ""),
+                    "url": r.get("url", ""),
+                    "start_sec": r.get("start") or r.get("start_sec"),
+                    "end_sec": r.get("end") or r.get("end_sec"),
+                    "label": r.get("label"),
+                    "phrase": r.get("caption") or r.get("label"),
+                    "run_name": r.get("run_name"),
+                }
+            )
+        return norm_rows
+    raise ValueError("Hits file missing required columns (expected ytid/start_sec/end_sec or url/start/end).")
+
+
+    

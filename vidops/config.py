@@ -94,6 +94,16 @@ class StorageBrokerConfig:
     mtls_client_key: Optional[str] = None
     mtls_ca_cert: Optional[str] = None
 
+@dataclass
+class DownloadConfig:
+    """Default yt-dlp settings for download enqueue/processing."""
+    # Legacy pull.sh defaults: audio-only opus, quality 0
+    format: str = "bestaudio/best"
+    audio_only: bool = True
+    audio_format: str = "opus"
+    audio_quality: str = "0"
+    embed_metadata: bool = True
+
 
 @dataclass
 class Config:
@@ -103,6 +113,7 @@ class Config:
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     workers: WorkerConfig = field(default_factory=WorkerConfig)
     storage_broker: StorageBrokerConfig = field(default_factory=StorageBrokerConfig)
+    download: DownloadConfig = field(default_factory=DownloadConfig)
 
 
 # --- Loading Logic ---
@@ -137,12 +148,18 @@ def _apply_env_overrides(config_obj):
         "database.user": ["VIDOPS_DB_USER", "DB_USER"],
         "database.password": ["VIDOPS_DB_PASSWORD", "DB_PASSWORD"],
         "paths.central_storage_root": ["VIDOPS_CENTRAL_STORAGE"],
+        "download.format": ["VIDOPS_YTDLP_FORMAT"],
+        "download.audio_only": ["VIDOPS_YTDLP_AUDIO_ONLY"],
+        "download.audio_format": ["VIDOPS_YTDLP_AUDIO_FORMAT"],
+        "download.audio_quality": ["VIDOPS_YTDLP_AUDIO_QUALITY"],
+        "download.embed_metadata": ["VIDOPS_YTDLP_EMBED_METADATA"],
         "transcription.model": ["WHISPER_MODEL", "MODEL"],
         "transcription.language": ["WHISPER_LANGUAGE", "LANGUAGE"],
         "transcription.nvidia.compute_type": ["NV_COMPUTE"],
         "transcription.nvidia.vad_filter": ["NV_VAD_FILTER"],
         "workers.machine_alias": ["VIDOPS_MACHINE_ALIAS"],
         "workers.max_jobs": ["VIDOPS_WORKER_MAX_JOBS"],
+        "workers.heartbeat_interval": ["VIDOPS_WORKER_HEARTBEAT_INTERVAL"],
         "storage_broker.enabled": ["VIDOPS_BROKER_ENABLED"],
         "storage_broker.base_url": ["VIDOPS_BROKER_BASE_URL"],
         "storage_broker.listen_host": ["VIDOPS_BROKER_HOST"],
@@ -171,6 +188,26 @@ def _apply_env_overrides(config_obj):
 
 _config_instance: Optional[Config] = None
 
+def _resolve_config_path(config_path: str) -> Path:
+    """
+    Resolve the config path, preferring:
+    - Explicit absolute path (as given).
+    - Relative to CWD if it exists.
+    - Relative to the project root (env VIDOPS_PROJECT_ROOT or two levels above this file).
+    """
+    candidate = Path(config_path)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+    if candidate.exists():
+        return candidate.resolve()
+
+    project_root = Path(os.environ.get("VIDOPS_PROJECT_ROOT", Path(__file__).resolve().parents[2]))
+    alt = project_root / config_path
+    if alt.exists():
+        return alt.resolve()
+    return candidate.resolve()
+
+
 def load_config(config_path: str = "config.yaml") -> Config:
     """
     Loads configuration with a clear precedence order and returns a singleton instance.
@@ -187,10 +224,11 @@ def load_config(config_path: str = "config.yaml") -> Config:
     # 1. Start with dataclass defaults
     config = Config()
 
-    # 2. Load from YAML file if it exists
+    # 2. Load from YAML file if it exists (resolve relative to project root if needed)
     yaml_data = {}
-    if Path(config_path).exists():
-        with open(config_path, 'r') as f:
+    resolved_path = _resolve_config_path(config_path)
+    if resolved_path.exists():
+        with open(resolved_path, 'r') as f:
             try:
                 yaml_data = yaml.safe_load(f)
                 if yaml_data:
@@ -214,6 +252,8 @@ def load_config(config_path: str = "config.yaml") -> Config:
                     if 'workers' in yaml_data: config.workers = _load_config_from_dict(WorkerConfig, yaml_data['workers'])
                     if 'storage_broker' in yaml_data:
                         config.storage_broker = _load_config_from_dict(StorageBrokerConfig, yaml_data['storage_broker'])
+                    if 'download' in yaml_data:
+                        config.download = _load_config_from_dict(DownloadConfig, yaml_data['download'])
 
             except yaml.YAMLError as e:
                 _logger.warning(f"Could not parse '{config_path}': {e}") # <--- MODIFIED: Use _logger

@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import signal
+from datetime import timedelta
 from typing import Optional
 
 from vidops.config import load_config
@@ -25,11 +26,12 @@ class DiarizeWorker:
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
         self.hostname = os.uname().nodename
-        self.worker_repo = WorkerRepository(table_name="diarization_workers") # Dedicated worker table
+        self.worker_repo = WorkerRepository()
         self.job_repo = JobRepository()
         self.diarization_service = get_diarization_service()
         self.running = False
         self.current_job_id: Optional[str] = None
+        self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
         
         # Configure logging
         logging.basicConfig(level=logging.INFO,
@@ -59,7 +61,11 @@ class DiarizeWorker:
 
     def _process_single_job(self):
         """Claims and processes a single job."""
-        job = self.job_repo.claim_next(worker=self._get_self_worker_model(), lease_duration=timedelta(minutes=self.config.workers.heartbeat_interval * 2))
+        job = self.job_repo.claim_next(
+            worker=self._get_self_worker_model(),
+            lease_duration=timedelta(seconds=self.heartbeat_interval * 4),
+            job_types=[self.worker_type],
+        )
         
         if job:
             self.current_job_id = job.job_id
@@ -113,7 +119,7 @@ class DiarizeWorker:
                 else:
                     # No job claimed, send heartbeat and sleep
                     self._heartbeat()
-                    time.sleep(self.config.workers.heartbeat_interval)
+                    time.sleep(self.heartbeat_interval)
             except Exception as e:
                 logger.error(f"Unhandled error in worker main loop: {e}", exc_info=True)
                 self.running = False # Exit on unhandled errors

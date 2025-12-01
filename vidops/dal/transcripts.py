@@ -122,7 +122,8 @@ class WordRepository:
         tokens: List[str],
         source: Optional[str] = None,
         limit: int = 100,
-        exact: bool = False
+        exact: bool = False,
+        ytids: Optional[List[str]] = None,
     ) -> List[dict]:
         """
         Find occurrences of sequential tokens within the words table.
@@ -146,6 +147,9 @@ class WordRepository:
                 if source:
                     sql += " AND source = %s"
                     params.append(source)
+                if ytids:
+                    sql += " AND ytid = ANY(%s)"
+                    params.append(ytids)
                 sql += " ORDER BY start_sec LIMIT %s"
                 params.append(limit)
                 cur.execute(sql, tuple(params))
@@ -195,6 +199,24 @@ class WordRepository:
                     )
 
         return results
+
+    def auto_resolve_source(self, ytids: Optional[List[str]] = None) -> Optional[str]:
+        """
+        Pick a single available source for the given ytids (or globally) if only one exists.
+        If multiple sources exist, return None to force the caller to choose.
+        """
+        sql = "SELECT DISTINCT source FROM words"
+        params: List = []
+        if ytids:
+            sql += " WHERE ytid = ANY(%s)"
+            params.append(ytids)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, tuple(params) if params else None)
+                sources = [row[0] for row in cur.fetchall()]
+                if len(sources) == 1:
+                    return sources[0]
+                return None
 
     def fetch_for_source(
         self,

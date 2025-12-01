@@ -1,21 +1,25 @@
 # Overlord Refactor — Source of Truth
 
-Updated: 2025-12-01 (Asset Pipeline, Voice Filter & Smoke Suite)
+Updated: 2025-12-02 (Legacy Bridges for Voice/Diarization, Stitch/Analyze, Dates/Extra-Utils, Subtitles)
 
 This is the canonical status and working instructions for the refactor to the database-first, remote-worker Overlord system. Read this before touching any other doc. All superseded plans/logs are in `docs/REFACTOR_ARCHITECTURE/archived/`. The latest execution log is `docs/REFACTOR_ARCHITECTURE/FIRST_VIDEO_COMPLETE.md`. Latest changelog: `logs/changelog/2025-11-30_claude_overlord.txt`.
 
 ## Current State (based on most recent docs and code)
 - **Jobs/workers:** ✅ COMPLETE. Single `jobs` queue plus `workers` registry with `job_type` discriminators. `JobRepository` defaults to `jobs`, no transcribe_jobs references. Migration 002 applied. All service factories use generic JobRepository(). Forward-only, no legacy compatibility. Default `vo worker start` now runs a generic worker that claims any job type and resets to the starter state after each completion.
 - **Download:** ✅ OPERATIONAL. `vo worker start download` successfully fetches videos, registers in database, and registers assets. Downloads to `/mnt/mainroot/mnt/13tb_sas/vidops/storage/raw/`. Worker registration uses `workers` table. Job results stored in jobs.result JSONB.
+  - yt-dlp defaults are now configurable in `config.yaml` (`download.format`, `download.audio_only`, `download.audio_format`, `download.audio_quality`, `download.embed_metadata`), resolved relative to the project root. Jobs record the chosen yt-dlp settings at enqueue time.
 - **Storage/Cache Manager:** ✅ IMPLEMENTED. FilesystemCache provides two-tier storage (central + local cache), pull_to_cache(), asset registration, path resolution. Documented in `docs/STORAGE_INTERFACE.md`. Integrated into DownloadService. Ready for other services to use.
 - **Transcription:** ✅ REAL. `vidops/services/transcription.py` now runs faster-whisper, streams media via `FilesystemCache`, writes real VTT + `.words.tsv`, bulk-ingests `words` rows, upserts model-specific transcripts, and registers transcript assets under `transcripts/`.
-- **Voice filtering:** ✅ QUEUE/STORE READY. `VoiceFilterService` + `VoiceFilterWorker` consume jobs from the generic `jobs` table, run Resemblyzer against operator-provided reference clips, and persist JSON/matched lists under `results/voice_filter/<ytid>/`.
-- **Assets:** ✅ REGISTRATION WORKING. DownloadService registers media assets; Clipping/Stitching/Analysis services now persist outputs under `storage/{clips,stitch,analysis}` and auto-register the resulting files.
+- **Voice filtering:** ✅ QUEUED VIA LEGACY BRIDGE. `VoiceFilterService` + `VoiceFilterWorker` stage clips/reference audio via `FilesystemCache` into the legacy workspace, invoke `workspace.sh voice filter-*`, register `voice_match` assets under `results/voice_filter/<ytid>/` with `rel_path`, and write job.result summaries; fake mode available via `VIDOPS_FAKE_VOICE` for smoke.
+- **Diarization:** ✅ QUEUED VIA LEGACY BRIDGE. `DiarizationService` + `DiarizeWorker` stage media in `pull/`, words in `generated/diarization_inputs/`, reference clips under `generated/diary_reference/<ytid>/`, run `workspace.sh diarize`, and register `diarization` assets (`diarized_timestamps.tsv`, `speaker_words.tsv`, `diarization.json`) under `generated/diarization_resemblyzer/<ytid>/`; fake mode via `VIDOPS_FAKE_DIARIZATION`.
+- **Assets:** ✅ REGISTRATION WORKING. DownloadService registers media assets (assets table includes `rel_path`); Clipping/Stitching/Analysis services now persist outputs under storage and auto-register the resulting files.
+- **Subtitles:** ✅ BRIDGED. `vo dl-subs enqueue` and `vo convert-captions enqueue` now create DB jobs that reconstruct legacy `pull/` URL lists, run `workspace.sh dl-subs`/`convert-captions`, ingest VTT/SRT + `.words.yt.tsv` into DB (transcripts + words), register `subtitle`/`transcript_words` assets with `rel_path`, and push artifacts via `FilesystemCache` (central `/mnt/mainroot/mnt/13tb_sas/vidops/storage`, cache `~/vidops_cache` or `tmp/`).
+- **Legacy stitch/analyze/dates/extra-utils:** ✅ BRIDGED. Stitch, analyze, dates, and extra-utils queue jobs now rebuild manifests/lists under legacy `media/` + `generated/`, run `workspace.sh` subcommands, register `stitched`/`analysis`/`dates_manifest`/`utility_output` assets with `rel_path`, and capture stdout/stderr tails + empty-output failures in `job.result`.
 - **Storage Broker HTTPS:** ✅ DEPLOYED. Broker binds to localhost while nginx terminates TLS on the internal LAN IP with 192.168.0.0/24 allowlist and Authorization: Bearer tokens. `/healthz` is available for checks. See `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`.
 - **Orchestration:** ✅ AUTOMATED. Overlord polls the generic queue to chain completed transcription jobs into analysis jobs, releases stale leases after ~2h, and marks heartbeat-missing workers as STALE.
 - **Monitoring CLI:** ✅ UPDATED. `vo_cli.py status workers` and `status jobs` hit the unified tables, expose heartbeat ages/stale counts, and support per-`job_type` breakdowns.
-- **Clips/Stitch CLI:** ✅ UPDATED. `vo_cli.py clips hits/cut` replaces the legacy workspace flow (DAL-backed phrase search + TSV-driven enqueue) and `vo_cli.py stitch enqueue` handles manifest-based concatenation jobs.
-- **Tests:** ⚠️ PARTIAL. DAL coverage now includes JobRepository/WorkerRepository and FilesystemCache (see `tests/dal/`). The smoke harness (`tests/smoke/`, documented in `docs/SMOKE_TESTS.md`) covers both the transcription queue worker and the new voice+analysis flow (`PYTHONPATH=. .venv/bin/pytest tests/smoke -m smoke`). Broader CI-friendly storage + Overlord flows still pending.
+- **Clips/Stitch CLI:** ✅ UPDATED. `vo_cli.py clips hits/cut` replaces the legacy workspace flow (DAL-backed phrase search + manifest-driven enqueue). `clips cut` is manifest-level (one job per TSV), defaults to `--mode net` (legacy cut-net), supports `--mode local`, and outputs under `generated/hits/<run_name>/`. `vo_cli.py stitch enqueue` handles manifest-based concatenation jobs.
+- **Tests:** ⚠️ PARTIAL. DAL coverage includes JobRepository/WorkerRepository and FilesystemCache (see `tests/dal/`). The smoke harness (`tests/smoke/`, documented in `docs/SMOKE_TESTS.md`) covers transcription, voice+analysis (with `VIDOPS_FAKE_VOICE`), diarization (`VIDOPS_FAKE_DIARIZATION`), subtitles, and stitch→analyze bridging (`PYTHONPATH=. .venv/bin/pytest tests/smoke -m smoke`). Broader CI-friendly storage + Overlord flows still pending.
 
 ## Decisions and Rules
 - Database job system is forward-only: drop legacy file-queue compatibility; use the generic `jobs`/`workers` tables for all task types. Legacy `workspace.sh` modules may be invoked only as an implementation detail with DB-provided inputs and post-run ingestion into the database.
@@ -35,12 +39,12 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 
 - **download** (`workspace.sh download` / `scripts/utilities/clips_templates/pull.sh`): Rehydrate yt-dlp args/pacing into the legacy env/paths, run the legacy downloader, wait for its success marker, then push media to central storage and register assets; job completion is reported only after upload/registration.
 - **clips hits / cut-local / cut-net / refine** (`workspace.sh clips …`): Rebuild the TSV/manifest files under `results/` and `media/clips/` that the legacy clips pipeline expects, run the legacy `clips.sh` subcommand with DB args, rely on its completion marker, then register clip assets (hits TSV, raw clips, refined clips) and push them to storage before completing the job.
-- **dl-subs** (`workspace.sh dl-subs …`): Materialize URL lists/ytid lists exactly as legacy expects, invoke the legacy subtitle downloader, wait for its success marker, then register subtitle/transcript assets and push them to storage; mark the job complete only after DB ingestion.
+- **dl-subs** (`workspace.sh dl-subs …`): Materialize URL lists/ytid lists exactly as legacy expects, invoke the legacy subtitle downloader, wait for its success marker, then register subtitle/transcript assets (with `rel_path`) and push them to storage via FilesystemCache; mark the job complete only after DB ingestion.
 - **voice** (`workspace.sh voice …`): Stage reference clips/target clips in legacy paths, run the legacy voice filter variant from `voice` subcommands with DB args, wait for completion, then ingest matched lists/JSON into the DB as assets and push outputs to storage before closing the job.
 - **diarize** (`workspace.sh diarize …`): Pull media/words into the legacy diarization working dir, run the legacy diarization runner with DB args, rely on its success marker, then insert diarization spans/outputs into the DB and push artifacts to storage.
 - **transcribe** (`workspace.sh transcribe …`): Stage media in legacy pull paths, invoke the legacy transcription runner with DB args, wait for completion, then ingest VTT/words into transcripts/words tables, register transcript assets, and push artifacts to storage before marking complete.
 - **analyze** (`workspace.sh analyze …`): Stage transcripts/words in the legacy analysis working dir, run the legacy analyzer with DB args, wait for completion, then ingest analysis JSON/TSV outputs into the DB and register analysis assets in storage prior to completion.
-- **convert-captions** (`workspace.sh convert-captions`): Supply legacy caption inputs from cache, run the converter, then ingest the produced words TSVs into the DB and register assets before completing the job.
+- **convert-captions** (`workspace.sh convert-captions`): Supply legacy caption inputs from cache, run the converter, then ingest the produced words TSVs into the DB, register subtitle/words assets with `rel_path`, and push them to storage before completing the job.
 - **stitch** (`workspace.sh stitch …`): Recreate manifest/list files in the legacy stitcher locations, invoke the legacy stitcher with DB args, rely on completion marker, then register stitched outputs and push to storage before marking complete.
 - **dates** (`workspace.sh dates …`): If queued, reconstruct date lists/inputs, run the legacy helper, treat produced manifests as cache, and register any outputs to the DB/storage before completion.
 - **extra-utils** (`workspace.sh extra-utils …`): Only wrap via DB queue if explicitly enabled; when wrapped, follow the same pattern—rebuild inputs, run legacy tool, ingest outputs, push to storage, then mark the job complete.
@@ -90,6 +94,21 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - Overlord monitoring guide: `docs/OVERLORD_MONITORING.md` covers responsibilities, thresholds, CLI commands, and troubleshooting flows.
 - Use this file as the single reference for priorities and status. If you need historical context, consult files under `archived/`; do not treat them as requirements.
 
+## Recent Changes (2025-12-02)
+
+**Voice + Diarization Bridge (Codex):**
+- Voice and diarization workers now shell into legacy `workspace.sh voice` / `workspace.sh diarize`, staging clips/reference audio, words TSVs, and media via FilesystemCache and registering outputs as `voice_match` / `diarization` assets with `rel_path` plus job.result summaries. Fake modes (`VIDOPS_FAKE_VOICE`, `VIDOPS_FAKE_DIARIZATION`) enable smoke runs without GPU/audio.
+- `vo diarize enqueue` captures reference dir, words path, device, and timing thresholds in `jobs.config` for deterministic worker runs; workers align heartbeat/lease with other job types.
+- Smoke coverage added for the diarization bridge (`tests/smoke/test_diarization_smoke.py`) alongside the existing voice + analysis smoke to validate the legacy paths.
+
+**Legacy stitch/analyze/dates/extra-utils bridge (Codex):**
+- Stitching and analysis queue jobs now rebuild clip assets and transcripts under legacy paths, call `workspace.sh stitch`/`analyze`, register `stitched` + `analysis` assets with `rel_path`, and include stdout/stderr tails plus empty-output failures in `job.result`.
+- Added `vo dates enqueue` / `vo extra-utils enqueue` with workers that materialize date lists or utility inputs under legacy `data/`/`media/`, run the legacy helpers, and register `dates_manifest`/`utility_output` artifacts back to storage.
+- New smoke (`tests/smoke/test_stitch_analyze_bridge.py`) stitches a tiny manifest then runs analyze on its transcript to validate the bridge.
+
+**Subtitles bridge (Codex):**
+- `vo dl-subs enqueue` and `vo convert-captions enqueue` now create DB jobs that reconstruct legacy `pull/` URL lists, run `workspace.sh dl-subs`/`convert-captions`, ingest VTT/SRT + `.words.yt.tsv` into DB, register subtitle/transcript assets with `rel_path`, and push artifacts via FilesystemCache. Inline smoke against `eKDI2rxQ-fA` confirmed job completion and asset registration.
+
 ## Recent Changes (2025-12-01)
 
 **Asset Pipeline + CLI Parity:**
@@ -97,6 +116,7 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - `ClippingService`, `StitchingService`, and `AnalysisService` now pull inputs via FilesystemCache, render artifacts locally, and register assets under `storage/{clips,stitch,analysis}` (`asset.kind` = `clip`, `stitched`, `analysis`).
 - `WordRepository.find_phrase_hits()` + `vo_cli.py clips hits` replace the shell-based hits search; `clips cut` reads the TSV and enqueues queue jobs with media asset metadata.
 - Added `vo_cli.py stitch enqueue` for manifest-driven concatenation jobs, plus new docs (`START_HERE.md`, `QUICK_REFERENCE.md`, updated `docs/STORAGE_INTERFACE.md`).
+- Assets table now includes `rel_path`; broker uploads register assets with `rel_path` set. Clips default to `generated/hits/<run_name>/` output.
 
 **Files Modified:**
 - `.gitignore`
@@ -116,6 +136,27 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - Added `vidops/services/voice_filter.py`, CLI wiring (`vo voice enqueue`), `VoiceFilterWorker`, and job-type aware `JobRepository.claim_next` so voice jobs run through the shared queue/storage path. Voice results land under `results/voice_filter/<ytid>/` and are registered as assets.
 - AnalysisService now consumes real faster-whisper transcripts/words (`WordRepository.fetch_for_source`), reports top-term stats, writes JSON artifacts via `FilesystemCache.persist_local_artifact`, and the AnalysisWorker uses the generic `jobs`/`workers` tables.
 - Smoke suite expanded (`tests/smoke/`, `scripts/smoke/run_smoke_suite.sh`, `docs/SMOKE_TESTS.md`) with fixtures/helpers that capture worker stdout/stderr and a new voice+analysis pipeline test. `PYTHONPATH=. .venv/bin/pytest tests/smoke -m smoke` currently passes locally.
+
+**Clips bridge & query-ids (Codex):**
+- `clips hits` requires `--name`, writes manifests to `generated/hits/<name>/hits.tsv`, records hits in DB with `run_name`, and auto-resolves source when omitted and only one source is applicable.
+- `clips cut` is manifest-level (one job per TSV), defaults to `--mode net` (legacy `cut-net`), supports `--mode local`, outputs under `generated/hits/<run_name>/`, sanitizes filenames, registers the manifest (`clips_manifest`) and clip assets, and uses `rel_path` in asset registration.
+- New `vo query-ids run` batches phrase search against a YTID list (chunked), writes manifests to `generated/query_ids/<name>/hits.tsv`, records hits in DB; use `clips cut` to process those manifests.
+- Gaps: `--force` overwrite semantics not implemented; cut-refine not bridged; manifests need valid start/end values (empty rows produce no clips).
+
+## Recent Changes (2025-12-02)
+
+**Voice + Diarization Bridge (Codex):**
+- Voice and diarization workers now shell into legacy `workspace.sh voice` / `workspace.sh diarize`, staging clips/reference audio, words TSVs, and media via FilesystemCache and registering outputs as `voice_match` / `diarization` assets with `rel_path` plus job.result summaries. Fake modes (`VIDOPS_FAKE_VOICE`, `VIDOPS_FAKE_DIARIZATION`) enable smoke runs without GPU/audio.
+- `vo diarize enqueue` captures reference dir, words path, device, and timing thresholds in `jobs.config` for deterministic worker runs; workers align heartbeat/lease with other job types.
+- Smoke coverage added for the diarization bridge (`tests/smoke/test_diarization_smoke.py`) alongside the existing voice + analysis smoke to validate the legacy paths.
+
+**Legacy stitch/analyze/dates/extra-utils bridge (Codex):**
+- Stitching and analysis queue jobs now rebuild clip assets and transcripts under legacy paths, call `workspace.sh stitch`/`analyze`, register `stitched` + `analysis` assets with `rel_path`, and include stdout/stderr tails plus empty-output failures in `job.result`.
+- Added `vo dates enqueue` / `vo extra-utils enqueue` with workers that materialize date lists or utility inputs under legacy `data/`/`media/`, run the legacy helpers, and register `dates_manifest`/`utility_output` artifacts back to storage.
+- New smoke (`tests/smoke/test_stitch_analyze_bridge.py`) stitches a tiny manifest then runs analyze on its transcript to validate the bridge.
+
+**Subtitles bridge (Codex):**
+- `vo dl-subs enqueue` and `vo convert-captions enqueue` now create DB jobs that reconstruct legacy `pull/` URL lists, run `workspace.sh dl-subs`/`convert-captions`, ingest VTT/SRT + `.words.yt.tsv` into DB, register subtitle/transcript assets with `rel_path`, and push artifacts via FilesystemCache. Inline smoke against `eKDI2rxQ-fA` confirmed job completion and asset registration.
 
 ## Recent Changes (2025-11-30)
 
@@ -139,6 +180,21 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - `vidops/services/transcription.py` now runs faster-whisper end-to-end, persists VTT + `.words.tsv`, bulk-ingests `Word` rows, upserts `words_whisper_{model}` + `vtt_whisper_{model}` transcripts, and registers transcript assets under `transcripts/`.
 - `tests/smoke/test_transcription_smoke.py` serves as the reproducible queue smoke path (synthetic clip → worker subprocess → DB verification). The worker script is configurable via `VIDOPS_SMOKE_WORKER` (CPU default, GPU optional).
 
+**Clips (in progress):**
+- `clips hits` now requires `--name`, writes manifests to `generated/hits/<name>/hits.tsv`, and records hits in DB with `run_name`.
+- `clips cut` requires/inherits `run_name`, defaults outputs to `media/clips/<run_name>/`, and embeds manifest/output info in job configs.
+- Clipping worker now bridges to legacy `workspace.sh clips cut-local`: stages media in `pull/`, copies manifest under `generated/hits/<run_name>/`, runs the legacy cutter with inherited stdout/stderr, registers the manifest (`clips_manifest`) and clip assets, and pushes to storage.
+- Output filenames are sanitized to ASCII before upload/registration; broker uploads now register assets with `rel_path` set (assets table now has `rel_path`, backfilled). If you need mp4 clips, set `CLIP_CONTAINER=mp4` in the legacy env when invoking `workspace.sh clips cut-local`.
+- Current gap: `--force` overwrite behavior for clips/transcripts/downloads is not yet implemented; add CLI flags and worker handling to allow deliberate overwrites in DB/storage.
+
+## TODO (minor follow-ups)
+- Decide whether to auto-enqueue transcription after download (DownloadService hook or Overlord rule) to restore the old download→transcribe convenience.
+- Align all workers (clipping/stitching/analysis/diarization/voice/subtitle/transcription) to the new 2s heartbeat/poll intervals and consistent lease durations.
+- Add consistent info-level heartbeats for type-specific workers to mirror the general worker visibility.
+- Set a uniform policy for handling legacy runner non-zero exits: auto-release for retry vs. mark failed when outputs are missing.
+- Ensure `.gitignore` covers heavy runtime directories (`tmp/`, `pull/`, `generated/`, `logs/`, `media/`, `results/`, etc.) to keep repo operations fast.
+- Optional doc echoes: replicate the “download + legacy-bridged transcription are reference flows” reminder in `QUICK_REFERENCE.md` / `OPERATIONS_CHECKLIST.md` if operator visibility is needed.
+- Clips naming/output plan documented in `docs/REFACTOR_ARCHITECTURE/CLIPS_HITS_CUTS.md` (require run names, generated/hits/<name>/hits.tsv, media/clips/<name>/, and legacy cutter bridge).
 ## Recent Changes (2025-11-29)
 
 **Queue Alignment:**

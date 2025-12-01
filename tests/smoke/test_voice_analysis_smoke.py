@@ -34,10 +34,12 @@ def test_voice_and_analysis_flow(smoke_env, smoke_storage_root):
     reset_smoke_state([ytid])
     cleanup_voice_results([ytid], smoke_storage_root)
 
-    clip_dir = (SMOKE_MEDIA_ROOT / ytid).resolve()
+    clip_dir = (smoke_storage_root / "media" / "clips" / ytid).resolve()
     clip_dir.mkdir(parents=True, exist_ok=True)
     clip_path = generate_sample_audio(clip_dir / f"{ytid}_clip.wav")
-    reference_path = generate_sample_audio(SMOKE_MEDIA_ROOT / f"{ytid}_reference.wav")
+    reference_path = generate_sample_audio(
+        (smoke_storage_root / "generated" / "voice_reference" / ytid / f"{ytid}_reference.wav").resolve()
+    )
 
     voice_service = get_voice_service()
     voice_job = voice_service.enqueue_job(
@@ -49,6 +51,7 @@ def test_voice_and_analysis_flow(smoke_env, smoke_storage_root):
 
     env = smoke_env.copy()
     env["VIDOPS_WORKER_MAX_JOBS"] = "1"
+    env["VIDOPS_FAKE_VOICE"] = "1"
     worker_cmd = [sys.executable, "vo_cli.py", "worker", "start", "voice"]
     voice_run = run_worker_with_logs("voice_filter", "worker", worker_cmd, env)
     assert voice_run.returncode == 0, f"Voice worker failed:\n{voice_run.stdout}\n{voice_run.stderr}"

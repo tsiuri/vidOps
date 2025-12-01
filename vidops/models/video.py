@@ -63,6 +63,7 @@ class Asset:
     ytid: str
     kind: str  # e.g., 'media', 'transcript_vtt', 'info_json'
     size_bytes: Optional[int] = None
+    rel_path: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
@@ -76,6 +77,7 @@ class Asset:
             ytid=row.get('ytid'),
             kind=row.get('kind'),
             size_bytes=row.get('bytes'),
+            rel_path=row.get('rel_path'),
             created_at=row.get('created_at', datetime.now(UTC))
         )
 

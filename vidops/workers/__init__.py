@@ -16,6 +16,8 @@ from .stitching import StitchWorker
 from .subtitle import SubtitleWorker # Import the new SubtitleWorker
 from .voice import VoiceFilterWorker
 from .general import GenericWorker
+from .dates import DatesWorker
+from .extra_utils import ExtraUtilsWorker
 
 __all__ = [
     "GenericWorker",
@@ -27,4 +29,6 @@ __all__ = [
     "StitchWorker",
     "SubtitleWorker", # Export the SubtitleWorker
     "VoiceFilterWorker",
+    "DatesWorker",
+    "ExtraUtilsWorker",
 ]

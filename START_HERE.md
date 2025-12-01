@@ -57,6 +57,8 @@ The stitching worker uses ffmpeg concat, writes the final file back to `storage/
 
 - Logs: every session should add an entry under `logs/changelog/YYYY-MM-DD_<task>.txt`
 - Legacy bridge (all workers, including transcription): jobs are enqueued in the DB with legacy args; workers rebuild legacy inputs in their original paths, call the legacy `workspace.sh` command, wait for its completion marker, then ingest outputs into the DB and push artifacts to central storage before marking complete. No alternative server-side logic.
+- Stitch/Analyze/Dates/Extra-utils bridges: stitch, analyze, dates, and extra-utils jobs rebuild manifests/lists in `generated/` + `media/`, call the legacy `workspace.sh` subcommand, register `stitched`/`analysis`/`dates_manifest`/`utility_output` assets with `rel_path`, and store stdout/stderr tails + empty-output cases in `job.result`.
+- Working patterns to mirror: download worker (DB config → legacy yt-dlp → broker upload) and legacy-bridged transcription (DB job → legacy transcribe → ingest VTT/words → assets registered) are proven flows.
 - Storage reference: see `docs/STORAGE_INTERFACE.md` for the new clip/analysis/stitch directories
 - Status: `python3 vo_cli.py status jobs --detail` shows queue pressure by job type
 - Workers: `python3 vo_cli.py worker start` launches the generic worker, which claims any job and resets to "general" after each run. Append a type (e.g., `python3 vo_cli.py worker start download`) only when you need to pin a machine to a specific queue.

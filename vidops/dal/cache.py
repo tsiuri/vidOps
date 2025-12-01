@@ -234,6 +234,15 @@ class FilesystemCache:
         if self.broker_client.enabled:
             uploaded = self.broker_client.upload_asset(local_path, ytid, kind, relative_path)
             if uploaded:
+                try:
+                    self.register_asset(
+                        video_repo=video_repo,
+                        relative_path=uploaded,
+                        ytid=ytid,
+                        kind=kind,
+                    )
+                except Exception as exc:
+                    logger.warning("Broker upload succeeded but asset registration failed for %s: %s", uploaded, exc)
                 return Path(uploaded)
             logger.warning("Broker upload failed for %s; falling back to direct copy", relative_path)
 
@@ -282,7 +291,8 @@ class FilesystemCache:
             path=relative_path,
             ytid=ytid,
             kind=kind,
-            size_bytes=size_bytes
+            size_bytes=size_bytes,
+            rel_path=relative_path,
         )
 
         if not isinstance(video_repo, VideoRepository):

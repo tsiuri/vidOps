@@ -14,3 +14,7 @@ analyzed/
 .venv_cli/
 config.yaml
 tmp/
+analysis/
+clips/
+results/
+tests/

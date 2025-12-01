@@ -19,6 +19,8 @@ from vidops.services import (
     get_subtitle_service,
     get_transcription_service,
     get_voice_service,
+    get_dates_service,
+    get_extra_utils_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,8 +58,11 @@ class GenericWorker:
             "analysis": get_analysis_service,
             "diarization": get_diarization_service,
             "stitching": get_stitching_service,
-            "subtitle_download": get_subtitle_service,
+            "dl_subs": get_subtitle_service,
+            "convert_captions": get_subtitle_service,
             "voice": get_voice_service,
+            "dates": get_dates_service,
+            "extra_utils": get_extra_utils_service,
         }
         self._services: Dict[str, object] = {}
 
