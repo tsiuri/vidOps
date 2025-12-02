@@ -11,6 +11,7 @@ from typing import List, Optional, Dict, Any, Tuple
 
 from faster_whisper import WhisperModel
 from vidops.config import load_config
+from vidops.db import get_connection
 from vidops.dal import (
     VideoRepository,
     JobRepository,
@@ -55,7 +56,8 @@ class TranscriptionService:
         model: str,
         language: str = "en",
         priority: int = 0,
-        force: bool = False
+        force: bool = False,
+        force_job: bool = False,
     ) -> Job:
         """
         Enqueues a single video for transcription.
@@ -85,6 +87,12 @@ class TranscriptionService:
         if existing_transcript and not force:
             raise ValueError(f"Transcript for video '{ytid}' with model '{model}' already exists.")
 
+        # Check for duplicate in-flight jobs for same video/model
+        if not force_job:
+            dup = self._find_inflight_job(ytid=ytid, model=model)
+            if dup:
+                raise ValueError(f"Transcription job already pending/running for '{ytid}' model '{model}' (job_id={dup})")
+
         # Create the job configuration
         config = {
             "model": model,
@@ -103,6 +111,26 @@ class TranscriptionService:
             status=JobStatus.PENDING
         )
         return self.job_repo.create(job)
+
+    def _find_inflight_job(self, ytid: str, model: str) -> str | None:
+        """Return job_id of an existing pending/claimed/running job for this video/model."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT job_id
+                    FROM jobs
+                    WHERE job_type='transcription'
+                      AND ytid=%s
+                      AND (config->>'model')=%s
+                      AND status IN ('pending','claimed','running')
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (ytid, model),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
 
     def enqueue_pending_videos(
         self,
@@ -497,10 +525,13 @@ class TranscriptionService:
         Place media where legacy scripts expect it (PROJECT_ROOT/pull) and build a filelist for workspace.sh.
         Returns (workspace_root, legacy_media_path, filelist_path).
         """
-        # Reconstruct exactly where legacy expects files: under the project root, not the cache root
+        # Reconstruct exactly where legacy expects files: under the worker's project root, not the repo root
         workspace_root = Path(
-            os.environ.get("VIDOPS_PROJECT_ROOT", "")
-        ).resolve() if os.environ.get("VIDOPS_PROJECT_ROOT") else Path(__file__).resolve().parents[2]
+            os.environ.get("VIDOPS_PROJECT_ROOT")
+            or os.environ.get("PWD")
+            or Path.cwd()
+        ).resolve()
+        logger.info("Transcribe staging workspace_root=%s", workspace_root)
 
         pull_dir = workspace_root / "pull"
         generated_dir = workspace_root / "generated"

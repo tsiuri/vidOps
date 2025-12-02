@@ -103,6 +103,20 @@ class DownloadConfig:
     audio_format: str = "opus"
     audio_quality: str = "0"
     embed_metadata: bool = True
+    use_archive: bool = True
+    archive_path: str = "pull/download_archive.txt"
+    no_overwrites: bool = True
+    cookies_browser: Optional[str] = None  # e.g., "firefox", "chrome"
+    sleep_requests: int = 0
+    sleep_interval: int = 0
+    sleep_max_interval: int = 0
+    retries: int = 5
+    fragment_retries: int = 5
+    extractor_retries: int = 3
+    concurrent_fragments: int = 1
+    write_auto_subs: bool = True
+    sub_langs: str = "en"
+    no_transcript_log: str = "logs/no_transcripts_available.txt"
 
 
 @dataclass
@@ -153,6 +167,20 @@ def _apply_env_overrides(config_obj):
         "download.audio_format": ["VIDOPS_YTDLP_AUDIO_FORMAT"],
         "download.audio_quality": ["VIDOPS_YTDLP_AUDIO_QUALITY"],
         "download.embed_metadata": ["VIDOPS_YTDLP_EMBED_METADATA"],
+        "download.use_archive": ["VIDOPS_YTDLP_USE_ARCHIVE"],
+        "download.archive_path": ["VIDOPS_YTDLP_ARCHIVE_PATH"],
+        "download.no_overwrites": ["VIDOPS_YTDLP_NO_OVERWRITES"],
+        "download.cookies_browser": ["VIDOPS_YTDLP_COOKIES_BROWSER"],
+        "download.sleep_requests": ["VIDOPS_YTDLP_SLEEP_REQUESTS"],
+        "download.sleep_interval": ["VIDOPS_YTDLP_SLEEP_INTERVAL"],
+        "download.sleep_max_interval": ["VIDOPS_YTDLP_SLEEP_MAX_INTERVAL"],
+        "download.retries": ["VIDOPS_YTDLP_RETRIES"],
+        "download.fragment_retries": ["VIDOPS_YTDLP_FRAGMENT_RETRIES"],
+        "download.extractor_retries": ["VIDOPS_YTDLP_EXTRACTOR_RETRIES"],
+        "download.concurrent_fragments": ["VIDOPS_YTDLP_CONCURRENT_FRAGMENTS"],
+        "download.write_auto_subs": ["VIDOPS_YTDLP_WRITE_AUTO_SUBS"],
+        "download.sub_langs": ["VIDOPS_YTDLP_SUB_LANGS"],
+        "download.no_transcript_log": ["VIDOPS_NO_TRANSCRIPT_LOG"],
         "transcription.model": ["WHISPER_MODEL", "MODEL"],
         "transcription.language": ["WHISPER_LANGUAGE", "LANGUAGE"],
         "transcription.nvidia.compute_type": ["NV_COMPUTE"],
@@ -187,13 +215,16 @@ def _apply_env_overrides(config_obj):
 
 
 _config_instance: Optional[Config] = None
+_config_path_used: Optional[Path] = None
 
 def _resolve_config_path(config_path: str) -> Path:
     """
     Resolve the config path, preferring:
     - Explicit absolute path (as given).
     - Relative to CWD if it exists.
-    - Relative to the project root (env VIDOPS_PROJECT_ROOT or two levels above this file).
+    - Relative to the project root (env VIDOPS_PROJECT_ROOT or repo root).
+    - Fallback: repo root (parents of this file) if project root has no config.
+    Returns the resolved path.
     """
     candidate = Path(config_path)
     if candidate.is_absolute() and candidate.exists():
@@ -201,10 +232,21 @@ def _resolve_config_path(config_path: str) -> Path:
     if candidate.exists():
         return candidate.resolve()
 
-    project_root = Path(os.environ.get("VIDOPS_PROJECT_ROOT", Path(__file__).resolve().parents[2]))
-    alt = project_root / config_path
-    if alt.exists():
-        return alt.resolve()
+    # Prefer explicit project root env
+    env_root = os.environ.get("VIDOPS_PROJECT_ROOT")
+    if env_root:
+        project_root = Path(env_root)
+        alt = project_root / config_path
+        if alt.exists():
+            return alt.resolve()
+        # If VIDOPS_PROJECT_ROOT is set but lacks a config, fall back to repo roots
+    # Try to locate a nearby config.yaml by walking parents of this file
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        probe = parent / config_path
+        if probe.exists():
+            return probe.resolve()
+    # Fallback: original candidate (absolute resolution)
     return candidate.resolve()
 
 
@@ -217,7 +259,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
     2. Values from the YAML file.
     3. Environment variables.
     """
-    global _config_instance
+    global _config_instance, _config_path_used
     if _config_instance is not None:
         return _config_instance
 
@@ -232,7 +274,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
             try:
                 yaml_data = yaml.safe_load(f)
                 if yaml_data:
-                     # Re-apply defaults for nested dataclasses
+                    # Re-apply defaults for nested dataclasses
                      # This is a bit tricky with simple dataclasses if data doesn't
                      # provide all keys. Using _load_config_from_dict directly
                      # creates new instances, so it might overwrite defaults
@@ -262,7 +304,28 @@ def load_config(config_path: str = "config.yaml") -> Config:
     config = _apply_env_overrides(config)
     
     _config_instance = config
+    _config_path_used = resolved_path
     return _config_instance
+
+def get_config_path() -> Optional[Path]:
+    """Return the resolved config path, if loaded."""
+    return _config_path_used
+
+def get_project_root() -> Path:
+    """
+    Resolve the project root:
+    1) VIDOPS_PROJECT_ROOT if set
+    2) Current working directory
+    3) Directory containing the loaded config.yaml (if known)
+    """
+    env_root = os.environ.get("VIDOPS_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root)
+    if Path.cwd():
+        return Path.cwd()
+    if _config_path_used:
+        return _config_path_used.parent
+    return Path(__file__).resolve().parents[2]
 
 # Example usage:
 if __name__ == "__main__":

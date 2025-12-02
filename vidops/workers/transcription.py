@@ -95,6 +95,7 @@ class TranscriptionWorker:
         """Main loop for the worker."""
         logger.info(f"Starting TranscriptionWorker '{self.worker_id}'...")
         self.running = True
+        max_jobs = max(0, int(self.config.workers.max_jobs))
         
         # Signal handling
         signal.signal(signal.SIGINT, self._handle_shutdown_signal)
@@ -108,8 +109,8 @@ class TranscriptionWorker:
                 if self._process_single_job():
                     processed_jobs_count += 1
                     # If max_jobs is set and reached, gracefully shut down
-                    if self.config.workers.max_jobs > 0 and processed_jobs_count >= self.config.workers.max_jobs:
-                        logger.info(f"Processed {processed_jobs_count} jobs, reaching max_jobs limit. Shutting down.")
+                    if max_jobs > 0 and processed_jobs_count >= max_jobs:
+                        logger.info(f"Processed {processed_jobs_count} jobs, reaching max_jobs limit (%s). Shutting down.", max_jobs)
                         self.running = False
                 else:
                     # No job claimed, send heartbeat and sleep

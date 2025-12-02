@@ -1,6 +1,8 @@
 # vidops/cli/worker.py
 
 import click
+import os
+from pathlib import Path
 from vidops.workers import (
     GenericWorker,
     TranscriptionWorker,
@@ -45,6 +47,10 @@ def worker():
 def start_worker(worker_type: str):
     """Start a worker process."""
     click.echo(f"Starting {worker_type} worker...")
+
+    # Default project root to where the worker is launched (unless explicitly set)
+    os.environ.setdefault("VIDOPS_PROJECT_ROOT", str(Path.cwd()))
+    click.echo(f"Using project root: {os.environ['VIDOPS_PROJECT_ROOT']}")
     
     # This is a basic way to start. In a production system,
     # you might want to use process management tools like systemd or supervisor

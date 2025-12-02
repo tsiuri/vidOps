@@ -297,9 +297,16 @@ def main():
                         inline_retry=inline_retry_val,
                         min_ts_interval=int(os.environ.get("MIN_TS_INTERVAL", "10")),
                         tag=None,
+                        skip_lock=True,  # caller already holds lock
                     )
                 except Exception as e:
                     print(f"{LOG_PREFIX}[FAIL] Fragmented transcription failed: {e}", flush=True)
+                finally:
+                    if got_lock:
+                        try:
+                            os.unlink(lock)
+                        except Exception:
+                            pass
                 continue
 
             # Standard processing for files under threshold

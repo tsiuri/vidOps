@@ -25,4 +25,3 @@ def enqueue_download(url: str, priority: int):
     except Exception as e:
         logger.error(f"Error enqueuing download job for {url}: {e}", exc_info=True)
         click.echo(click.style(f"✗ Failed to enqueue download job: {e}", fg="red"), err=True)
-

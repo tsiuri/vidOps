@@ -3,10 +3,11 @@
 import logging
 import time
 import signal
+import os
 from typing import Optional
 
 from vidops.dal import JobRepository, WorkerRepository
-from vidops.models import Worker, WorkerStatus
+from vidops.models import Worker, WorkerStatus, JobStatus
 from vidops.services import get_download_service
 from vidops.config import load_config
 
@@ -26,6 +27,7 @@ class DownloadWorker:
         self.job_repo = JobRepository()
         self.worker_repo = WorkerRepository()
         self.service = get_download_service()
+        self.current_job_id: Optional[str] = None
 
         self.worker_obj = Worker(
             worker_id=self.worker_id,
@@ -46,8 +48,24 @@ class DownloadWorker:
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
-        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        if self._shutdown_requested:
+            # Second signal: fall back to default behavior
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+            return
         self._shutdown_requested = True
+        logger.warning("Received signal %s, cancelling current job and exiting", signum)
+        if self.current_job_id:
+            try:
+                self.job_repo.update_status(
+                    self.current_job_id,
+                    JobStatus.FAILED,
+                    error_message=f"Cancelled by signal {signum}",
+                )
+                self._update_status(WorkerStatus.IDLE, None)
+            except Exception as exc:
+                logger.error("Failed to cancel job %s: %s", self.current_job_id, exc, exc_info=True)
+        raise SystemExit(1)
 
     def run(self):
         """Main worker loop"""
@@ -111,16 +129,19 @@ class DownloadWorker:
 
             logger.info(f"Claimed job {job.job_id} (type: {job.job_type})")
             self._update_status(WorkerStatus.BUSY, job.job_id)
+            self.current_job_id = job.job_id
 
             # Process the job
             self.service.process_job(job)
 
             self._update_status(WorkerStatus.IDLE, None)
+            self.current_job_id = None
             return True
 
         except Exception as e:
             logger.error(f"Error processing job: {e}", exc_info=True)
             self._update_status(WorkerStatus.IDLE, None)
+            self.current_job_id = None
             return False
 
     def _heartbeat(self):

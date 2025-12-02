@@ -182,8 +182,18 @@ class GenericWorker:
         return self._services[job_type]
 
     def _handle_shutdown_signal(self, signum, frame):
-        logger.warning("Received signal %s, initiating shutdown", signum)
+        if self._shutdown_requested:
+            # Second signal: fall back to default to force-exit
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+            return
         self._shutdown_requested = True
+        logger.warning("Received signal %s, initiating shutdown", signum)
         if self.current_job_id:
-            logger.info("Releasing job %s before exit", self.current_job_id)
-            self.job_repo.release(self.current_job_id)
+            try:
+                # Requeue the job with reduced priority so it doesn't block but can retry later
+                self.job_repo.release(self.current_job_id)
+            except Exception as exc:
+                logger.error("Failed to cancel job %s: %s", self.current_job_id, exc, exc_info=True)
+        self._update_state(WorkerStatus.STOPPING)
+        raise SystemExit(1)

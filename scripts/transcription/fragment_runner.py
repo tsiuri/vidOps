@@ -137,6 +137,7 @@ def run_fragmented_transcription(
     inline_retry: bool = False,
     min_ts_interval: int = 10,
     tag: Optional[str] = None,
+    skip_lock: bool = False,
 ):
     """Transcribe a single media file with chunking using an already loaded model."""
     # Prepare paths
@@ -162,12 +163,15 @@ def run_fragmented_transcription(
         return
 
     # Lock handling
-    try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        os.close(fd)
-    except FileExistsError:
-        print(f"{log_prefix}[LOCK]{media} (held elsewhere) — skipping", flush=True)
-        return
+    got_lock = False
+    if not skip_lock:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            os.close(fd)
+            got_lock = True
+        except FileExistsError:
+            print(f"{log_prefix}[LOCK]{media} (held elsewhere) — skipping", flush=True)
+            return
 
     media_base = media.with_suffix("")
     ensure_src_json(media, media_base)
@@ -175,20 +179,22 @@ def run_fragmented_transcription(
     total = probe_duration_seconds(media)
     if not total or total <= 0:
         print(f"{log_prefix}[FAIL]{media} duration not found", flush=True)
-        try:
-            os.unlink(lock)
-        except Exception:
-            pass
+        if got_lock:
+            try:
+                os.unlink(lock)
+            except Exception:
+                pass
         return
 
     print(f"{log_prefix}[RUN ]{media} duration={total:.1f}s", flush=True)
     plan = _chunk_plan(total, chunk_len, overlap)
     if not plan:
         print(f"{log_prefix}[WARN]{media} produced no chunk plan", flush=True)
-        try:
-            os.unlink(lock)
-        except Exception:
-            pass
+        if got_lock:
+            try:
+                os.unlink(lock)
+            except Exception:
+                pass
         return
 
     all_segments: List[LightSegment] = []
@@ -274,10 +280,11 @@ def run_fragmented_transcription(
         except Exception:
             pass
 
-    try:
-        os.unlink(lock)
-    except Exception:
-        pass
+    if got_lock:
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
 
 
 def _extract_chunk(media: Path, chunk_path: Path, clip_start: float, clip_end: float, log_prefix: str) -> bool:

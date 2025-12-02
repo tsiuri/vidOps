@@ -182,8 +182,11 @@ class JobRepository:
                     UPDATE {self.table_name}
                     SET
                         status = %s,
+                        priority = priority - 1,
                         claimed_by = NULL,
                         claimed_at = NULL,
+                        started_at = NULL,
+                        completed_at = NULL,
                         updated_at = NOW()
                     WHERE job_id = %s
                     RETURNING *;
