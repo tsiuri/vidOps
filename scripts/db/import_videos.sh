@@ -67,6 +67,16 @@ psql -d "$DB_NAME" -c "SELECT COUNT(*) AS transcripts FROM transcripts; SELECT C
 dur=$(( $(ts) - start ))
 echo "   done in $(human $dur)"
 
+# 5b) Media assets from pull/ (or MEDIA_SCAN_ROOT)
+section "[5b/8] Scanning for media assets to register"
+start=$(ts)
+python3 "${TOOL_ROOT}/scripts/db/export_media_assets.py"
+wc -l "${PROJECT_ROOT}/logs/db/media_assets.tsv" 2>/dev/null || true
+psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -f "${TOOL_ROOT}/scripts/db/load_media_assets.sql"
+psql -d "$DB_NAME" -c "SELECT COUNT(*) AS media_assets FROM assets WHERE kind='media';" || true
+dur=$(( $(ts) - start ))
+echo "   done in $(human $dur)"
+
 # 6) Optional hits load
 section "[6/8] Optional: load hits TSV"
 read -r -p "Path to hits TSV (leave empty to skip): " HITS_FILE

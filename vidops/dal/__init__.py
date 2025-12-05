@@ -15,6 +15,7 @@ from .workers import WorkerRepository
 from .transcripts import TranscriptRepository, WordRepository
 from .cache import FilesystemCache
 from .hits import HitsRepository
+from .quickclip import QuickClipRepository
 
 __all__ = [
     "VideoRepository",
@@ -23,4 +24,6 @@ __all__ = [
     "TranscriptRepository",
     "WordRepository",
     "FilesystemCache",
+    "HitsRepository",
+    "QuickClipRepository",
 ]

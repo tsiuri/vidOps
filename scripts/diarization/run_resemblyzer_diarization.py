@@ -63,6 +63,12 @@ DEFAULT_DB_PORT = 5432
 DEFAULT_DB_NAME = "transcripts"
 DEFAULT_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Tweaks for better diarization defaults
+DEFAULT_CHUNK_SECONDS = 12.0  # was 6.0
+DEFAULT_OVERLAP_SECONDS = 2.0  # was 1.0
+DEFAULT_REF_CLIPS = 50  # was 10
+DEFAULT_REF_CLIP_DURATION = 8.0  # was 6.0
+
 
 @dataclass
 class Word:
@@ -1024,15 +1030,35 @@ def main():
     parser.add_argument("--write-db", action="store_true", help="Insert diarized spans into diarized_timestamps")
     parser.add_argument("--db-append", action="store_true", help="Keep existing diarized spans instead of replacing them")
     parser.add_argument("--project-root", type=Path, default=None, help="Project root for outputs/reference (default: current dir or repo root)")
-    parser.add_argument("--chunk-seconds", type=float, default=6.0, help="Chunk length in seconds")
-    parser.add_argument("--overlap-seconds", type=float, default=1.0, help="Chunk overlap in seconds")
+    parser.add_argument(
+        "--chunk-seconds",
+        type=float,
+        default=DEFAULT_CHUNK_SECONDS,
+        help="Chunk length in seconds (longer reduces boundary errors; default 12.0)",
+    )
+    parser.add_argument(
+        "--overlap-seconds",
+        type=float,
+        default=DEFAULT_OVERLAP_SECONDS,
+        help="Chunk overlap in seconds (default 2.0)",
+    )
     parser.add_argument("--similarity-threshold", type=float, default=0.6, help="Cosine similarity threshold to accept a speaker match")
     parser.add_argument("--gap-threshold", type=float, default=0.15, help="Tolerance when matching words to speaker spans (seconds)")
     parser.add_argument("--device", default="auto", help="Device for resemblyzer encoder: auto|cuda|cpu")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     parser.add_argument("--build-reference", action="store_true", help="Force building reference clips before diarization")
-    parser.add_argument("--ref-clips", type=int, default=10, help="Number of random reference clips to generate")
-    parser.add_argument("--ref-clip-duration", type=float, default=6.0, help="Length of each reference clip in seconds")
+    parser.add_argument(
+        "--ref-clips",
+        type=int,
+        default=DEFAULT_REF_CLIPS,
+        help="Number of random reference clips to generate (default 50)",
+    )
+    parser.add_argument(
+        "--ref-clip-duration",
+        type=float,
+        default=DEFAULT_REF_CLIP_DURATION,
+        help="Length of each reference clip in seconds (default 8.0)",
+    )
     parser.add_argument("--workers", type=int, default=None, help="Parallel workers for batch mode (fallback: config diarization-workers, else 3)")
     args = parser.parse_args()
 

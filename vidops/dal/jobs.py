@@ -196,6 +196,24 @@ class JobRepository:
                 row = cur.fetchone()
                 return Job.from_row(row) if row else None
 
+    def update_config(self, job_id: str, config: dict) -> Optional[Job]:
+        """
+        Update a job's config JSON.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET config = %s, updated_at = NOW()
+                    WHERE job_id = %s
+                    RETURNING *;
+                    """,
+                    (Json(config), job_id),
+                )
+                row = cur.fetchone()
+                return Job.from_row(row) if row else None
+
     # =========================================================================
     # Overlord Helper Methods
     # =========================================================================

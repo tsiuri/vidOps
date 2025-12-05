@@ -10,6 +10,36 @@ import logging
 
 _logger = logging.getLogger(__name__) # Use standard logging
 
+# --- Transcript Quality Hierarchy ---
+
+# Transcript quality hierarchy from best to worst
+# Used when selecting "best" available transcript for a given ytid
+TRANSCRIPT_QUALITY_HIERARCHY = [
+    # Whisper models (words format) - higher quality first
+    "words_whisper_large-v3",
+    "words_whisper_large-v2",
+    "words_whisper_large",
+    "words_whisper_turbo",
+    "words_whisper_medium",
+    "words_whisper_small",
+    "words_whisper_base",
+    "words_whisper_tiny",
+
+    # VTT format transcripts (if words not available)
+    "vtt_whisper_large-v3",
+    "vtt_whisper_large-v2",
+    "vtt_whisper_large",
+    "vtt_whisper_turbo",
+    "vtt_whisper_medium",
+    "vtt_whisper_small",
+    "vtt_whisper_base",
+    "vtt_whisper_tiny",
+
+    # YouTube auto-captions (lowest quality)
+    "words_ytt",
+    "vtt",
+]
+
 # --- Helper Functions ---
 
 def get_env(env_vars: list[str], default: Any) -> Any:

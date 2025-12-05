@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}QuickClip Browser - All Videos{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h1>QuickClip Videos</h1>
+        <p class="text-muted">Browse all videos with QuickClip sessions</p>
+    </div>
+    <div class="col-auto">
+        <form action="/search" method="get" class="d-flex">
+            <input class="form-control me-2" type="search" name="q" placeholder="Search..." aria-label="Search">
+            <button class="btn btn-outline-primary" type="submit">Search</button>
+        </form>
+    </div>
+</div>
+
+{% if videos %}
+<div class="row">
+    {% for video in videos %}
+    <div class="col-md-6 col-lg-4 mb-4">
+        <div class="card video-card h-100">
+            <div class="card-body">
+                <h5 class="card-title">{{ video.title }}</h5>
+                <p class="text-muted small mb-2">
+                    <code>{{ video.ytid }}</code>
+                </p>
+                <div class="mb-3">
+                    <span class="badge bg-primary">{{ video.sessions|length }} session(s)</span>
+                    <span class="badge bg-info">{{ video.total_clips }} clip(s)</span>
+                </div>
+                <a href="/video/{{ video.ytid }}" class="btn btn-sm btn-outline-primary">View Sessions →</a>
+                {% if video.url %}
+                <a href="{{ video.url }}" target="_blank" class="btn btn-sm btn-outline-secondary">YouTube ↗</a>
+                {% endif %}
+            </div>
+            <div class="card-footer text-muted small">
+                Latest: {{ video.sessions[0].created_at.strftime('%Y-%m-%d %H:%M') if video.sessions else 'N/A' }}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info">
+    <h4 class="alert-heading">No QuickClip sessions found</h4>
+    <p>Create your first QuickClip session:</p>
+    <pre class="mb-0"><code>python vo_cli.py quickclip create "URL" "120-145" -d "Description"</code></pre>
+</div>
+{% endif %}
+{% endblock %}

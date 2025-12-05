@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Search QuickClips{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">Search QuickClips</h1>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <form action="/search" method="get">
+            <div class="input-group input-group-lg">
+                <input type="text" class="form-control" name="q" value="{{ query }}" placeholder="Search by description, tags, or video title..." autofocus>
+                <button class="btn btn-primary" type="submit">Search</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% if query %}
+    {% if results %}
+    <h3 class="mb-3">Found {{ results|length }} session(s) matching "{{ query }}"</h3>
+
+    <div class="row">
+        {% for session in results %}
+        <div class="col-12 mb-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-8">
+                            <h5 class="card-title">
+                                <a href="/session/{{ session.session_id }}">
+                                    {{ session.title or session.ytid }}
+                                </a>
+                            </h5>
+                            {% if session.description %}
+                            <p class="card-text">{{ session.description }}</p>
+                            {% endif %}
+                            <p class="text-muted small mb-2">
+                                <code>{{ session.ytid }}</code>
+                            </p>
+                            {% if session.tags %}
+                            <div>
+                                {% for tag in session.tags.split(',') %}
+                                <span class="badge bg-secondary tag-badge">{{ tag.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                        <div class="col-md-4 text-end">
+                            <div class="mb-2">
+                                <span class="badge bg-info">{{ session.clips|length }} clips</span>
+                            </div>
+                            <p class="text-muted small mb-2">
+                                {{ session.created_at.strftime('%Y-%m-%d %H:%M') }}
+                            </p>
+                            <a href="/session/{{ session.session_id }}" class="btn btn-sm btn-primary">
+                                View Session →
+                            </a>
+                            <a href="/video/{{ session.ytid }}" class="btn btn-sm btn-outline-secondary">
+                                All Sessions
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- Show clips -->
+                    {% if session.clips %}
+                    <hr>
+                    <div class="row">
+                        {% for clip in session.clips[:4] %}
+                        <div class="col-md-3">
+                            <small class="clip-timestamp">
+                                {{ clip.start_sec|round(1) }}s - {{ clip.end_sec|round(1) }}s
+                                {% if clip.label %}
+                                <br><span class="badge bg-light text-dark">{{ clip.label }}</span>
+                                {% endif %}
+                            </small>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-warning">
+        <h4 class="alert-heading">No results found</h4>
+        <p>No QuickClip sessions match "{{ query }}"</p>
+        <p class="mb-0">Try different keywords or browse <a href="/">all videos</a>.</p>
+    </div>
+    {% endif %}
+{% else %}
+<div class="alert alert-info">
+    <h4 class="alert-heading">Search QuickClips</h4>
+    <p>Search by:</p>
+    <ul>
+        <li>Session description</li>
+        <li>Tags</li>
+        <li>Video title</li>
+        <li>Video ID (ytid)</li>
+    </ul>
+</div>
+{% endif %}
+{% endblock %}

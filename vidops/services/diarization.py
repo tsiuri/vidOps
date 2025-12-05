@@ -3,11 +3,13 @@ import logging
 import os
 import shutil
 import subprocess
+import csv
 from pathlib import Path
 from typing import List, Optional
 
 from vidops.dal import FilesystemCache, JobRepository, TranscriptRepository, VideoRepository
 from vidops.models import Job, JobStatus
+from vidops.services.reference_builder import ReferenceBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -43,22 +45,43 @@ class DiarizationService:
         similarity_threshold: float = 0.6,
         gap_threshold: float = 0.15,
         output_dir: Optional[str] = None,
+        build_reference: bool = False,
     ) -> Job:
         """
         Enqueues a single diarization job.
+
+        If transcript_kind is "best", automatically selects the highest quality
+        transcript available for this ytid.
         """
         video = self.video_repo.get(ytid)
         if not video:
             raise ValueError(f"Video with ytid '{ytid}' not found.")
 
-        transcript = self.transcript_repo.get(ytid, transcript_kind)
-        if not transcript or not transcript.path:
-            raise ValueError(f"Transcript of kind '{transcript_kind}' not found for video '{ytid}'.")
+        # Handle "best" transcript selection
+        if transcript_kind.lower() == "best":
+            transcript = self.transcript_repo.get_best_available(ytid)
+            if not transcript:
+                raise ValueError(f"No transcripts available for video '{ytid}'.")
+            logger.info(f"Selected best available transcript for {ytid}: {transcript.kind}")
+            transcript_kind = transcript.kind
+        else:
+            transcript = self.transcript_repo.get(ytid, transcript_kind)
+            if not transcript or not transcript.path:
+                raise ValueError(f"Transcript of kind '{transcript_kind}' not found for video '{ytid}'.")
 
         media_asset = self._resolve_media_asset_path(ytid)
         words_rel = self._normalize_relative(words_path or transcript.path, allow_dir=False)
-        ref_rel = self._normalize_relative(reference_dir or f"generated/diary_reference/{ytid}", allow_dir=True)
+        default_ref = f"generated/diary_reference/{ytid}"
+        ref_rel = self._normalize_relative(reference_dir or default_ref, allow_dir=True)
         output_rel = self._normalize_output_dir(output_dir, ytid)
+
+        reference_dir = self._ensure_reference_at_enqueue(
+            ytid=ytid,
+            media_rel=media_asset,
+            words_rel=words_rel,
+            reference_rel=ref_rel,
+            build_reference=build_reference,
+        )
 
         config = {
             "ytid": ytid,
@@ -66,13 +89,14 @@ class DiarizationService:
             "diarization_model": diarization_model,
             "media_asset_path": media_asset,
             "words_path": words_rel,
-            "reference_dir": ref_rel,
+            "reference_dir": reference_dir,
             "device": device,
             "chunk_seconds": float(chunk_seconds),
             "overlap_seconds": float(overlap_seconds),
             "similarity_threshold": float(similarity_threshold),
             "gap_threshold": float(gap_threshold),
             "output_dir": output_rel,
+            "build_reference": False,
         }
 
         job = Job(
@@ -84,6 +108,72 @@ class DiarizationService:
             status=JobStatus.PENDING,
         )
         return self.job_repo.create(job)
+
+    def build_shared_reference(
+        self,
+        ytids: list[str],
+        transcript_kind: str,
+        reference_name: str,
+        clips_count: int = 50,
+    ) -> str:
+        """
+        Build (or reuse) a shared reference directory for a batch of ytids.
+        Clips are sampled from distinct videos in the provided list (one clip per video).
+        """
+        reference_rel = f"generated/diary_reference/{reference_name}"
+        dest = self.fs_cache.get_central_path(reference_rel)
+        if (dest / "reference.json").exists():
+            return reference_rel
+
+        workspace_root = self._workspace_root()
+        builder = ReferenceBuilder(self.fs_cache, workspace_root)
+
+        import random
+
+        shuffled = list(ytids)
+        random.shuffle(shuffled)
+
+        sources: list[tuple[str, Path, Path]] = []
+        for ytid in shuffled:
+            video = self.video_repo.get(ytid)
+            if not video:
+                continue
+            try:
+                media_rel = self._resolve_media_asset_path(ytid)
+            except Exception:
+                continue
+
+            if transcript_kind.lower() == "best":
+                transcript = self.transcript_repo.get_best_available(ytid)
+            else:
+                transcript = self.transcript_repo.get(ytid, transcript_kind)
+            if not transcript or not transcript.path:
+                continue
+            try:
+                words_rel = self._normalize_relative(transcript.path, allow_dir=False)
+            except Exception:
+                continue
+
+            try:
+                media_local = self.fs_cache.pull_to_cache(media_rel)
+                words_local = self.fs_cache.pull_to_cache(words_rel)
+            except Exception:
+                continue
+
+            sources.append((ytid, media_local, words_local))
+            if len(sources) >= clips_count:
+                break
+
+        if not sources:
+            raise ValueError("No usable media+words sources found for shared reference.")
+
+        builder.build_shared(
+            reference_rel=reference_rel,
+            sources=sources,
+            clips_per_video=1,
+            max_clips=clips_count,
+        )
+        return reference_rel
 
     def process_job(self, job: Job) -> None:
         """
@@ -100,12 +190,25 @@ class DiarizationService:
             reference_dir = job.config.get("reference_dir")
             output_rel = self._normalize_output_dir(job.config.get("output_dir"), job.ytid)
 
-            if not media_rel or not words_rel or not reference_dir:
+            if not media_rel or not words_rel:
                 raise ValueError("Job missing media, words, or reference configuration.")
 
             audio_path = self._stage_media(media_rel, workspace_root)
             words_path = self._stage_words(words_rel, workspace_root, job.job_id)
+
             staged_reference_dir = self._stage_reference(reference_dir, workspace_root)
+            # Legacy runner expects reference under generated/diary_reference/<ytid>
+            expected_ref_dir = workspace_root / "generated" / "diary_reference" / job.ytid
+            if expected_ref_dir.resolve() != staged_reference_dir.resolve():
+                if expected_ref_dir.exists():
+                    shutil.rmtree(expected_ref_dir)
+                expected_ref_dir.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    expected_ref_dir.symlink_to(staged_reference_dir, target_is_directory=True)
+                except Exception:
+                    # Fallback: copy the directory if symlink fails
+                    shutil.copytree(staged_reference_dir, expected_ref_dir)
+
             output_dir = workspace_root / output_rel
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -149,6 +252,26 @@ class DiarizationService:
     def _normalize_output_dir(self, output_dir: Optional[str], ytid: str) -> str:
         base = output_dir or f"generated/diarization_resemblyzer/{ytid}"
         return self._normalize_relative(base, allow_dir=True)
+
+    def _ensure_reference_at_enqueue(
+        self,
+        ytid: str,
+        media_rel: str,
+        words_rel: str,
+        reference_rel: str,
+        build_reference: bool,
+    ) -> str:
+        ref_central = self.fs_cache.get_central_path(reference_rel)
+        if ref_central.exists() and not build_reference:
+            return reference_rel
+
+        workspace_root = self._workspace_root()
+        media_local = self.fs_cache.pull_to_cache(media_rel)
+        words_local = self.fs_cache.pull_to_cache(words_rel)
+        builder = ReferenceBuilder(self.fs_cache, workspace_root)
+        built_dir = builder.build(ytid, media_local, words_local, reference_rel)
+        logger.info("Built reference for %s at %s", ytid, built_dir)
+        return reference_rel
 
     def _resolve_media_asset_path(self, ytid: str) -> str:
         asset = self.video_repo.get_primary_asset(ytid, "media")
@@ -294,6 +417,8 @@ class DiarizationService:
         word_rows = max(0, len(speaker_words.read_text(encoding="utf-8").splitlines()) - 1)
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
+        db_spans = self._write_spans_to_db(job.ytid, timestamps)
+
         return {
             "timestamps_path": ts_rel,
             "speaker_words_path": sw_rel,
@@ -303,4 +428,53 @@ class DiarizationService:
             "device": job.config.get("device", "auto"),
             "diarization_model": job.config.get("diarization_model"),
             "meta": meta,
+            "db_spans_inserted": db_spans,
         }
+
+    def _write_spans_to_db(self, ytid: str, timestamps_path: Path, replace_existing: bool = True) -> int:
+        from psycopg2.extras import execute_values  # type: ignore
+        from vidops.db import get_connection
+
+        rows: list[tuple[str, str, float, float, str]] = []
+        with timestamps_path.open("r", encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter="\t")
+            for i, row in enumerate(reader):
+                if i == 0 and row and row[0].lower() == "ytid":
+                    continue
+                if len(row) < 4:
+                    continue
+                try:
+                    _, speaker, start, end, *rest = row
+                    start_f = float(start)
+                    end_f = float(end)
+                    source_path = rest[1] if len(rest) > 1 else (rest[0] if rest else "")
+                    rows.append((ytid, speaker, round(start_f, 3), round(end_f, 3), source_path))
+                except Exception:
+                    continue
+
+        if not rows:
+            logger.warning("No diarization spans parsed from %s", timestamps_path)
+            return 0
+
+        inserted = 0
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    if replace_existing:
+                        cur.execute("DELETE FROM diarized_timestamps WHERE ytid=%s", (ytid,))
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO diarized_timestamps
+                          (ytid, speaker_name, start_sec, end_sec, source_path)
+                        VALUES %s
+                        ON CONFLICT (ytid, speaker_name, start_sec, end_sec) DO NOTHING
+                        """,
+                        rows,
+                    )
+                    inserted = len(rows)
+        except Exception as exc:
+            logger.warning("Failed to insert diarization spans into DB for %s: %s", ytid, exc)
+            return 0
+        logger.info("Inserted %s diarized spans for %s", inserted, ytid)
+        return inserted

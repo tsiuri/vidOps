@@ -187,6 +187,8 @@ class ClippingService:
                     clip_path.rename(new_path)
                     clip_path = new_path
                 relative_output = str(rel_output_dir / clip_path.name)
+
+                # Upload to central storage
                 self.fs_cache.persist_local_artifact(
                     clip_path,
                     relative_output,
@@ -194,6 +196,14 @@ class ClippingService:
                     ytid=job.ytid,
                     kind="clip"
                 )
+
+                # Keep a local copy in the output directory
+                final_local_path = output_dir / clip_path.name
+                if clip_path.resolve() != final_local_path.resolve():
+                    if not final_local_path.exists():
+                        shutil.copy2(clip_path, final_local_path)
+                        logger.info(f"Kept local copy: {final_local_path}")
+
                 registered.append(relative_output)
 
             if not registered:

@@ -30,60 +30,136 @@ def clips():
 
 
 @clips.command("hits")
-@click.option("-q", "--query", required=True, help="Comma-separated phrases to search for.")
+@click.option("-q", "--query", help="Comma-separated phrases to search for.")
+@click.option("--timestamp", help="Timestamp range in format 'START-END' (seconds). Requires --ytid.")
 @click.option("--source", default=None, show_default=True, help="Word source to search (e.g. whisper-medium). If omitted, will choose automatically when only one source exists for the target videos.")
 @click.option("--limit", type=int, default=100, show_default=True, help="Maximum hits per phrase.")
 @click.option("--exact/--fuzzy", default=False, show_default=True, help="Exact token match or substring match.")
 @click.option("--name", required=True, help="Required name for this hits run (used for output paths).")
 @click.option("-o", "--output", type=click.Path(), help="Optional TSV output path (default: generated/hits/<name>/hits.tsv).")
-@click.option("--ytid", multiple=True, help="Limit search to one or more specific YTIDs.")
-def clips_hits(query: str, source: Optional[str], limit: int, exact: bool, name: str, output: Optional[str], ytid: tuple):
+@click.option("--ytid", multiple=True, help="Limit search to one or more specific YTIDs (required when using --timestamp).")
+def clips_hits(query: Optional[str], timestamp: Optional[str], source: Optional[str], limit: int, exact: bool, name: str, output: Optional[str], ytid: tuple):
     """Search the words table for matching phrases and emit a TSV manifest."""
-    phrases = [token.strip() for token in query.split(",") if token.strip()]
-    if not phrases:
-        click.echo(click.style("✗ No phrases provided.", fg="red"), err=True)
+
+    # Validate input: must have either query or timestamp
+    if not query and not timestamp:
+        click.echo(click.style("✗ Must provide either --query or --timestamp", fg="red"), err=True)
         return
 
-    repo = WordRepository()
+    if query and timestamp:
+        click.echo(click.style("✗ Cannot use both --query and --timestamp at the same time", fg="red"), err=True)
+        return
+
+    # If using timestamp mode, require ytid
+    if timestamp and not ytid:
+        click.echo(click.style("✗ --timestamp requires at least one --ytid", fg="red"), err=True)
+        return
+
     video_repo = VideoRepository()
     hits_repo = HitsRepository()
-
-    # Auto-resolve source if not provided and we have scoped ytids
-    resolved_source = source
-    if not source and ytid:
-        resolved_source = repo.auto_resolve_source(list(ytid))
-    elif not source:
-        resolved_source = repo.auto_resolve_source(None)
-
-    if not resolved_source:
-        click.echo(click.style("✗ No word source available for the requested scope.", fg="red"), err=True)
-        return
-
-    if resolved_source != source and source:
-        click.echo(click.style(f"⚠ Source '{source}' not found for given ytids; using '{resolved_source}'", fg="yellow"), err=True)
-    source = resolved_source
     rows: List[Dict[str, str]] = []
 
-    click.echo(f"Searching {len(phrases)} phrase(s) against source '{source}'...")
-    for phrase in phrases:
-        tokens = phrase.split()
-        hits = repo.find_phrase_hits(tokens, source=source, limit=limit, exact=exact, ytids=list(ytid) if ytid else None)
-        for hit in hits:
-            media_asset = video_repo.get_primary_asset(hit["ytid"], "media")
-            duration = float(hit["end_sec"]) - float(hit["start_sec"])
-            rows.append(
-                {
-                    "ytid": hit["ytid"],
-                    "start_sec": f"{hit['start_sec']:.3f}",
-                    "end_sec": f"{hit['end_sec']:.3f}",
-                    "duration_sec": f"{max(duration, 0):.3f}",
-                    "label": phrase,
-                    "phrase": hit["phrase"],
-                    "source": hit["source"],
-                    "media_asset_path": media_asset.path if media_asset else "",
-                    "run_name": name,
-                }
-            )
+    # Timestamp mode: create direct hits from timestamp range
+    if timestamp:
+        try:
+            parts = timestamp.split("-")
+            if len(parts) != 2:
+                raise ValueError("Timestamp must be in format START-END (e.g., '10.5-20.3', '(start)-30', '60-(end)')")
+        except ValueError as e:
+            click.echo(click.style(f"✗ Invalid timestamp format: {e}", fg="red"), err=True)
+            return
+
+        start_str = parts[0].strip()
+        end_str = parts[1].strip()
+
+        click.echo(f"Creating timestamp-based hit(s) for {len(ytid)} YTID(s) from {start_str} to {end_str}...")
+        for vid_id in ytid:
+            # Resolve (start) and (end) placeholders
+            if start_str == "(start)" or end_str == "(end)":
+                video = video_repo.get(vid_id)
+                if not video:
+                    click.echo(click.style(f"✗ Video {vid_id} not found in database", fg="red"), err=True)
+                    return
+                video_duration = video.duration_sec
+                if not video_duration:
+                    click.echo(click.style(f"✗ Video {vid_id} has no duration metadata", fg="red"), err=True)
+                    return
+
+            try:
+                if start_str == "(start)":
+                    start_sec = 0.0
+                else:
+                    start_sec = float(start_str)
+
+                if end_str == "(end)":
+                    end_sec = float(video_duration)
+                else:
+                    end_sec = float(end_str)
+
+                if start_sec >= end_sec:
+                    raise ValueError("Start time must be less than end time")
+            except ValueError as e:
+                click.echo(click.style(f"✗ Invalid timestamp values: {e}", fg="red"), err=True)
+                return
+
+            media_asset = video_repo.get_primary_asset(vid_id, "media")
+            duration = end_sec - start_sec
+            rows.append({
+                "ytid": vid_id,
+                "start_sec": f"{start_sec:.3f}",
+                "end_sec": f"{end_sec:.3f}",
+                "duration_sec": f"{duration:.3f}",
+                "label": f"timestamp_{start_sec}-{end_sec}",
+                "phrase": f"Manual timestamp range {start_sec}-{end_sec}",
+                "source": "manual",
+                "media_asset_path": media_asset.path if media_asset else "",
+                "run_name": name,
+            })
+
+    # Query mode: search for phrases
+    else:
+        phrases = [token.strip() for token in query.split(",") if token.strip()]
+        if not phrases:
+            click.echo(click.style("✗ No phrases provided.", fg="red"), err=True)
+            return
+
+        repo = WordRepository()
+
+        # Auto-resolve source if not provided and we have scoped ytids
+        resolved_source = source
+        if not source and ytid:
+            resolved_source = repo.auto_resolve_source(list(ytid))
+        elif not source:
+            resolved_source = repo.auto_resolve_source(None)
+
+        if not resolved_source:
+            click.echo(click.style("✗ No word source available for the requested scope.", fg="red"), err=True)
+            return
+
+        if resolved_source != source and source:
+            click.echo(click.style(f"⚠ Source '{source}' not found for given ytids; using '{resolved_source}'", fg="yellow"), err=True)
+        source = resolved_source
+
+        click.echo(f"Searching {len(phrases)} phrase(s) against source '{source}'...")
+        for phrase in phrases:
+            tokens = phrase.split()
+            hits = repo.find_phrase_hits(tokens, source=source, limit=limit, exact=exact, ytids=list(ytid) if ytid else None)
+            for hit in hits:
+                media_asset = video_repo.get_primary_asset(hit["ytid"], "media")
+                duration = float(hit["end_sec"]) - float(hit["start_sec"])
+                rows.append(
+                    {
+                        "ytid": hit["ytid"],
+                        "start_sec": f"{hit['start_sec']:.3f}",
+                        "end_sec": f"{hit['end_sec']:.3f}",
+                        "duration_sec": f"{max(duration, 0):.3f}",
+                        "label": phrase,
+                        "phrase": hit["phrase"],
+                        "source": hit["source"],
+                        "media_asset_path": media_asset.path if media_asset else "",
+                        "run_name": name,
+                    }
+                )
 
     if not rows:
         click.echo(click.style("No hits found.", fg="yellow"))

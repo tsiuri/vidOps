@@ -5,6 +5,7 @@ from psycopg2.extras import execute_values
 
 from vidops.db import get_connection
 from vidops.models import Transcript, Word
+from vidops.config import TRANSCRIPT_QUALITY_HIERARCHY
 
 class TranscriptRepository:
     """
@@ -23,6 +24,42 @@ class TranscriptRepository:
                 )
                 row = cur.fetchone()
                 return Transcript.from_row(row) if row else None
+
+    def list_for_ytid(self, ytid: str) -> List[Transcript]:
+        """
+        Retrieves all transcripts for a given ytid.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM transcripts WHERE ytid = %s ORDER BY kind",
+                    (ytid,)
+                )
+                rows = cur.fetchall()
+                return [Transcript.from_row(row) for row in rows]
+
+    def get_best_available(self, ytid: str) -> Optional[Transcript]:
+        """
+        Retrieves the highest quality transcript available for a given ytid,
+        based on TRANSCRIPT_QUALITY_HIERARCHY.
+
+        Returns None if no transcripts exist for this ytid.
+        """
+        available = self.list_for_ytid(ytid)
+        if not available:
+            return None
+
+        # Create a map of kind -> transcript for quick lookup
+        transcripts_by_kind = {t.kind: t for t in available}
+
+        # Find the first match in the quality hierarchy
+        for kind in TRANSCRIPT_QUALITY_HIERARCHY:
+            if kind in transcripts_by_kind:
+                return transcripts_by_kind[kind]
+
+        # If no match in hierarchy, return the first available
+        # (fallback for unexpected transcript kinds)
+        return available[0]
 
     def upsert(self, transcript: Transcript) -> Transcript:
         """

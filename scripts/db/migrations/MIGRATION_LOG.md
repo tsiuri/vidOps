@@ -63,3 +63,8 @@
 
 ### Rollback
 - `003_update_transcript_kind_constraint.down.sql` restores the original constraint and removes the COMMENT.
+
+## [2025-12-04] Migration 004 — Asset Kind Updates
+- Adds support for newer asset kinds emitted by bridged workers: `diarization`, `voice_match`, `stitched`, `analysis`, `dates_manifest`, `reference`.
+- Up: `004_update_assets_kind_constraint.up.sql`
+- Down: `004_update_assets_kind_constraint.down.sql`

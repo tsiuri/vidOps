@@ -18,6 +18,7 @@ from vidops.cli.query_ids import query_ids
 from vidops.cli.convert_captions import convert_captions
 from vidops.cli.dates import dates
 from vidops.cli.extra_utils import extra_utils
+from vidops.cli.quickclip import quickclip
 from vidops import __version__ # Import the version from the package
 
 @click.group(
@@ -53,6 +54,7 @@ cli.add_command(query_ids)
 cli.add_command(dates)
 cli.add_command(extra_utils)
 cli.add_command(convert_captions)
+cli.add_command(quickclip)
 
 if __name__ == '__main__':
     try:
