@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import random
 import subprocess
 import sys
@@ -218,6 +219,7 @@ class ReferenceBuilder:
         clips_count: int = DEFAULT_CLIPS,
         max_duration: float = MAX_DURATION,
     ) -> Path:
+        skip_prompts = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT") or not sys.stdin.isatty()
         words = _read_words(words_path)
         if not words:
             raise ValueError(f"No words found at {words_path}")
@@ -229,24 +231,30 @@ class ReferenceBuilder:
 
         local_clips = self._cut_candidates(media_path, candidates, ytid, name_prefix=ytid)
 
-        selected = []
-        if sys.stdin.isatty():
+        selected: list[Path] = []
+        if not skip_prompts and sys.stdin.isatty():
             ui_selected = _interactive_clip_selector(local_clips)
             if ui_selected:
                 selected = [p for p, _s, _e in local_clips if p in ui_selected]
         if not selected:
-            selected = _prompt_selection(local_clips)
+            if skip_prompts:
+                selected = [p for p, _s, _e in local_clips[:clips_count]]
+            else:
+                selected = _prompt_selection(local_clips)
         if not selected:
             raise ValueError("No reference clips selected.")
 
-        try:
-            speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
-        except EOFError:
-            speaker_name = "speaker"
+        if skip_prompts:
+            speaker_name = Path(reference_rel).name or "speaker"
+        else:
+            try:
+                speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
+            except EOFError:
+                speaker_name = "speaker"
 
         dest_dir = self.fs_cache.get_central_path(reference_rel)
         dest_dir.mkdir(parents=True, exist_ok=True)
-        clips_dir = dest_dir / "clips"
+        clips_dir = dest_dir
         clips_dir.mkdir(parents=True, exist_ok=True)
 
         copied = []
@@ -274,6 +282,7 @@ class ReferenceBuilder:
         max_clips: int = DEFAULT_CLIPS,
         max_duration: float = MAX_DURATION,
     ) -> Path:
+        skip_prompts = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT") or not sys.stdin.isatty()
         """
         Build a shared reference set from multiple videos.
 
@@ -301,23 +310,29 @@ class ReferenceBuilder:
         labels = [ytid for (_p, _s, _e, ytid) in combined]
 
         selected: list[Path] = []
-        if sys.stdin.isatty():
+        if not skip_prompts and sys.stdin.isatty():
             ui_selected = _interactive_clip_selector(clips, preselected=None)
             if ui_selected:
                 selected = [p for p, _s, _e in clips if p in ui_selected]
         if not selected:
-            selected = _prompt_selection(clips, labels=labels)
+            if skip_prompts:
+                selected = [p for p, _s, _e in clips[:max_clips]]
+            else:
+                selected = _prompt_selection(clips, labels=labels)
         if not selected:
             raise ValueError("No reference clips selected.")
 
-        try:
-            speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
-        except EOFError:
-            speaker_name = "speaker"
+        if skip_prompts:
+            speaker_name = Path(reference_rel).name or "speaker"
+        else:
+            try:
+                speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
+            except EOFError:
+                speaker_name = "speaker"
 
         dest_dir = self.fs_cache.get_central_path(reference_rel)
         dest_dir.mkdir(parents=True, exist_ok=True)
-        clips_dir = dest_dir / "clips"
+        clips_dir = dest_dir
         clips_dir.mkdir(parents=True, exist_ok=True)
 
         copied = []

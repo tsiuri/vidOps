@@ -1,0 +1,30 @@
+{
+  "ytids_used": [
+    "-mJL6k8z6Kk",
+    "-OpVjl9iV4g",
+    "-jUsTqarMiQ",
+    "-hA0MvIoFmE",
+    "-kTB6z-Vb-Y"
+  ],
+  "speaker_name": "hasan_piker4",
+  "clips_generated": [
+    "/home/billie/tools/vidops/tmp/reference_builder/-mJL6k8z6Kk/-mJL6k8z6Kk_1.wav",
+    "/home/billie/tools/vidops/tmp/reference_builder/-OpVjl9iV4g/-OpVjl9iV4g_1.wav",
+    "/home/billie/tools/vidops/tmp/reference_builder/-jUsTqarMiQ/-jUsTqarMiQ_1.wav",
+    "/home/billie/tools/vidops/tmp/reference_builder/-hA0MvIoFmE/-hA0MvIoFmE_1.wav",
+    "/home/billie/tools/vidops/tmp/reference_builder/-kTB6z-Vb-Y/-kTB6z-Vb-Y_1.wav"
+  ],
+  "clips_selected": [
+    "/mnt/mainroot/mnt/13tb_sas/vidops/storage/data/references/hasan_piker4/clips/-mJL6k8z6Kk_1.wav",
+    "/mnt/mainroot/mnt/13tb_sas/vidops/storage/data/references/hasan_piker4/clips/-OpVjl9iV4g_1.wav",
+    "/mnt/mainroot/mnt/13tb_sas/vidops/storage/data/references/hasan_piker4/clips/-jUsTqarMiQ_1.wav",
+    "/mnt/mainroot/mnt/13tb_sas/vidops/storage/data/references/hasan_piker4/clips/-hA0MvIoFmE_1.wav",
+    "/mnt/mainroot/mnt/13tb_sas/vidops/storage/data/references/hasan_piker4/clips/-kTB6z-Vb-Y_1.wav"
+  ],
+  "sample_strategy": {
+    "words_per_clip": "3-6",
+    "max_duration_sec": 12.0,
+    "clips_per_video": 1,
+    "max_clips": 50
+  }
+}

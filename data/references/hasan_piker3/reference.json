@@ -1,0 +1,99 @@
+{
+  "reference_name": "hasan_piker3",
+  "created": "2025-12-05T19:33:57.095215",
+  "num_clips": 12,
+  "target_clips": 50,
+  "clip_duration_range": [
+    8.0,
+    12.0
+  ],
+  "spacing": 30.0,
+  "sample_rate": 16000,
+  "source_videos": [
+    "/home/billie/tools/vidops/generated/diarization_inputs/-OpVjl9iV4g/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/-jUsTqarMiQ/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/-kTB6z-Vb-Y/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/-mJL6k8z6Kk/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/-o03ndyLYLQ/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/0_DuTVHUKUk/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/0qTG3ZtJTqU/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/1T96sNEkK70/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/1_AbJljVmq0/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/38yPps9mU-c/canonical.wav",
+    "/home/billie/tools/vidops/generated/diarization_inputs/3hVCs6bzUS0/canonical.wav"
+  ],
+  "clips": [
+    {
+      "clip_path": "hasan_piker3/canonical_ref001.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-OpVjl9iV4g/canonical.wav",
+      "start_time": 149.61810936221943,
+      "duration": 8.20022926173974
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref003.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-OpVjl9iV4g/canonical.wav",
+      "start_time": 114.68089095240614,
+      "duration": 9.645277566194533
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref005.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-jUsTqarMiQ/canonical.wav",
+      "start_time": 447.39830218885305,
+      "duration": 10.035320215849012
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref006.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-jUsTqarMiQ/canonical.wav",
+      "start_time": 45.15264419363519,
+      "duration": 11.586358674138362
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref007.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-jUsTqarMiQ/canonical.wav",
+      "start_time": 372.45479166945995,
+      "duration": 11.704805713386223
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref008.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-jUsTqarMiQ/canonical.wav",
+      "start_time": 145.61812666177335,
+      "duration": 10.375354164737876
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref009.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-kTB6z-Vb-Y/canonical.wav",
+      "start_time": 122.41727884439113,
+      "duration": 11.569378188596692
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref011.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-kTB6z-Vb-Y/canonical.wav",
+      "start_time": 235.96799138140375,
+      "duration": 9.730160707264584
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref013.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-kTB6z-Vb-Y/canonical.wav",
+      "start_time": 173.83731809377008,
+      "duration": 10.411597233392367
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref014.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-mJL6k8z6Kk/canonical.wav",
+      "start_time": 254.1448822199177,
+      "duration": 10.216561733061882
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref020.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-o03ndyLYLQ/canonical.wav",
+      "start_time": 285.3512896280008,
+      "duration": 11.662587824727096
+    },
+    {
+      "clip_path": "hasan_piker3/canonical_ref023.wav",
+      "source": "/home/billie/tools/vidops/generated/diarization_inputs/-o03ndyLYLQ/canonical.wav",
+      "start_time": 65.03527951817615,
+      "duration": 11.891589570033632
+    }
+  ]
+}
