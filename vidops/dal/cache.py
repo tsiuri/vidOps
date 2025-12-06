@@ -129,18 +129,21 @@ class FilesystemCache:
             logger.warning("Video has no ytid, cannot locate media")
             return None
 
-        relative_path = None
+        # Determine asset path. Prefer rel_path when available; otherwise fall back to path.
+        asset_path: Optional[Path] = None
         try:
             from vidops.dal.videos import VideoRepository
 
             repo = VideoRepository()
             asset = repo.get_primary_asset(video.ytid, "media")
             if asset:
-                relative_path = Path(asset.path)
+                # Prefer stored rel_path; if not present, use path.
+                p = asset.rel_path or asset.path
+                asset_path = Path(p) if p else None
         except Exception as exc:
             logger.warning("Failed to load media asset metadata for %s: %s", video.ytid, exc)
 
-        if not relative_path:
+        if not asset_path:
             # Fallback to filesystem glob
             central_raw_dir = self.central_storage_root / "raw"
             if not central_raw_dir.exists():
@@ -153,20 +156,37 @@ class FilesystemCache:
                 logger.warning(f"No media file found for ytid={video.ytid}")
                 return None
             central_path = matching_files[0]
-            relative_path = central_path.relative_to(self.central_storage_root)
+            asset_path = central_path.relative_to(self.central_storage_root)
         else:
-            central_path = self.get_central_path(str(relative_path))
+            # Resolve asset path (absolute vs relative)
+            if asset_path.is_absolute():
+                central_path = asset_path
+            else:
+                central_path = self.get_central_path(str(asset_path))
 
         if pull_to_local:
-            local_path = self.get_local_path(str(relative_path))
+            # Compute destination in local cache using relative path when possible
+            if asset_path.is_absolute():
+                # Mirror absolute path into cache under raw/ using ytid-based filename to avoid long/unsafe paths
+                # Keep original filename
+                filename = Path(central_path).name
+                local_rel = Path("raw") / filename
+            else:
+                local_rel = Path(str(asset_path))
+
+            local_path = self.get_local_path(str(local_rel))
             if self.broker_client.enabled:
-                if self.broker_client.download_asset(str(relative_path), local_path):
+                # Broker assumes relative addressing; only attempt if we have a relative path
+                if not asset_path.is_absolute() and self.broker_client.download_asset(str(asset_path), local_path):
                     return local_path
                 logger.warning("Broker download failed for %s, falling back to direct copy", relative_path)
+            # Direct copy
             try:
-                return self.pull_to_cache(str(relative_path))
-            except FileNotFoundError:
-                logger.error("Central storage path missing for %s and broker download failed.", relative_path)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(central_path, local_path)
+                return local_path
+            except Exception as exc:
+                logger.error("Failed to stage media locally from %s: %s", central_path, exc)
                 return None
         else:
             return central_path

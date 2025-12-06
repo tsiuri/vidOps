@@ -437,6 +437,11 @@ class DiarizationService:
             alt_py = workspace_root / ".venv" / "bin" / "python"
             py_bin = alt_py if alt_py.exists() else Path(sys.executable)
 
+        # Allow per-process device override for multi-GPU setups.
+        # Prefer env-provided device if present (e.g., VIDOPS_DIAR_DEVICE=cuda, cuda:0, cpu).
+        device_override = os.environ.get("VIDOPS_DIAR_DEVICE") or os.environ.get("DIAR_DEVICE")
+        device_arg = device_override or str(job.config.get("device", "auto"))
+
         cmd = [
             str(py_bin),
             str(batch_script),
@@ -445,7 +450,7 @@ class DiarizationService:
             "--config",
             str(config_path),
             "--device",
-            str(job.config.get("device", "auto")),
+            device_arg,
         ]
 
         ref_name = reference_dir.name
@@ -460,6 +465,7 @@ class DiarizationService:
         env["PROJECT_ROOT"] = str(workspace_root)
         env["TOOL_ROOT"] = str(tool_root)
         env["BATCH_DIARIZE_SKIP_PROMPT"] = "1"
+        env.setdefault("BATCH_DIARIZE_SKIP_PREPROCESS", "1")
 
         logger.info("Running pyannote diarize: %s", " ".join(cmd))
         result = subprocess.run(cmd, cwd=workspace_root, env=env, text=True, capture_output=False, check=False)

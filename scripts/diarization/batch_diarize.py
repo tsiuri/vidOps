@@ -218,6 +218,16 @@ def batch_diarize(
     config = load_config(config_file)
     diar_config = config.get("diarization", {})
     hyper = diar_config.get("hyperparameters", {})
+    # Env overrides for per-GPU tuning
+    try:
+        seg_bs_env = os.environ.get("DIAR_SEGMENTATION_BATCH_SIZE")
+        emb_bs_env = os.environ.get("DIAR_EMBEDDING_BATCH_SIZE")
+        if seg_bs_env:
+            hyper["segmentation_batch_size"] = int(seg_bs_env)
+        if emb_bs_env:
+            hyper["embedding_batch_size"] = int(emb_bs_env)
+    except Exception:
+        pass
     device = device if device is not None else diar_config.get("device", "auto")
     ref_config = diar_config.get("references", {})
     segmentation_cfg = diar_config.get("segmentation", {})
@@ -273,7 +283,8 @@ def batch_diarize(
 
     input_audio_dir.mkdir(parents=True, exist_ok=True)
 
-    if pull_dir.exists():
+    skip_pre = os.environ.get("BATCH_DIARIZE_SKIP_PREPROCESS", "").lower() in {"1", "true", "yes"}
+    if pull_dir.exists() and not skip_pre:
         if verbose:
             print("[*] Running preprocessing (canonicalize + VAD + padding)...")
 
@@ -303,9 +314,12 @@ def batch_diarize(
                 return {"error": f"Preprocessing failed: {e}", "failed": len(ytids)}
             if verbose:
                 print(f"    Warning: Preprocessing failed but continuing: {e}")
-    else:
+    elif not pull_dir.exists():
         if verbose:
             print(f"[!] Preprocessing skipped: pull directory not found at {pull_dir}")
+    else:
+        if verbose:
+            print("[!] Preprocessing skipped by env BATCH_DIARIZE_SKIP_PREPROCESS")
 
     # Prepare reference if needed
     reference_dir = None
@@ -344,9 +358,18 @@ def batch_diarize(
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Determine HF token behavior: prefer explicit env token; otherwise avoid forcing token=True
+    # (forcing token=True can hang on systems with misconfigured keyring/backends)
+    hf_cfg = diar_config.get("huggingface", {})
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("PYANNOTE_AUTH_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+    token_to_send = env_token if env_token else None
+
+    if verbose and token_to_send is None and hf_cfg.get("use_auth_token", True):
+        print("    Note: No HF token found in env; proceeding without token.")
+
     pipeline = Pipeline.from_pretrained(
         diar_config.get("model", "pyannote/speaker-diarization-3.1"),
-        token=True,
+        token=token_to_send,
     )
     pipeline.to(torch.device(device))
 
@@ -368,13 +391,13 @@ def batch_diarize(
         from pyannote.audio import Inference
         from pyannote.audio import Model
 
-        hf_cfg = diar_config.get("huggingface", {})
-        hf_env_token = os.environ.get("HF_TOKEN") or os.environ.get("PYANNOTE_AUTH_TOKEN")
-        hf_token = hf_env_token if hf_cfg.get("use_auth_token", True) else None
+        # Use same token logic as for main pipeline
+        hf_env_token = os.environ.get("HF_TOKEN") or os.environ.get("PYANNOTE_AUTH_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+        hf_token = hf_env_token if hf_env_token else None
 
         model_obj = Model.from_pretrained(
             "pyannote/embedding",
-            token=hf_token if hf_token is not None else True,
+            token=hf_token,
         )
 
         embedding_model = Inference(
