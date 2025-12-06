@@ -411,8 +411,13 @@ class DiarizationService:
             self._write_fake_outputs(job, output_dir, audio_path)
             return
 
+        # TOOL_ROOT should point to the code tree that has scripts/diarization/batch_diarize.py.
+        # Fall back to PROJECT_ROOT/workspace_root if env is not set to avoid hardcoded paths.
         tool_root = Path(
-            os.environ.get("TOOL_ROOT", "/home/billie/projects/vidops")
+            os.environ.get("TOOL_ROOT")
+            or os.environ.get("VIDOPS_PROJECT_ROOT")
+            or os.environ.get("PROJECT_ROOT")
+            or workspace_root
         ).resolve()
         batch_script = tool_root / "scripts" / "diarization" / "batch_diarize.py"
         config_path = tool_root / "config" / "diarization.yaml"
