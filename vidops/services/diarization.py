@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import csv
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -37,11 +38,14 @@ class DiarizationService:
         transcript_kind: str,
         diarization_model: str,
         priority: int = 0,
-        reference_dir: Optional[str] = None,
+        reference_name: Optional[str] = None,
+        match_threshold: float = 0.75,
+        match_margin: float = 0.01,
+        match_force_best: bool = True,
         words_path: Optional[str] = None,
         device: str = "auto",
-        chunk_seconds: float = 6.0,
-        overlap_seconds: float = 1.0,
+        chunk_seconds: float = 15.0,
+        overlap_seconds: float = 2.5,
         similarity_threshold: float = 0.6,
         gap_threshold: float = 0.15,
         output_dir: Optional[str] = None,
@@ -71,8 +75,8 @@ class DiarizationService:
 
         media_asset = self._resolve_media_asset_path(ytid)
         words_rel = self._normalize_relative(words_path or transcript.path, allow_dir=False)
-        default_ref = f"generated/diary_reference/{ytid}"
-        ref_rel = self._normalize_relative(reference_dir or default_ref, allow_dir=True)
+        ref_name = reference_name or ytid
+        ref_rel = self._normalize_relative(f"data/references/{ref_name}", allow_dir=True)
         output_rel = self._normalize_output_dir(output_dir, ytid)
 
         reference_dir = self._ensure_reference_at_enqueue(
@@ -97,6 +101,9 @@ class DiarizationService:
             "gap_threshold": float(gap_threshold),
             "output_dir": output_rel,
             "build_reference": False,
+            "match_threshold": float(match_threshold),
+            "match_margin": float(match_margin),
+            "match_force_best": bool(match_force_best),
         }
 
         job = Job(
@@ -120,7 +127,7 @@ class DiarizationService:
         Build (or reuse) a shared reference directory for a batch of ytids.
         Clips are sampled from distinct videos in the provided list (one clip per video).
         """
-        reference_rel = f"generated/diary_reference/{reference_name}"
+        reference_rel = f"data/references/{reference_name}"
         dest = self.fs_cache.get_central_path(reference_rel)
         if (dest / "reference.json").exists():
             return reference_rel
@@ -197,23 +204,12 @@ class DiarizationService:
             words_path = self._stage_words(words_rel, workspace_root, job.job_id)
 
             staged_reference_dir = self._stage_reference(reference_dir, workspace_root)
-            # Legacy runner expects reference under generated/diary_reference/<ytid>
-            expected_ref_dir = workspace_root / "generated" / "diary_reference" / job.ytid
-            if expected_ref_dir.resolve() != staged_reference_dir.resolve():
-                if expected_ref_dir.exists():
-                    shutil.rmtree(expected_ref_dir)
-                expected_ref_dir.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    expected_ref_dir.symlink_to(staged_reference_dir, target_is_directory=True)
-                except Exception:
-                    # Fallback: copy the directory if symlink fails
-                    shutil.copytree(staged_reference_dir, expected_ref_dir)
 
             output_dir = workspace_root / output_rel
             output_dir.mkdir(parents=True, exist_ok=True)
 
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting diarization.")
-            self._run_legacy_diarize(job, workspace_root, audio_path, words_path, output_dir)
+            self._run_pyannote_diarize(job, workspace_root, audio_path, words_path, output_dir, staged_reference_dir)
             job_result = self._persist_outputs(job, output_rel, output_dir)
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
             logger.info("Successfully diarized %s", job.ytid)
@@ -250,7 +246,7 @@ class DiarizationService:
         return path_str
 
     def _normalize_output_dir(self, output_dir: Optional[str], ytid: str) -> str:
-        base = output_dir or f"generated/diarization_resemblyzer/{ytid}"
+        base = output_dir or f"results/diarization/{ytid}"
         return self._normalize_relative(base, allow_dir=True)
 
     def _ensure_reference_at_enqueue(
@@ -262,15 +258,44 @@ class DiarizationService:
         build_reference: bool,
     ) -> str:
         ref_central = self.fs_cache.get_central_path(reference_rel)
-        if ref_central.exists() and not build_reference:
+        if ref_central.exists():
             return reference_rel
 
+        # If interactive and allowed, prompt once
+        if (
+            not build_reference
+            and sys.stdin.isatty()
+            and not os.environ.get("BATCH_DIARIZE_SKIP_PROMPT")
+        ):
+            resp = input(
+                f"[?] Reference not found at {reference_rel}. Build it now from media/words? [y/N]: "
+            ).strip().lower()
+            build_reference = resp in {"y", "yes"}
+
+        if not build_reference:
+            raise FileNotFoundError(f"Reference not found and build_reference is false: {reference_rel}")
+
         workspace_root = self._workspace_root()
+        ref_central.parent.mkdir(parents=True, exist_ok=True)
         media_local = self.fs_cache.pull_to_cache(media_rel)
         words_local = self.fs_cache.pull_to_cache(words_rel)
         builder = ReferenceBuilder(self.fs_cache, workspace_root)
+        # Force non-interactive reference build in worker/CLI paths
+        prev_skip = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT")
+        os.environ["BATCH_DIARIZE_SKIP_PROMPT"] = "1"
         built_dir = builder.build(ytid, media_local, words_local, reference_rel)
+        if prev_skip is not None:
+            os.environ["BATCH_DIARIZE_SKIP_PROMPT"] = prev_skip
+        else:
+            os.environ.pop("BATCH_DIARIZE_SKIP_PROMPT", None)
         logger.info("Built reference for %s at %s", ytid, built_dir)
+
+        # Copy built reference into central storage under reference_rel
+        dest_dir = ref_central
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        dest_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(built_dir, dest_dir)
         return reference_rel
 
     def _resolve_media_asset_path(self, ytid: str) -> str:
@@ -290,7 +315,7 @@ class DiarizationService:
 
     def _stage_words(self, words_rel: str, workspace_root: Path, job_id: str) -> Path:
         cached = self.fs_cache.pull_to_cache(words_rel)
-        dest = workspace_root / "generated" / "diarization_inputs" / job_id
+        dest = workspace_root / "generated"
         dest.mkdir(parents=True, exist_ok=True)
         target = dest / Path(words_rel).name
         if not target.exists():
@@ -301,7 +326,7 @@ class DiarizationService:
         src_dir = self.fs_cache.get_central_path(reference_rel)
         if not src_dir.exists():
             raise FileNotFoundError(f"Reference directory not found: {src_dir}")
-        dest_dir = workspace_root / "generated" / "diary_reference" / src_dir.name
+        dest_dir = workspace_root / "data" / "references" / src_dir.name
         if dest_dir.exists():
             shutil.rmtree(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -311,7 +336,11 @@ class DiarizationService:
                 continue
             rel = item.relative_to(self.fs_cache.central_storage_root)
             cached = self.fs_cache.pull_to_cache(str(rel))
-            target = dest_dir / item.relative_to(src_dir)
+            relative = item.relative_to(src_dir)
+            if relative.parts and relative.parts[0] == "clips":
+                target = dest_dir / item.name
+            else:
+                target = dest_dir / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(cached, target)
         ref_json = dest_dir / "reference.json"
@@ -369,6 +398,74 @@ class DiarizationService:
         if result.returncode != 0:
             raise RuntimeError(f"Legacy diarization failed with exit {result.returncode}")
 
+    def _run_pyannote_diarize(
+        self,
+        job: Job,
+        workspace_root: Path,
+        audio_path: Path,
+        words_path: Path,
+        output_dir: Path,
+        reference_dir: Path,
+    ) -> None:
+        if os.environ.get("VIDOPS_FAKE_DIARIZATION", "").lower() in {"1", "true"}:
+            self._write_fake_outputs(job, output_dir, audio_path)
+            return
+
+        # TOOL_ROOT should point to the code tree that has scripts/diarization/batch_diarize.py.
+        # Fall back to PROJECT_ROOT/workspace_root if env is not set to avoid hardcoded paths.
+        tool_root = Path(
+            os.environ.get("TOOL_ROOT")
+            or os.environ.get("VIDOPS_PROJECT_ROOT")
+            or os.environ.get("PROJECT_ROOT")
+            or workspace_root
+        ).resolve()
+        batch_script = tool_root / "scripts" / "diarization" / "batch_diarize.py"
+        config_path = tool_root / "config" / "diarization.yaml"
+        if not batch_script.exists():
+            raise FileNotFoundError(f"batch_diarize.py not found at {batch_script} (set TOOL_ROOT appropriately)")
+
+        # Ensure ytids file for batch_diarize
+        tmp_dir = workspace_root / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        ytids_file = tmp_dir / f"{job.job_id}_ytids.txt"
+        ytids_file.write_text(f"{job.ytid}\n", encoding="utf-8")
+
+        results_root = output_dir.parent  # batch_diarize writes under base/<ytid>
+        # Prefer configured python for pyannote pipeline
+        py_bin = Path(os.environ.get("DIAR_PYTHON_BIN", "/home/billie/tools/vidops/.venv/bin/python"))
+        if not py_bin.exists():
+            alt_py = workspace_root / ".venv" / "bin" / "python"
+            py_bin = alt_py if alt_py.exists() else Path(sys.executable)
+
+        cmd = [
+            str(py_bin),
+            str(batch_script),
+            str(ytids_file),
+            str(results_root),
+            "--config",
+            str(config_path),
+            "--device",
+            str(job.config.get("device", "auto")),
+        ]
+
+        ref_name = reference_dir.name
+        if ref_name:
+            cmd.extend(["--reference", ref_name])
+            cmd.extend(["--match-threshold", str(job.config.get("match_threshold", 0.75))])
+            cmd.extend(["--match-margin", str(job.config.get("match_margin", 0.01))])
+            if job.config.get("match_force_best", True) is False:
+                cmd.append("--no-match-force-best")
+
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(workspace_root)
+        env["TOOL_ROOT"] = str(tool_root)
+        env["BATCH_DIARIZE_SKIP_PROMPT"] = "1"
+
+        logger.info("Running pyannote diarize: %s", " ".join(cmd))
+        result = subprocess.run(cmd, cwd=workspace_root, env=env, text=True, capture_output=False, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"pyannote diarization failed with exit {result.returncode}")
+
     def _write_fake_outputs(self, job: Job, output_dir: Path, audio_path: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
         timestamps = output_dir / "diarized_timestamps.tsv"
@@ -395,23 +492,29 @@ class DiarizationService:
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     def _persist_outputs(self, job: Job, output_rel: str, output_dir: Path) -> dict:
-        timestamps = output_dir / "diarized_timestamps.tsv"
+        rel_base = Path(output_rel.strip("/"))
+        ts_candidates = [
+            output_dir / "diarized_timestamps_clean.tsv",
+            output_dir / "diarized_timestamps_matched.tsv",
+            output_dir / "diarized_timestamps.tsv",
+        ]
+        timestamps = next((p for p in ts_candidates if p.exists()), None)
+        if not timestamps:
+            raise FileNotFoundError("Missing diarization timestamps output.")
+
         speaker_words = output_dir / "speaker_words.tsv"
         meta_path = output_dir / "diarization.json"
-        for path in (timestamps, speaker_words, meta_path):
+        for path in (speaker_words, meta_path):
             if not path.exists():
                 raise FileNotFoundError(f"Missing diarization output: {path}")
 
-        rel_base = Path(output_rel.strip("/"))
         ts_rel = str(rel_base / timestamps.name)
         sw_rel = str(rel_base / speaker_words.name)
         meta_rel = str(rel_base / meta_path.name)
 
-        ts_asset = self.fs_cache.persist_local_artifact(timestamps, ts_rel, self.video_repo, job.ytid, "diarization")
-        sw_asset = self.fs_cache.persist_local_artifact(
-            speaker_words, sw_rel, self.video_repo, job.ytid, "diarization"
-        )
-        meta_asset = self.fs_cache.persist_local_artifact(meta_path, meta_rel, self.video_repo, job.ytid, "diarization")
+        self.fs_cache.persist_local_artifact(timestamps, ts_rel, self.video_repo, job.ytid, "diarization")
+        self.fs_cache.persist_local_artifact(speaker_words, sw_rel, self.video_repo, job.ytid, "diarization")
+        self.fs_cache.persist_local_artifact(meta_path, meta_rel, self.video_repo, job.ytid, "diarization")
 
         segments = max(0, len(timestamps.read_text(encoding="utf-8").splitlines()) - 1)
         word_rows = max(0, len(speaker_words.read_text(encoding="utf-8").splitlines()) - 1)

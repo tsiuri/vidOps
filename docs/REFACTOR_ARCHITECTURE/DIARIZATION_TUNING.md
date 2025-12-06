@@ -24,3 +24,7 @@ python vo_cli.py diarize enqueue-file generated/query_ids/pop_trigger_ytids.tsv 
   --similarity-threshold 0.55 \
   --chunk-seconds 15 --overlap-seconds 3
 ```
+
+Ground truth / validation helpers:
+- Convert Audacity labels (start TAB end TAB speaker) to RTTM via `scripts/diarization/labels_to_rttm.py <labels.txt> <ytid> [--out-dir DIR]`.
+- Sample labeled RTTMs live at `/home/billie/projects/vidops/manual_diarized_rttm/` for ytids: 6SJYw-wVXio, ec77Rt_cHE, jLPaPSHIZWk, SclRF-9dCdc.

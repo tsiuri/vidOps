@@ -1,0 +1,46 @@
+{
+  "paths": {
+    "output_dir_pyannote": "results/diarization"
+  },
+  "canonicalize": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_fmt": "s16",
+    "highpass_hz": 70,
+    "loudnorm": {
+      "target_lufs": -23,
+      "lra": 7,
+      "tp": -2.0
+    }
+  },
+  "vad": {
+    "default": "pyannote",
+    "fallback": "webrtc",
+    "pyannote_model": "pyannote/voice-activity-detection",
+    "webrtc_aggressiveness": 2,
+    "mode": "mask",
+    "micro_gap_merge": 0.3
+  },
+  "enhancement": {
+    "denoiser": "dns64",
+    "highpass_hz": 80,
+    "lowpass_hz": 8000
+  },
+  "inference": {
+    "model": "pyannote/speaker-diarization-3.1",
+    "chunk_duration": 15.0,
+    "overlap_duration": 2.5,
+    "threshold": 0.6,
+    "device": "auto",
+    "segmentation_model": null,
+    "hf_token_env": "HF_TOKEN"
+  },
+  "postprocess": {
+    "micro_gap": 0.3,
+    "min_turn": 0.45,
+    "overlap_mode": "keep"
+  },
+  "word_mapping": {
+    "gap_tolerance": 0.15
+  }
+}
