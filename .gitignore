@@ -1,4 +1,5 @@
 #ignores all these
+data/references/
 logs/
 generated/
 .clips-download-archive.txt
