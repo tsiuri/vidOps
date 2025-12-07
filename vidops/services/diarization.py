@@ -8,7 +8,7 @@ import sys
 import signal
 import yaml
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from vidops.dal import FilesystemCache, JobRepository, TranscriptRepository, VideoRepository
 from vidops.models import Job, JobStatus
@@ -784,6 +784,32 @@ class DiarizationService:
 
         logger.info(f"Chunked diarization completed for {job.ytid}")
 
+        # Step 4: Map words to combined timestamps so downstream consumers always have speaker_words.tsv
+        combined_timestamps = output_dir / "diarized_timestamps.tsv"
+        speaker_words_path = output_dir / "speaker_words.tsv"
+        if combined_timestamps.exists():
+            if words_path and Path(words_path).exists():
+                try:
+                    mapping_stats = self._map_words_to_speakers(
+                        timestamps_file=combined_timestamps,
+                        words_file=Path(words_path),
+                        output_file=speaker_words_path,
+                        gap_tolerance=job.config.get("gap_threshold", 0.15),
+                    )
+                    meta_path = output_dir / "diarization.json"
+                    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+                    meta["word_mapping"] = mapping_stats
+                    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                except Exception as exc:
+                    logger.warning("Word mapping failed on combined output for %s: %s", job.ytid, exc)
+                    self._write_placeholder_speaker_words(output_dir)
+            else:
+                logger.warning("Words file not found for %s; writing placeholder speaker_words.tsv", job.ytid)
+                self._write_placeholder_speaker_words(output_dir)
+        else:
+            logger.warning("Combined timestamps not found for %s; writing placeholder speaker_words.tsv", job.ytid)
+            self._write_placeholder_speaker_words(output_dir)
+
         # Clean up chunk files and intermediate results
         try:
             shutil.rmtree(chunks_dir)
@@ -816,6 +842,100 @@ class DiarizationService:
             "chunk_seconds": job.config.get("chunk_seconds", 6.0),
         }
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    def _write_placeholder_speaker_words(self, output_dir: Path) -> None:
+        """Ensure speaker_words.tsv exists, even when word mapping is unavailable."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        speaker_words = output_dir / "speaker_words.tsv"
+        if not speaker_words.exists():
+            speaker_words.write_text(
+                "start\tend\tword\tseg\tconfidence\tretried\tspeaker\n",
+                encoding="utf-8",
+            )
+
+    def _map_words_to_speakers(
+        self,
+        timestamps_file: Path,
+        words_file: Path,
+        output_file: Path,
+        gap_tolerance: float = 0.15,
+    ) -> Dict:
+        """
+        Lightweight word-to-speaker mapping for combined chunk outputs.
+
+        Matches transcript words to diarization turns by maximum temporal overlap with a small tolerance.
+        """
+        turns: List[dict] = []
+        with timestamps_file.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                try:
+                    start_val = row.get("start") or row.get("start_sec")
+                    end_val = row.get("end") or row.get("end_sec")
+                    if start_val is None or end_val is None:
+                        continue
+                    start = float(start_val)
+                    end = float(end_val)
+                    speaker = row.get("speaker") or row.get("speaker_name") or "SPEAKER_00"
+                except Exception:
+                    continue
+                turns.append({"start": start, "end": end, "speaker": speaker})
+
+        turns.sort(key=lambda t: (t["start"], t["end"]))
+        if not turns:
+            raise ValueError(f"No diarization turns found in {timestamps_file}")
+
+        # Load words
+        with words_file.open("r", encoding="utf-8") as f:
+            words_reader = csv.DictReader(f, delimiter="\t")
+            word_rows = list(words_reader)
+            fieldnames = words_reader.fieldnames or []
+
+        if not word_rows:
+            raise ValueError(f"No words found in {words_file}")
+
+        # Ensure speaker column is present
+        if "speaker" not in fieldnames:
+            fieldnames = fieldnames + ["speaker"]
+
+        assignments = []
+        for word in word_rows:
+            try:
+                w_start = float(word.get("start", 0))
+                w_end = float(word.get("end", 0))
+            except Exception:
+                assignments.append("UNKNOWN")
+                continue
+
+            best_speaker = "UNKNOWN"
+            best_overlap = float("-inf")
+            for turn in turns:
+                if turn["end"] + gap_tolerance < w_start:
+                    continue
+                if turn["start"] - gap_tolerance > w_end:
+                    break
+                overlap = min(w_end, turn["end"]) - max(w_start, turn["start"])
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_speaker = turn["speaker"]
+
+            assignments.append(best_speaker)
+
+        # Write output with assigned speakers
+        with output_file.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+            writer.writeheader()
+            for word, speaker in zip(word_rows, assignments):
+                word["speaker"] = speaker
+                writer.writerow(word)
+
+        unknown_count = sum(1 for s in assignments if s == "UNKNOWN")
+        return {
+            "total_words": len(assignments),
+            "assigned": len(assignments) - unknown_count,
+            "unknown": unknown_count,
+            "unknown_pct": 100 * unknown_count / len(assignments) if assignments else 0,
+        }
 
     def _persist_outputs(self, job: Job, output_rel: str, output_dir: Path) -> dict:
         rel_base = Path(output_rel.strip("/"))
