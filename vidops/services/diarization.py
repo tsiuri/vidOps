@@ -773,6 +773,7 @@ class DiarizationService:
             str(chunks_dir),
             str(chunk_results_dir),
             str(output_dir),
+            "--",  # ensure ytids that start with '-' are not parsed as flags
             job.ytid,
         ]
 
