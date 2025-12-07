@@ -255,39 +255,52 @@ def run_diarization(
                 print(f"⚠️  Sample alignment error detected, padding audio and retrying...")
 
             # Pad audio to ensure proper chunk alignment using torchaudio
+            # NOTE: This loads the entire file into memory - for very long files (>3h) this
+            # could use significant RAM. This is only triggered on sample alignment errors.
             waveform_t, sr = torchaudio.load(str(audio_path))
 
-            # Ensure mono (take first channel if stereo)
-            if waveform_t.shape[0] > 1:
-                waveform_t = waveform_t[0:1]
+            try:
+                # Ensure mono (take first channel if stereo)
+                if waveform_t.shape[0] > 1:
+                    waveform_t = waveform_t[0:1]
 
-            # Calculate padding needed for chunk_duration alignment
-            chunk_samples = int(chunk_duration * sr)
-            current_samples = waveform_t.shape[1]
-            padding_needed = chunk_samples - (current_samples % chunk_samples)
+                # Calculate padding needed for chunk_duration alignment
+                chunk_samples = int(chunk_duration * sr)
+                current_samples = waveform_t.shape[1]
+                padding_needed = chunk_samples - (current_samples % chunk_samples)
 
-            if padding_needed > 0 and padding_needed < chunk_samples:
-                # Pad on the right (end) with zeros
-                padded = torch.nn.functional.pad(waveform_t, (0, padding_needed), mode='constant', value=0)
+                if padding_needed > 0 and padding_needed < chunk_samples:
+                    # Pad on the right (end) with zeros
+                    padded = torch.nn.functional.pad(waveform_t, (0, padding_needed), mode='constant', value=0)
 
-                # Save padded version
-                padded_path = audio_path.parent / f"{audio_path.stem}_padded.wav"
-                torchaudio.save(str(padded_path), padded, sr)
+                    # Save padded version
+                    padded_path = audio_path.parent / f"{audio_path.stem}_padded.wav"
+                    torchaudio.save(str(padded_path), padded, sr)
 
-                if verbose:
-                    print(f"   Padded {padding_needed} samples ({padding_needed/sr:.2f}s), retrying diarization...")
+                    # Free memory immediately after saving
+                    del padded
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
-                # Retry with padded audio
-                diarization = pipeline(
-                    str(padded_path),
-                    min_speakers=None,
-                    max_speakers=None,
-                )
+                    if verbose:
+                        print(f"   Padded {padding_needed} samples ({padding_needed/sr:.2f}s), retrying diarization...")
 
-                # Clean up padded file
-                padded_path.unlink()
-            else:
-                raise
+                    # Retry with padded audio
+                    diarization = pipeline(
+                        str(padded_path),
+                        min_speakers=None,
+                        max_speakers=None,
+                    )
+
+                    # Clean up padded file
+                    padded_path.unlink()
+                else:
+                    raise
+            finally:
+                # Always free the waveform tensor
+                del waveform_t
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         else:
             raise
 
@@ -364,6 +377,16 @@ def run_diarization(
     if verbose:
         print(f"💾 Saved: {json_path}")
         print(f"✅ Diarization complete!\n")
+
+    # Free pipeline from memory to prevent accumulation across multiple runs
+    try:
+        del pipeline
+        if device == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            if verbose:
+                print(f"🧹 Cleaned up GPU memory")
+    except Exception:
+        pass  # Ignore cleanup errors
 
     return metadata
 

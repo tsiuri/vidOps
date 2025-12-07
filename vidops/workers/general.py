@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import time
+import gc
 from datetime import timedelta
 from typing import Callable, Dict, Optional
 
@@ -65,6 +66,7 @@ class GenericWorker:
             "extra_utils": get_extra_utils_service,
         }
         self._services: Dict[str, object] = {}
+        self._descendants_killed = False
 
         signal.signal(signal.SIGINT, self._handle_shutdown_signal)
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
@@ -172,6 +174,8 @@ class GenericWorker:
                 worker_type=self.base_worker_type,
             )
             logger.info("Job %s completed and worker %s returned to IDLE", job.job_id, self.worker_id)
+            # Clean up memory after each job to prevent accumulation
+            self._cleanup_memory()
         return True
 
     def _get_service_for_job(self, job_type: str):
@@ -180,6 +184,25 @@ class GenericWorker:
         if job_type not in self._services:
             self._services[job_type] = self.service_factories[job_type]()
         return self._services[job_type]
+
+    def _cleanup_memory(self):
+        """Clean up memory after processing a job to prevent accumulation."""
+        try:
+            # Run Python garbage collection
+            gc.collect()
+
+            # Clear CUDA cache if available
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.debug("Cleared CUDA cache")
+            except ImportError:
+                pass  # torch not available, skip CUDA cleanup
+
+            logger.debug("Memory cleanup completed")
+        except Exception as exc:
+            logger.warning("Error during memory cleanup: %s", exc)
 
     def _handle_shutdown_signal(self, signum, frame):
         if self._shutdown_requested:
@@ -196,4 +219,42 @@ class GenericWorker:
             except Exception as exc:
                 logger.error("Failed to cancel job %s: %s", self.current_job_id, exc, exc_info=True)
         self._update_state(WorkerStatus.STOPPING)
+        self._kill_descendants()
         raise SystemExit(1)
+
+    def _kill_descendants(self):
+        """Best-effort kill any child processes (e.g., ffmpeg) on shutdown."""
+        if self._descendants_killed:
+            return
+        try:
+            to_kill = self._collect_descendants(os.getpid())
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                for pid in to_kill:
+                    try:
+                        os.kill(pid, sig)
+                    except ProcessLookupError:
+                        continue
+                time.sleep(0.25)
+            self._descendants_killed = True
+        except Exception as exc:
+            logger.warning("Failed to kill descendants: %s", exc)
+
+    def _collect_descendants(self, pid: int) -> list[int]:
+        """Collect descendant PIDs via /proc."""
+        descendants: list[int] = []
+        try:
+            children_path = f"/proc/{pid}/task/{pid}/children"
+            with open(children_path, "r") as f:
+                data = f.read().strip()
+            for child_str in data.split():
+                try:
+                    child_pid = int(child_str)
+                except ValueError:
+                    continue
+                descendants.append(child_pid)
+                descendants.extend(self._collect_descendants(child_pid))
+        except FileNotFoundError:
+            return descendants
+        except Exception:
+            return descendants
+        return descendants

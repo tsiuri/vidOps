@@ -29,6 +29,7 @@ class FilesystemCache:
     def __init__(self):
         config = load_config()
         self.central_storage_root = Path(config.paths.central_storage_root)
+        self.path_prefix = config.paths.path_prefix
 
         # Local cache directory - use configured temp dir or fall back to user's home
         local_temp = config.paths.local_temp_dir
@@ -44,8 +45,33 @@ class FilesystemCache:
 
         # Ensure local cache exists
         self.local_cache_root.mkdir(parents=True, exist_ok=True)
-        logger.info(f"FilesystemCache initialized: central={self.central_storage_root}, local={self.local_cache_root}")
+        logger.info(f"FilesystemCache initialized: central={self.central_storage_root}, local={self.local_cache_root}, prefix={self.path_prefix or 'none'}")
         self.broker_client = StorageBrokerClient(config.storage_broker)
+
+    def _resolve_path_with_prefix(self, path_str: str) -> Path:
+        """
+        Resolve a path string, applying the path_prefix if it's an absolute path.
+
+        This handles the case where the database stores absolute paths like
+        /mnt/13tb_sas/... but the actual filesystem location is
+        /mnt/mainroot/mnt/13tb_sas/... (for remote mounts).
+
+        Args:
+            path_str: Path string (absolute or relative)
+
+        Returns:
+            Resolved Path object
+        """
+        path = Path(path_str)
+        if path.is_absolute() and self.path_prefix:
+            # Apply prefix to absolute paths
+            return Path(self.path_prefix) / path.relative_to(path.anchor)
+        elif path.is_absolute():
+            # Absolute path, no prefix configured
+            return path
+        else:
+            # Relative path - combine with central storage root
+            return self.central_storage_root / path
 
     def get_central_path(self, relative_path: str) -> Path:
         """
@@ -53,11 +79,12 @@ class FilesystemCache:
 
         Args:
             relative_path: Relative path from storage root (e.g., 'raw/video.mp4')
+                          Can also be an absolute path (will have prefix applied if configured)
 
         Returns:
             Absolute path in central storage
         """
-        return self.central_storage_root / relative_path
+        return self._resolve_path_with_prefix(relative_path)
 
     def get_local_path(self, relative_path: str) -> Path:
         """
@@ -65,11 +92,23 @@ class FilesystemCache:
 
         Args:
             relative_path: Relative path from cache root (e.g., 'raw/video.mp4')
+                          Can also be an absolute path (will be made relative for cache)
 
         Returns:
             Absolute path in local cache
         """
-        return self.local_cache_root / relative_path
+        path = Path(relative_path)
+
+        # If it's an absolute path, we need to make it relative for the cache
+        if path.is_absolute():
+            # For absolute paths, create a safe cache structure
+            # Remove the root anchor and use a flattened structure to avoid deep nesting
+            # Example: /mnt/13tb_sas/path/to/file.mp4 -> cache/mnt_13tb_sas/path/to/file.mp4
+            # OR better: preserve structure but make it relative
+            path_without_anchor = str(path.relative_to(path.anchor))
+            return self.local_cache_root / path_without_anchor
+        else:
+            return self.local_cache_root / relative_path
 
     def pull_to_cache(self, relative_path: str) -> Path:
         """
@@ -156,11 +195,8 @@ class FilesystemCache:
             central_path = matching_files[0]
             asset_path = central_path.relative_to(self.central_storage_root)
         else:
-            # Resolve asset path (absolute vs relative)
-            if asset_path.is_absolute():
-                central_path = asset_path
-            else:
-                central_path = self.get_central_path(str(asset_path))
+            # Resolve asset path (absolute vs relative) - use prefix resolution
+            central_path = self._resolve_path_with_prefix(str(asset_path))
 
         if pull_to_local:
             # Compute destination in local cache using relative path when possible

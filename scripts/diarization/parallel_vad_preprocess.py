@@ -8,17 +8,74 @@ import os
 import sys
 import json
 import subprocess
+import signal
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
 from datetime import datetime
 from typing import Optional, List, Tuple
 import argparse
+import time
 
 try:
     from tqdm import tqdm
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
+
+
+ACTIVE_PIDS: set[int] = set()
+
+
+def _collect_descendants(pid: int) -> list[int]:
+    """Collect descendant PIDs via /proc."""
+    descendants: list[int] = []
+    try:
+        children_path = f"/proc/{pid}/task/{pid}/children"
+        with open(children_path, "r") as f:
+            data = f.read().strip()
+        for child_str in data.split():
+            try:
+                child_pid = int(child_str)
+            except ValueError:
+                continue
+            descendants.append(child_pid)
+            descendants.extend(_collect_descendants(child_pid))
+    except FileNotFoundError:
+        return descendants
+    except Exception:
+        return descendants
+    return descendants
+
+
+def _kill_descendants(pid: int):
+    """Best-effort SIGTERM->SIGKILL for descendant processes."""
+    to_kill = _collect_descendants(pid)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for child in to_kill:
+            try:
+                os.kill(child, sig)
+            except ProcessLookupError:
+                continue
+        time.sleep(0.25)
+
+
+def _kill_active():
+    """Kill any tracked subprocess PIDs (ffmpeg, ffprobe, etc.)."""
+    global ACTIVE_PIDS
+    pids = list(ACTIVE_PIDS)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in pids:
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                try:
+                    os.kill(pid, sig)
+                except Exception:
+                    continue
+        time.sleep(0.2)
+    ACTIVE_PIDS = set()
 
 
 def find_audio_file(ytid: str, pull_dir: Path) -> Optional[Path]:
@@ -58,23 +115,116 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
         "elapsed": 0,
     }
 
+    def run_cmd(cmd: list, timeout: Optional[float] = None, **kwargs):
+        """
+        Run a subprocess and ensure it is terminated on interrupts.
+        Start it in its own process group and track the PID for cleanup.
+        
+        Args:
+            cmd: Command to run
+            timeout: Optional timeout in seconds (default: None = no timeout)
+            **kwargs: Additional arguments to pass to Popen
+        """
+        # Set reasonable defaults for common commands
+        if timeout is None:
+            if 'ffmpeg' in str(cmd):
+                timeout = 3600  # 1 hour for ffmpeg (should be much faster)
+            elif 'ffprobe' in str(cmd):
+                timeout = 60  # 1 minute for ffprobe
+            else:
+                timeout = 1800  # 30 minutes default
+        
+        # Log command start for debugging
+        if verbose:
+            cmd_str = ' '.join(str(c) for c in cmd[:5])
+            if len(cmd) > 5:
+                cmd_str += '...'
+            print(f"[{ytid}] Executing: {cmd_str}")
+        
+        try:
+            # Check if command exists
+            import shutil
+            cmd_path = shutil.which(cmd[0])
+            if not cmd_path:
+                raise FileNotFoundError(f"Command not found: {cmd[0]}")
+            
+            if verbose:
+                print(f"[{ytid}] Starting process: {cmd_path}")
+                import sys
+                sys.stdout.flush()
+            
+            proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
+            ACTIVE_PIDS.add(proc.pid)
+            
+            if verbose:
+                print(f"[{ytid}] Process started: PID {proc.pid}")
+                import sys
+                sys.stdout.flush()
+            
+            try:
+                # Use poll() to check if process is still running before communicate
+                # This helps detect if process exits immediately
+                import time
+                time.sleep(0.1)  # Brief pause to let process start
+                if proc.poll() is not None:
+                    # Process already finished
+                    stdout, stderr = proc.communicate()
+                else:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                
+                if verbose:
+                    print(f"[{ytid}] Process completed: returncode={proc.returncode}")
+                
+            except subprocess.TimeoutExpired:
+                if verbose:
+                    print(f"[{ytid}] Process timed out, killing...")
+                proc.kill()
+                proc.wait(timeout=5)
+                raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd[:3])}...")
+            except KeyboardInterrupt:
+                _kill_active()
+                raise
+            finally:
+                ACTIVE_PIDS.discard(proc.pid)
+                
+            if proc.returncode != 0:
+                error_preview = (stderr[:200] if stderr else stdout[:200] if stdout else "No error output")
+                if verbose:
+                    print(f"[{ytid}] Process failed with returncode {proc.returncode}: {error_preview}")
+                raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
+            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        except FileNotFoundError as e:
+            raise RuntimeError(f"Command not found: {cmd[0]} - {e}") from e
+        except Exception as e:
+            if verbose:
+                print(f"[{ytid}] Error executing command: {e}")
+            raise
+
     try:
         # Find audio file
+        if verbose:
+            print(f"[{ytid}] Looking for audio file in {pull_dir}...")
         audio_path = find_audio_file(ytid, pull_dir)
         if not audio_path:
-            result["error"] = "Audio file not found"
+            result["error"] = f"Audio file not found in {pull_dir}"
+            if verbose:
+                print(f"[{ytid}] ERROR: Audio file not found")
             return result
+        
+        if verbose:
+            print(f"[{ytid}] Found audio: {audio_path} ({audio_path.stat().st_size / (1024*1024):.1f} MB)")
 
         # Create output directory
         output_dir = output_base / ytid
         output_dir.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"[{ytid}] Output directory: {output_dir}")
 
         canonical_path = output_dir / "canonical.wav"
         vad_segments = output_dir / "vad_segments.json"
-        vad_mask = output_dir / "vad_mask.wav"
 
-        # Skip if already processed
-        if canonical_path.exists() and vad_segments.exists() and vad_mask.exists():
+        # Skip if already processed (vad_mask.wav not required - segments-only mode)
+        if canonical_path.exists() and vad_segments.exists():
             result["success"] = True
             result["skipped"] = True
             result["elapsed"] = (datetime.now() - start_time).total_seconds()
@@ -85,16 +235,44 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
             temp_path = output_dir / "canonical_temp.wav"
 
             # First: Convert and process audio
+            # NOTE: Removed areverse filters to prevent memory bloat on long files.
+            # areverse requires loading the entire file into memory, which causes 12GB+ usage
+            # on 3-4 hour files. Using silenceremove only from start (not end) to avoid this.
+            # If trailing silence removal is critical, it should be done in a separate pass
+            # or using a streaming approach.
+            # Use simpler filters to avoid memory issues:
+            # - Removed loudnorm (requires full file analysis, can hang/crash on large files)
+            # - Use volume normalization instead (streaming-compatible, no memory bloat)
+            # - Removed areverse (requires full file in memory)
+            # - Limit ffmpeg memory with thread_queue_size to prevent buffering too much
             ffmpeg_cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-thread_queue_size", "512",  # Limit input buffer to prevent memory bloat
                 "-i", str(audio_path),
                 "-ac", "1",  # mono
                 "-ar", "16000",  # 16kHz
                 "-sample_fmt", "s16",
-                "-af", "highpass=f=70,areverse,silenceremove=start_periods=1:start_silence=0.2:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_silence=0.2:start_threshold=-50dB,loudnorm=I=-23:TP=-2.0:LRA=7",
+                # Simple streaming filters only (all process in real-time, no full-file buffering):
+                # highpass: streaming filter
+                # silenceremove: streaming filter (leading only)
+                # volume: streaming normalization (replaces loudnorm, no analysis pass needed)
+                "-af", "highpass=f=70,silenceremove=start_periods=1:start_silence=0.2:start_threshold=-50dB,volume=-23dB",
+                "-threads", "2",  # Limit threads to reduce memory usage
                 str(temp_path)
             ]
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            if verbose:
+                print(f"[{ytid}] Running ffmpeg canonicalization...")
+                import sys
+                sys.stdout.flush()  # Force output before blocking call
+            
+            # Use DEVNULL for stderr to avoid potential deadlocks
+            # ffmpeg with -loglevel error shouldn't output much anyway
+            run_cmd(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3600)
+            
+            if verbose:
+                print(f"[{ytid}] ffmpeg canonicalization completed")
+                import sys
+                sys.stdout.flush()
 
             # Second: Pad to align with chunk boundaries (for PyAnnote compatibility)
             # This prevents "X samples instead of Y" errors during diarization
@@ -108,7 +286,7 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 str(temp_path)
             ]
-            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            probe_result = run_cmd(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             current_samples = int(probe_result.stdout.strip()) if probe_result.stdout.strip().isdigit() else 0
 
             if current_samples > 0:
@@ -125,7 +303,7 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
                         "-af", f"apad=pad_dur={padding_duration}",
                         str(canonical_path)
                     ]
-                    subprocess.run(pad_cmd, check=True, capture_output=True)
+                    run_cmd(pad_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     temp_path.unlink()  # Remove temp file
                 else:
                     # No padding needed, just rename
@@ -134,105 +312,164 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
                 # Fallback: just use the temp file
                 temp_path.rename(canonical_path)
 
-        # Step 2: VAD (WebRTC)
-        if not (vad_segments.exists() and vad_mask.exists()):
+        # Step 2: VAD (WebRTC) - streaming chunks to minimize memory
+        if not vad_segments.exists():
+            if verbose:
+                print(f"[{ytid}] Starting VAD processing...")
             vad_script = f"""
 import json, numpy as np, webrtcvad
 from pathlib import Path
+import sys
+
+# Streaming VAD: process audio in chunks to avoid loading entire file into RAM
+# For a 3-4 hour file, this prevents 32GB+ memory usage
 
 try:
-    import soundfile as sf
-    # Read as int16 to keep memory low and avoid float64 blow-up on long files
-    waveform, sr = sf.read('{canonical_path}', dtype="int16")
+    import soundfile as sf  # prefer int16, mono
+    HAS_SOUNDFILE = True
 except ImportError:
+    HAS_SOUNDFILE = False
+    import torchaudio
+
+# Open file and get metadata without loading all data
+if HAS_SOUNDFILE:
+    with sf.SoundFile('{canonical_path}') as f:
+        sr = f.samplerate
+        total_frames = len(f)
+        channels = f.channels
+        
+        # Process in chunks (1MB chunks = ~500k samples at 16kHz = ~31 seconds)
+        chunk_samples = 500000  # ~31 seconds at 16kHz
+        vad = webrtcvad.Vad(3)
+        frame_duration_ms = 30
+        frame_length = int(sr * frame_duration_ms / 1000)
+        frame_bytes = frame_length * 2  # int16 = 2 bytes per sample
+        
+        segments = []
+        in_segment = False
+        seg_start = 0.0
+        current_time = 0.0
+        
+        # Stream through file in chunks - read sequentially (soundfile reads from current position)
+        while True:
+            chunk = f.read(chunk_samples, dtype='int16', always_2d=True)
+            
+            # Check if we got any data (EOF)
+            if chunk.size == 0:
+                break
+            
+            # Force mono (take first channel)
+            if chunk.ndim == 2 and chunk.shape[1] > 1:
+                chunk = chunk[:, 0:1]
+            elif chunk.ndim == 2:
+                chunk = chunk[:, 0]
+            
+            # Get actual number of samples read
+            num_samples = len(chunk) if chunk.ndim == 1 else chunk.shape[0]
+            
+            # Convert to PCM bytes for VAD
+            if chunk.ndim == 2:
+                pcm = chunk.flatten().tobytes()
+            else:
+                pcm = chunk.tobytes()
+            
+            # Process frames in this chunk
+            for idx in range(0, len(pcm) - frame_bytes + 1, frame_bytes):
+                frame = pcm[idx:idx + frame_bytes]
+                if len(frame) < frame_bytes:
+                    break
+                is_speech = vad.is_speech(frame, sr)
+                t = current_time + (idx // 2) / sr
+                
+                if is_speech and not in_segment:
+                    seg_start = t
+                    in_segment = True
+                elif not is_speech and in_segment:
+                    segments.append({{"start": seg_start, "end": t}})
+                    in_segment = False
+            
+            # Update time based on actual samples read
+            current_time += num_samples / sr
+            
+            # Free chunk memory immediately
+            del chunk, pcm
+        
+        # Close any open segment
+        if in_segment:
+            segments.append({{"start": seg_start, "end": current_time}})
+else:
+    # Fallback: torchaudio (less memory efficient but still chunked)
     import torchaudio
     waveform_t, sr = torchaudio.load('{canonical_path}')
-    waveform_np = waveform_t.numpy()
-    waveform = waveform_np[0] if waveform_np.ndim > 1 else waveform_np
-    # Ensure int16 for VAD PCM; torchaudio returns float32 in [-1,1]
+    waveform = waveform_t.numpy().T  # [time, channel]
     if waveform.dtype != np.int16:
         waveform = (waveform * 32767.0).astype(np.int16)
-
-vad = webrtcvad.Vad(3)
-frame_duration_ms = 30
-frame_length = int(sr * frame_duration_ms / 1000)
-if waveform.dtype == np.int16:
-    pcm_data = waveform.tobytes()
-else:
-    pcm_data = (waveform * 32767).astype(np.int16).tobytes()
-
-is_speech_frame = []
-for offset in range(0, len(pcm_data) - frame_length * 2, frame_length * 2):
-    frame = pcm_data[offset:offset + frame_length * 2]
-    if len(frame) < frame_length * 2:
-        break
-    is_speech_frame.append(vad.is_speech(frame, sr))
-
-segments = []
-in_segment = False
-seg_start = 0
-for i, is_speech in enumerate(is_speech_frame):
-    time_sec = i * frame_duration_ms / 1000.0
-    if is_speech and not in_segment:
-        seg_start = time_sec
-        in_segment = True
-    elif not is_speech and in_segment:
-        segments.append({{"start": seg_start, "end": time_sec}})
-        in_segment = False
-if in_segment:
-    segments.append({{"start": seg_start, "end": len(waveform) / sr}})
+    
+    # Force mono
+    if waveform.ndim == 2 and waveform.shape[1] > 1:
+        waveform = waveform[:, 0:1]
+    
+    vad = webrtcvad.Vad(3)
+    frame_duration_ms = 30
+    frame_length = int(sr * frame_duration_ms / 1000)
+    
+    segments = []
+    in_segment = False
+    seg_start = 0.0
+    total_frames = waveform.shape[0]
+    
+    # Process frames
+    pcm = waveform.tobytes()
+    for idx in range(0, len(pcm) - frame_length * 2 + 1, frame_length * 2):
+        frame = pcm[idx:idx + frame_length * 2]
+        is_speech = vad.is_speech(frame, sr)
+        t = (idx // 2) / sr
+        if is_speech and not in_segment:
+            seg_start = t
+            in_segment = True
+        elif not is_speech and in_segment:
+            segments.append({{"start": seg_start, "end": t}})
+            in_segment = False
+    if in_segment:
+        segments.append({{"start": seg_start, "end": total_frames / sr}})
 
 Path('{vad_segments}').write_text(json.dumps(segments, indent=2))
-
-# Create VAD mask
-mask = np.zeros_like(waveform)
-for seg in segments:
-    s, e = int(seg["start"] * sr), int(seg["end"] * sr)
-    mask[s:e] = waveform[s:e]
-
-try:
-    import soundfile as sf
-    sf.write('{vad_mask}', mask, sr)
-except ImportError:
-    import torchaudio, torch
-    torchaudio.save('{vad_mask}', torch.from_numpy(mask).unsqueeze(0), sr)
-
-# Create speech-only audio
-speech = []
-offsets = []
-cursor = 0
-for seg in segments:
-    s, e = int(seg["start"]*sr), int(seg["end"]*sr)
-    chunk = waveform[s:e]
-    offsets.append({{
-        "src_start": seg["start"],
-        "src_end": seg["end"],
-        "dst_start": cursor/sr,
-        "dst_end": (cursor+len(chunk))/sr
-    }})
-    speech.append(chunk)
-    cursor += len(chunk)
-
-if speech:
-    speech_wav = np.concatenate(speech)
-    try:
-        import soundfile as sf
-        sf.write('{output_dir}/vad_speech.wav', speech_wav, sr)
-    except ImportError:
-        import torchaudio, torch
-        torchaudio.save('{output_dir}/vad_speech.wav', torch.from_numpy(speech_wav).unsqueeze(0), sr)
-
-    Path('{output_dir}/vad_offset_map.tsv').write_text(
-        "\\n".join(f"{{o['src_start']}}\\t{{o['src_end']}}\\t{{o['dst_start']}}\\t{{o['dst_end']}}" for o in offsets)
-    )
 """
 
-            subprocess.run(
-                [str(venv_python), "-c", vad_script],
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            # Run VAD script with timeout to prevent hangs
+            # For a 4-hour file at 16kHz, processing should take < 5 minutes
+            # Set timeout to 30 minutes to be safe
+            try:
+                if verbose:
+                    print(f"[{ytid}] Running VAD script...")
+                proc = subprocess.Popen(
+                    [str(venv_python), "-c", vad_script],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                ACTIVE_PIDS.add(proc.pid)
+                try:
+                    stdout, stderr = proc.communicate(timeout=1800)  # 30 minute timeout
+                    if proc.returncode != 0:
+                        error_msg = stderr[:500] if stderr else "Unknown error"
+                        raise subprocess.CalledProcessError(
+                            proc.returncode,
+                            [str(venv_python), "-c", vad_script],
+                            output=stdout,
+                            stderr=stderr
+                        )
+                    if verbose:
+                        print(f"[{ytid}] VAD script completed")
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    raise RuntimeError("VAD script timed out after 30 minutes")
+                finally:
+                    ACTIVE_PIDS.discard(proc.pid)
+            except Exception as e:
+                raise RuntimeError(f"VAD script failed: {e}") from e
 
         result["success"] = True
         result["elapsed"] = (datetime.now() - start_time).total_seconds()
@@ -293,6 +530,56 @@ def parallel_vad_preprocess(
     # Prepare arguments for workers
     tasks = [(ytid, pull_dir, output_base, venv_python, verbose, chunk_duration) for ytid in ytids]
 
+    # If only one worker, run serially to simplify cleanup
+    if num_workers == 1:
+        results = []
+        for i, task in enumerate(tasks):
+            if verbose:
+                print(f"Processing task {i+1}/{len(tasks)}: {task[0]}")
+            try:
+                res = preprocess_video(task)
+                results.append(res)
+                if verbose:
+                    status = "✓" if res.get("success") else "✗"
+                    print(f"{status} Task {i+1} completed: {task[0]}")
+            except KeyboardInterrupt:
+                _kill_active()
+                raise
+            except Exception as e:
+                if verbose:
+                    print(f"✗ Task {i+1} failed: {task[0]} - {e}")
+                results.append({"ytid": task[0], "success": False, "error": str(e), "elapsed": 0})
+        # mimic pool summary path
+        stats = {
+            "total": len(ytids),
+            "processed": sum(1 for r in results if r.get("success") and not r.get("skipped")),
+            "skipped": sum(1 for r in results if r.get("skipped")),
+            "failed": sum(1 for r in results if not r.get("success")),
+            "errors": [{"ytid": r.get("ytid"), "error": r.get("error")} for r in results if not r.get("success")],
+            "timings": [r.get("elapsed") for r in results if r.get("elapsed")],
+        }
+        if verbose:
+            print(f"\n[✓] Preprocessing Complete!")
+            print(f"   Total: {stats['total']}")
+            print(f"   Processed: {stats['processed']}")
+            print(f"   Skipped (cached): {stats['skipped']}")
+            print(f"   Failed: {stats['failed']}")
+
+            if stats["timings"]:
+                import statistics
+                avg_time = statistics.mean(stats["timings"])
+                med_time = statistics.median(stats["timings"])
+                print(f"\n   Average time: {avg_time:.1f}s per file")
+                print(f"   Median time: {med_time:.1f}s per file")
+
+            if stats["errors"]:
+                print(f"\n[!] Errors ({len(stats['errors'])}):")
+                for err in stats["errors"][:10]:
+                    print(f"   {err['ytid']}: {err['error']}")
+                if len(stats["errors"]) > 10:
+                    print(f"   ... and {len(stats['errors']) - 10} more")
+        return stats
+
     # Process in parallel
     stats = {
         "total": len(ytids),
@@ -304,14 +591,30 @@ def parallel_vad_preprocess(
     }
 
     with Pool(processes=num_workers) as pool:
-        if HAS_TQDM and verbose:
-            results = list(tqdm(
-                pool.imap(preprocess_video, tasks),
-                total=len(tasks),
-                desc="Preprocessing"
-            ))
-        else:
-            results = pool.map(preprocess_video, tasks)
+        try:
+            if HAS_TQDM and verbose:
+                results = list(tqdm(
+                    pool.imap(preprocess_video, tasks),
+                    total=len(tasks),
+                    desc="Preprocessing"
+                ))
+            else:
+                results = pool.map(preprocess_video, tasks)
+        except KeyboardInterrupt:
+            pool.terminate()
+            pool.join()
+            _kill_descendants(os.getpid())
+            _kill_active()
+            raise
+        except Exception:
+            pool.terminate()
+            pool.join()
+            _kill_descendants(os.getpid())
+            _kill_active()
+            raise
+        finally:
+            _kill_descendants(os.getpid())
+            _kill_active()
 
     # Collect statistics
     for result in results:

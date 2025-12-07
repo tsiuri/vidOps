@@ -32,7 +32,7 @@ diarization:
 
   # Preprocessing (canonicalization + padding + VAD)
   preprocess:
-    workers: null             # null = cpu_count - 2
+    workers: 1                # limit parallel VAD workers to control RAM
     chunk_duration: null      # null = hyperparameters.chunk_duration
 
   # Post-processing (merge gaps, drop short turns)
@@ -91,6 +91,12 @@ diarization:
     log_errors: true              # write errors to log file
     parallel: false               # multi-GPU support (future)
     max_workers: 1                # parallel workers (if parallel=true)
+
+  # Memory monitoring
+  memory_monitor:
+    enabled: true                 # enable memory monitoring during diarization
+    memory_limit_mb: 8192         # maximum memory in MB before worker termination (default: 8GB)
+    check_interval: 1.0           # how often to check memory (seconds)
 
 # Per-domain overrides (optional)
 # Allows different thresholds for different video types

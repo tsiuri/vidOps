@@ -79,6 +79,7 @@ class PathsConfig:
     """Storage and Path Settings"""
     central_storage_root: str = "/mnt/storage/vidops"
     local_temp_dir: str = "tmp"
+    path_prefix: str = ""  # Prefix to prepend to absolute paths from DB (e.g., /mnt/mainroot for remote mounts)
 
 @dataclass
 class NvidiaConfig:
@@ -192,6 +193,7 @@ def _apply_env_overrides(config_obj):
         "database.user": ["VIDOPS_DB_USER", "DB_USER"],
         "database.password": ["VIDOPS_DB_PASSWORD", "DB_PASSWORD"],
         "paths.central_storage_root": ["VIDOPS_CENTRAL_STORAGE"],
+        "paths.path_prefix": ["VIDOPS_PATH_PREFIX", "DB_PATH_PREFIX"],
         "download.format": ["VIDOPS_YTDLP_FORMAT"],
         "download.audio_only": ["VIDOPS_YTDLP_AUDIO_ONLY"],
         "download.audio_format": ["VIDOPS_YTDLP_AUDIO_FORMAT"],

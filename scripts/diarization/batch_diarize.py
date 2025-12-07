@@ -12,6 +12,14 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 import yaml
+import torch
+
+# PyTorch 2.6+ compatibility: ensure pyannote checkpoints load with weights_only disabled
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
 
 # Add parent dir to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -272,6 +280,11 @@ def batch_diarize(
     input_audio_dir = project_root / paths_config.get("input_audio_dir", "generated/diarization_inputs")
     preprocess_workers = preprocess_cfg.get("workers")
     preprocess_chunk = preprocess_cfg.get("chunk_duration", hyper.get("chunk_duration", 15.0))
+    effective_workers = (
+        preprocess_workers
+        if preprocess_workers is not None
+        else max(1, (os.cpu_count() or 2) - 2)
+    )
 
     # Resolve python binary for the embedded VAD script; prefer venv, fall back to current python
     venv_env = os.environ.get("VIRTUAL_ENV")
@@ -287,6 +300,7 @@ def batch_diarize(
     if pull_dir.exists() and not skip_pre:
         if verbose:
             print("[*] Running preprocessing (canonicalize + VAD + padding)...")
+            print(f"    Preprocess workers: {effective_workers}")
 
         try:
             pre_stats = parallel_vad_preprocess(
@@ -296,7 +310,7 @@ def batch_diarize(
                 venv_python=venv_python,
                 num_workers=preprocess_workers,
                 chunk_duration=preprocess_chunk,
-                verbose=verbose and not HAS_TQDM,  # tqdm handled inside
+                verbose=True,  # Always verbose to see progress and debug hangs
             )
 
             if verbose:
@@ -340,45 +354,8 @@ def batch_diarize(
             if not reference_dir:
                 return {"error": "Reference not found and not built"}
 
-    # Load inference pipeline once (reuse across files)
-    from pyannote.audio import Pipeline
-    import torch
-
-    # PyTorch 2.6+ compatibility: patch torch.load to use weights_only=False
-    _original_torch_load = torch.load
-    def _patched_torch_load(*args, **kwargs):
-        # Force weights_only=False for legacy checkpoints (pyannote embedding)
-        kwargs['weights_only'] = False
-        return _original_torch_load(*args, **kwargs)
-    torch.load = _patched_torch_load
-
-    if verbose:
-        print("[*] Loading diarization pipeline...")
-
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # Determine HF token behavior: prefer explicit env token; otherwise avoid forcing token=True
-    # (forcing token=True can hang on systems with misconfigured keyring/backends)
-    hf_cfg = diar_config.get("huggingface", {})
-    env_token = os.environ.get("HF_TOKEN") or os.environ.get("PYANNOTE_AUTH_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
-    token_to_send = env_token if env_token else None
-
-    if verbose and token_to_send is None and hf_cfg.get("use_auth_token", True):
-        print("    Note: No HF token found in env; proceeding without token.")
-
-    pipeline = Pipeline.from_pretrained(
-        diar_config.get("model", "pyannote/speaker-diarization-3.1"),
-        token=token_to_send,
-    )
-    pipeline.to(torch.device(device))
-
-    # Configure batch sizes
-    pipeline.segmentation_batch_size = hyper.get("segmentation_batch_size", 32)
-    pipeline.embedding_batch_size = hyper.get("embedding_batch_size", 64)
-
-    if verbose:
-        print(f" Pipeline loaded on {device}\n")
 
     # Load embedding model if matching
     embedding_model = None
@@ -608,6 +585,13 @@ def batch_diarize(
 
             if not continue_on_error:
                 raise
+        finally:
+            # Free cached GPU memory between files to avoid accumulation on long jobs
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     # Print summary
     if verbose:

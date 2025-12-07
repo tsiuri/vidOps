@@ -5,12 +5,15 @@ import shutil
 import subprocess
 import csv
 import sys
+import signal
+import yaml
 from pathlib import Path
 from typing import List, Optional
 
 from vidops.dal import FilesystemCache, JobRepository, TranscriptRepository, VideoRepository
 from vidops.models import Job, JobStatus
 from vidops.services.reference_builder import ReferenceBuilder
+from vidops.services.memory_monitor import MemoryMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,8 @@ class DiarizationService:
         self.job_repo = job_repo
         self.transcript_repo = transcript_repo
         self.fs_cache = fs_cache
+        self._memory_monitor: Optional[MemoryMonitor] = None
+        self._load_memory_monitor_config()
 
     def enqueue_diarization_job(
         self,
@@ -190,6 +195,16 @@ class DiarizationService:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job has no ytid.")
             return
 
+        # Start memory monitoring if enabled
+        monitor_started = False
+        if self._memory_monitor:
+            try:
+                self._memory_monitor.start()
+                monitor_started = True
+                logger.info("Memory monitoring started for diarization job %s", job.job_id)
+            except Exception as exc:
+                logger.warning("Failed to start memory monitor: %s", exc)
+
         try:
             workspace_root = self._workspace_root()
             media_rel = job.config.get("media_asset_path") or job.media_path
@@ -209,6 +224,7 @@ class DiarizationService:
             output_dir.mkdir(parents=True, exist_ok=True)
 
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting diarization.")
+            # Memory monitor is active during preprocessing and diarization
             self._run_pyannote_diarize(job, workspace_root, audio_path, words_path, output_dir, staged_reference_dir)
             job_result = self._persist_outputs(job, output_rel, output_dir)
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
@@ -217,6 +233,14 @@ class DiarizationService:
             error_msg = f"Diarization failed for job {job.job_id} ({job.ytid}): {exc}"
             logger.error(error_msg, exc_info=True)
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_msg)
+        finally:
+            # Always stop memory monitoring
+            if monitor_started and self._memory_monitor:
+                try:
+                    self._memory_monitor.stop()
+                    logger.info("Memory monitoring stopped for diarization job %s", job.job_id)
+                except Exception as exc:
+                    logger.warning("Error stopping memory monitor: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -234,14 +258,18 @@ class DiarizationService:
 
         path = Path(path_str)
         if path.is_absolute():
+            # First resolve the path with prefix (if configured)
+            resolved_path = self.fs_cache._resolve_path_with_prefix(path_str)
+
+            # Now try to make it relative to central storage root
             try:
-                rel = path.relative_to(self.fs_cache.central_storage_root)
+                rel = resolved_path.relative_to(self.fs_cache.central_storage_root)
             except ValueError:
                 raise ValueError(
-                    f"Path must live under central storage ({self.fs_cache.central_storage_root}): {path}"
+                    f"Path must live under central storage ({self.fs_cache.central_storage_root}): {resolved_path}"
                 ) from None
             if not allow_dir and rel.name == "":
-                raise ValueError(f"Expected file path, got directory: {path}")
+                raise ValueError(f"Expected file path, got directory: {resolved_path}")
             return str(rel)
         return path_str
 
@@ -398,6 +426,21 @@ class DiarizationService:
         if result.returncode != 0:
             raise RuntimeError(f"Legacy diarization failed with exit {result.returncode}")
 
+    def _get_audio_duration(self, audio_path: Path) -> float:
+        """Get audio duration in seconds using ffprobe."""
+        try:
+            cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(audio_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return float(result.stdout.strip())
+        except Exception as exc:
+            logger.warning(f"Failed to get audio duration: {exc}")
+            return 0.0
+
     def _run_pyannote_diarize(
         self,
         job: Job,
@@ -411,6 +454,45 @@ class DiarizationService:
             self._write_fake_outputs(job, output_dir, audio_path)
             return
 
+        # Check audio duration and use chunking for files > 1 hour
+        chunk_threshold = float(os.environ.get("DIAR_CHUNK_THRESHOLD", "3600"))  # Default: 1 hour
+        audio_duration = self._get_audio_duration(audio_path)
+
+        if audio_duration > chunk_threshold:
+            logger.info(
+                f"Audio duration {audio_duration:.1f}s (>{chunk_threshold:.1f}s), using chunked processing"
+            )
+            self._run_chunked_diarization(
+                job=job,
+                workspace_root=workspace_root,
+                audio_path=audio_path,
+                words_path=words_path,
+                output_dir=output_dir,
+                reference_dir=reference_dir,
+                audio_duration=audio_duration,
+            )
+            return
+
+        # Standard processing for files <= 1 hour
+        self._run_single_diarization(
+            job=job,
+            workspace_root=workspace_root,
+            audio_path=audio_path,
+            words_path=words_path,
+            output_dir=output_dir,
+            reference_dir=reference_dir,
+        )
+
+    def _run_single_diarization(
+        self,
+        job: Job,
+        workspace_root: Path,
+        audio_path: Path,
+        words_path: Path,
+        output_dir: Path,
+        reference_dir: Path,
+    ) -> None:
+        """Run diarization on a single file (no chunking)."""
         # TOOL_ROOT should point to the code tree that has scripts/diarization/batch_diarize.py.
         # Fall back to PROJECT_ROOT/workspace_root if env is not set to avoid hardcoded paths.
         tool_root = Path(
@@ -465,12 +547,250 @@ class DiarizationService:
         env["PROJECT_ROOT"] = str(workspace_root)
         env["TOOL_ROOT"] = str(tool_root)
         env["BATCH_DIARIZE_SKIP_PROMPT"] = "1"
-        env.setdefault("BATCH_DIARIZE_SKIP_PREPROCESS", "1")
+        # Default to running preprocessing so we canonicalize audio before diarization.
+        # Skipping preprocessing forces torchaudio to decode multi-hour MP4/OPUS directly,
+        # which can balloon resident memory. Users can still override to skip if needed.
+        env.setdefault("BATCH_DIARIZE_SKIP_PREPROCESS", "0")
 
         logger.info("Running pyannote diarize: %s", " ".join(cmd))
-        result = subprocess.run(cmd, cwd=workspace_root, env=env, text=True, capture_output=False, check=False)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=workspace_root,
+            env=env,
+            text=True,
+            start_new_session=True,  # allow clean group termination on interrupts
+        )
+        
+        # Register subprocess PID with memory monitor so it tracks all descendants
+        if self._memory_monitor and self._memory_monitor.monitoring:
+            self._memory_monitor.add_subprocess_pid(proc.pid)
+            logger.debug(f"Registered batch_diarize subprocess PID {proc.pid} with memory monitor")
+        
+        try:
+            return_code = proc.wait()
+        except BaseException as exc:  # catch KeyboardInterrupt/SystemExit for cleanup
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise exc
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+        if return_code != 0:
+            raise RuntimeError(f"pyannote diarization failed with exit {return_code}")
+
+    def _run_chunked_diarization(
+        self,
+        job: Job,
+        workspace_root: Path,
+        audio_path: Path,
+        words_path: Path,
+        output_dir: Path,
+        reference_dir: Path,
+        audio_duration: float,
+    ) -> None:
+        """
+        Run diarization on audio file using chunking for memory efficiency.
+        Splits file into ~1 hour chunks, processes each separately, then combines results.
+        """
+        tool_root = Path(
+            os.environ.get("TOOL_ROOT")
+            or os.environ.get("VIDOPS_PROJECT_ROOT")
+            or os.environ.get("PROJECT_ROOT")
+            or workspace_root
+        ).resolve()
+
+        chunk_script = tool_root / "scripts" / "diarization" / "chunk_audio.py"
+        combine_script = tool_root / "scripts" / "diarization" / "combine_chunks.py"
+        batch_script = tool_root / "scripts" / "diarization" / "batch_diarize.py"
+        config_path = tool_root / "config" / "diarization.yaml"
+
+        for script in [chunk_script, combine_script, batch_script]:
+            if not script.exists():
+                raise FileNotFoundError(f"Script not found: {script}")
+
+        # Create chunks directory
+        chunks_dir = workspace_root / "tmp" / f"{job.job_id}_chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+
+        chunk_results_dir = workspace_root / "tmp" / f"{job.job_id}_chunk_results"
+        chunk_results_dir.mkdir(parents=True, exist_ok=True)
+
+        py_bin = Path(os.environ.get("DIAR_PYTHON_BIN", "/home/billie/tools/vidops/.venv/bin/python"))
+        if not py_bin.exists():
+            alt_py = workspace_root / ".venv" / "bin" / "python"
+            py_bin = alt_py if alt_py.exists() else Path(sys.executable)
+
+        chunk_duration = float(os.environ.get("DIAR_CHUNK_DURATION", "3600"))  # 1 hour
+        chunk_overlap = float(os.environ.get("DIAR_CHUNK_OVERLAP", "30"))  # 30 seconds
+
+        logger.info(
+            f"Chunking audio: {audio_duration:.1f}s total, {chunk_duration:.1f}s per chunk, {chunk_overlap:.1f}s overlap"
+        )
+
+        # Step 1: Chunk the audio
+        chunk_cmd = [
+            str(py_bin),
+            str(chunk_script),
+            str(audio_path),
+            str(chunks_dir),
+            "--chunk-duration", str(chunk_duration),
+            "--overlap", str(chunk_overlap),
+        ]
+
+        logger.info(f"Running chunking: {' '.join(chunk_cmd)}")
+        result = subprocess.run(chunk_cmd, cwd=workspace_root, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError(f"pyannote diarization failed with exit {result.returncode}")
+            logger.error(f"Chunking failed: {result.stderr}")
+            raise RuntimeError(f"Audio chunking failed with exit {result.returncode}")
+
+        # Load chunk metadata
+        chunks_metadata_path = chunks_dir / "chunks_metadata.json"
+        if not chunks_metadata_path.exists():
+            raise FileNotFoundError(f"Chunk metadata not found: {chunks_metadata_path}")
+
+        with chunks_metadata_path.open("r", encoding="utf-8") as f:
+            chunks_metadata = json.load(f)
+
+        num_chunks = chunks_metadata["num_chunks"]
+        logger.info(f"Created {num_chunks} chunk(s)")
+
+        # Step 2: Process each chunk with batch_diarize
+        device_override = os.environ.get("VIDOPS_DIAR_DEVICE") or os.environ.get("DIAR_DEVICE")
+        device_arg = device_override or str(job.config.get("device", "auto"))
+
+        env = os.environ.copy()
+        env["PROJECT_ROOT"] = str(workspace_root)
+        env["TOOL_ROOT"] = str(tool_root)
+        env["BATCH_DIARIZE_SKIP_PROMPT"] = "1"
+        env["BATCH_DIARIZE_SKIP_PREPROCESS"] = "0"
+
+        for chunk_idx, chunk in enumerate(chunks_metadata["chunks"]):
+            # Skip original file marker (no chunking case)
+            if chunk.get("is_original", False):
+                logger.info("Single chunk (original file), processing directly")
+                # Just run normal processing on the original file
+                self._run_single_diarization(
+                    job=job,
+                    workspace_root=workspace_root,
+                    audio_path=audio_path,
+                    words_path=words_path,
+                    output_dir=output_dir,
+                    reference_dir=reference_dir,
+                )
+                return
+
+            chunk_path = Path(chunk["chunk_path"])
+            chunk_ytid = f"{job.ytid}_chunk_{chunk_idx:03d}"
+
+            logger.info(f"Processing chunk {chunk_idx+1}/{num_chunks}: {chunk_ytid}")
+
+            # Create ytids file for this chunk
+            tmp_dir = workspace_root / "tmp"
+            chunk_ytids_file = tmp_dir / f"{job.job_id}_chunk_{chunk_idx:03d}_ytids.txt"
+            chunk_ytids_file.write_text(f"{chunk_ytid}\n", encoding="utf-8")
+
+            # Copy chunk to pull directory so batch_diarize can find it
+            # IMPORTANT: Name must match what batch_diarize expects: {ytid}.wav
+            pull_dir = workspace_root / "pull"
+            pull_dir.mkdir(parents=True, exist_ok=True)
+            chunk_in_pull = pull_dir / f"{chunk_ytid}.wav"
+            if not chunk_in_pull.exists():
+                shutil.copy2(chunk_path, chunk_in_pull)
+
+            # Run batch_diarize on this chunk
+            chunk_cmd = [
+                str(py_bin),
+                str(batch_script),
+                str(chunk_ytids_file),
+                str(chunk_results_dir),
+                "--config", str(config_path),
+                "--device", device_arg,
+            ]
+
+            ref_name = reference_dir.name
+            if ref_name:
+                chunk_cmd.extend(["--reference", ref_name])
+                chunk_cmd.extend(["--match-threshold", str(job.config.get("match_threshold", 0.75))])
+                chunk_cmd.extend(["--match-margin", str(job.config.get("match_margin", 0.01))])
+                if job.config.get("match_force_best", True) is False:
+                    chunk_cmd.append("--no-match-force-best")
+
+            logger.info(f"Running diarization on chunk {chunk_idx}: {' '.join(chunk_cmd)}")
+            proc = subprocess.Popen(
+                chunk_cmd,
+                cwd=workspace_root,
+                env=env,
+                text=True,
+                start_new_session=True,
+            )
+
+            # Register with memory monitor
+            if self._memory_monitor and self._memory_monitor.monitoring:
+                self._memory_monitor.add_subprocess_pid(proc.pid)
+
+            try:
+                return_code = proc.wait()
+            except BaseException as exc:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except Exception:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+                raise exc
+
+            if return_code != 0:
+                raise RuntimeError(f"Chunk {chunk_idx} diarization failed with exit {return_code}")
+
+            # Clean up chunk from pull directory
+            if chunk_in_pull.exists():
+                chunk_in_pull.unlink()
+
+            logger.info(f"Chunk {chunk_idx+1}/{num_chunks} completed")
+
+        # Step 3: Combine chunk results
+        logger.info("Combining chunk results")
+        combine_cmd = [
+            str(py_bin),
+            str(combine_script),
+            str(chunks_dir),
+            str(chunk_results_dir),
+            str(output_dir),
+            job.ytid,
+        ]
+
+        logger.info(f"Running combine: {' '.join(combine_cmd)}")
+        result = subprocess.run(combine_cmd, cwd=workspace_root, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"Combining failed: {result.stderr}")
+            raise RuntimeError(f"Chunk combination failed with exit {result.returncode}")
+
+        logger.info(f"Chunked diarization completed for {job.ytid}")
+
+        # Clean up chunk files and intermediate results
+        try:
+            shutil.rmtree(chunks_dir)
+            shutil.rmtree(chunk_results_dir)
+            logger.debug(f"Cleaned up chunk directories")
+        except Exception as exc:
+            logger.warning(f"Failed to clean up chunk directories: {exc}")
 
     def _write_fake_outputs(self, job: Job, output_dir: Path, audio_path: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -539,6 +859,55 @@ class DiarizationService:
             "meta": meta,
             "db_spans_inserted": db_spans,
         }
+
+    def _load_memory_monitor_config(self):
+        """Load memory monitor configuration from diarization.yaml."""
+        try:
+            workspace_root = self._workspace_root()
+            config_path = workspace_root / "config" / "diarization.yaml"
+            
+            if not config_path.exists():
+                # Try TOOL_ROOT if PROJECT_ROOT doesn't have it
+                tool_root = Path(os.environ.get("TOOL_ROOT", workspace_root))
+                config_path = tool_root / "config" / "diarization.yaml"
+            
+            if not config_path.exists():
+                logger.debug("Diarization config not found, memory monitoring disabled")
+                return
+            
+            with config_path.open() as f:
+                config = yaml.safe_load(f) or {}
+            
+            diar_config = config.get("diarization", {})
+            monitor_config = diar_config.get("memory_monitor", {})
+            
+            if not monitor_config.get("enabled", True):
+                logger.debug("Memory monitoring disabled in config")
+                return
+            
+            memory_limit_mb = monitor_config.get("memory_limit_mb", 8192)  # Default 8GB
+            check_interval = monitor_config.get("check_interval", 1.0)
+            
+            try:
+                self._memory_monitor = MemoryMonitor(
+                    memory_limit_mb=memory_limit_mb,
+                    check_interval=check_interval
+                )
+                logger.info(
+                    "Memory monitor configured: limit=%d MB, check_interval=%.1f s",
+                    memory_limit_mb,
+                    check_interval
+                )
+            except ImportError as exc:
+                logger.warning(
+                    "Memory monitoring requested but psutil not available: %s. "
+                    "Install with: pip install psutil>=5.9.0",
+                    exc
+                )
+                self._memory_monitor = None
+        except Exception as exc:
+            logger.warning("Failed to load memory monitor config: %s", exc)
+            self._memory_monitor = None
 
     def _write_spans_to_db(self, ytid: str, timestamps_path: Path, replace_existing: bool = True) -> int:
         from psycopg2.extras import execute_values  # type: ignore
