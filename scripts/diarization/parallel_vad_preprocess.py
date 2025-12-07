@@ -107,6 +107,14 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
     """
     ytid, pull_dir, output_base, venv_python, verbose, chunk_duration = args
 
+    # Normalize chunk duration to a sane default if config passed None/0.
+    try:
+        chunk_duration = float(chunk_duration) if chunk_duration is not None else 15.0
+    except Exception:
+        chunk_duration = 15.0
+    if chunk_duration <= 0:
+        chunk_duration = 15.0
+
     start_time = datetime.now()
     result = {
         "ytid": ytid,
