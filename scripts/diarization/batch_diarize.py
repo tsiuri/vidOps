@@ -279,7 +279,13 @@ def batch_diarize(
     pull_dir = project_root / paths_config.get("fallback_audio_dir", "pull")
     input_audio_dir = project_root / paths_config.get("input_audio_dir", "generated/diarization_inputs")
     preprocess_workers = preprocess_cfg.get("workers")
-    preprocess_chunk = preprocess_cfg.get("chunk_duration", hyper.get("chunk_duration", 15.0))
+    # Keep VAD padding aligned with diarization chunk size; fall back to hyperparameter if unset/null.
+    preprocess_chunk_cfg = preprocess_cfg.get("chunk_duration")
+    preprocess_chunk = (
+        hyper.get("chunk_duration", 15.0)
+        if preprocess_chunk_cfg is None
+        else preprocess_chunk_cfg
+    )
     effective_workers = (
         preprocess_workers
         if preprocess_workers is not None

@@ -515,6 +515,10 @@ def parallel_vad_preprocess(
             ytid = line.split("\t")[0]
             ytids.append(ytid)
 
+    # If caller explicitly passed null/None (e.g., from YAML), fall back to the diarization default.
+    if chunk_duration is None:
+        chunk_duration = 15.0
+
     if num_workers is None:
         num_workers = max(1, cpu_count() - 2)
 
