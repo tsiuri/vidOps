@@ -7,7 +7,6 @@ from typing import Optional
 from vidops.config import load_config
 from vidops.models import Video, Transcript, Asset
 from vidops.storage.broker_client import StorageBrokerClient
-from vidops.storage.broker_client import StorageBrokerClient
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,6 @@ class FilesystemCache:
         # Ensure local cache exists
         self.local_cache_root.mkdir(parents=True, exist_ok=True)
         logger.info(f"FilesystemCache initialized: central={self.central_storage_root}, local={self.local_cache_root}")
-        self.broker_client = StorageBrokerClient(config.storage_broker)
         self.broker_client = StorageBrokerClient(config.storage_broker)
 
     def get_central_path(self, relative_path: str) -> Path:

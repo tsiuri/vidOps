@@ -282,12 +282,21 @@ class ReferenceBuilder:
         max_clips: int = DEFAULT_CLIPS,
         max_duration: float = MAX_DURATION,
     ) -> Path:
-        skip_prompts = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT") or not sys.stdin.isatty()
         """
         Build a shared reference set from multiple videos.
 
         Each source contributes up to clips_per_video candidates; we keep up to max_clips total.
+
+        Interactive mode:
+        - If stdin is a tty AND BATCH_DIARIZE_SKIP_PROMPT is not set, shows interactive clip selector
+        - User can select clips via curses UI or manual prompt
+        - User will be prompted to enter speaker name
+
+        Non-interactive mode:
+        - Automatically selects first max_clips clips
+        - Uses reference name as speaker name
         """
+        skip_prompts = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT") or not sys.stdin.isatty()
         combined: list[Tuple[Path, float, float, str]] = []
         for ytid, media_path, words_path in sources:
             words = _read_words(words_path)
