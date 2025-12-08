@@ -17,7 +17,7 @@ def dl_subs():
 @click.argument("ytid")
 @click.option("--lang", default="en", show_default=True, help="Subtitle language to request.")
 @click.option("--format", "subtitle_format", default="vtt", show_default=True, help="Subtitle format (vtt, srt, ...).")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 def enqueue_subtitle_download(ytid: str, lang: str, subtitle_format: str, priority: int):
     """Enqueue a single subtitle download job."""
     click.echo(f"Enqueuing dl-subs for {ytid} ({subtitle_format}, lang={lang})...")
@@ -35,7 +35,7 @@ def enqueue_subtitle_download(ytid: str, lang: str, subtitle_format: str, priori
 @click.argument("list_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--lang", default="en", show_default=True, help="Subtitle language to request.")
 @click.option("--format", "subtitle_format", default="vtt", show_default=True, help="Subtitle format (vtt, srt, ...).")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 def enqueue_from_list(list_file: Path, lang: str, subtitle_format: str, priority: int):
     """Enqueue dl-subs jobs from a file of ytids (one per line)."""
     click.echo(f"Enqueuing dl-subs jobs from {list_file} ...")

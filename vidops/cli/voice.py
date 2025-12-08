@@ -45,7 +45,7 @@ def voice():
     "--output-dir",
     help="Relative directory under central storage to write results. Defaults to results/voice_filter/<ytid>.",
 )
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 def enqueue_voice(ytid, clips_path, reference, threshold, method, output_dir, priority):
     """Enqueue a voice filtering job for the given YTID."""
     service = get_voice_service()

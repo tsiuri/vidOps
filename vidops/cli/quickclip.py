@@ -48,7 +48,7 @@ def quickclip():
 @click.option("--name", help="Custom session name (auto-generated if not provided)")
 @click.option("--output", help="Custom output directory (default: generated/quickclips/<ytid>)")
 @click.option("--force", is_flag=True, help="Force re-download even if video exists")
-@click.option("--priority", type=int, default=10, help="Job priority (default: 10)")
+@click.option("--priority", type=int, default=50, help="Job priority (default: 50)")
 def create_quickclip(
     url: str,
     spans: tuple,

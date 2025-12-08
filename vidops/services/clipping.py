@@ -40,7 +40,7 @@ class ClippingService:
         start_sec: float,
         end_sec: float,
         label: str,
-        priority: int = 0,
+        priority: int = 50,
         media_relative_path: Optional[str] = None,
         transcript_source: Optional[str] = None,
         run_name: Optional[str] = None,
@@ -109,7 +109,7 @@ class ClippingService:
         run_name: str,
         output_dir: Optional[str],
         ytid: str,
-        priority: int = 0,
+        priority: int = 50,
         mode: str = "net",
     ) -> Job:
         """

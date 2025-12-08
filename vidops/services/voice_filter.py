@@ -37,7 +37,7 @@ class VoiceFilterService:
         reference_paths: List[str],
         threshold: float = 0.7,
         method: str = "chunked",
-        priority: int = 0,
+        priority: int = 50,
         output_dir: Optional[str] = None,
     ) -> Job:
         """

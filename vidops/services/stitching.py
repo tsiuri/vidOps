@@ -34,7 +34,7 @@ class StitchingService:
         input_ytids_or_clip_paths: List[str],
         output_filename: str,
         stitch_method: str = "batch",
-        priority: int = 0
+        priority: int = 50
     ) -> Job:
         """
         Enqueues a video stitching job.

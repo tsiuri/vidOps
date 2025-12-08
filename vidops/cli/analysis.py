@@ -15,7 +15,7 @@ def analyze():
 @click.argument("ytid")
 @click.option("--transcript-kind", required=True, help="The kind of transcript to analyze (e.g., 'words_whisper_medium').")
 @click.option("--model", default="llama3", help="The AI model to use for analysis (e.g., 'llama3').")
-@click.option("--priority", type=int, default=0, help="Job priority.")
+@click.option("--priority", type=int, default=50, help="Job priority.")
 @click.option("--output-name", help="Relative path for the analysis artifact (optional).")
 def enqueue_analysis(ytid: str, transcript_kind: str, model: str, priority: int, output_name: str | None):
     """Enqueue a single transcript analysis job."""

@@ -52,7 +52,7 @@ class SubtitleService:
         ytid: str,
         lang: str = DEFAULT_LANG,
         subtitle_format: str = "vtt",
-        priority: int = 0,
+        priority: int = 50,
     ) -> Job:
         """
         Enqueue a single legacy dl-subs job for a video.
@@ -79,7 +79,7 @@ class SubtitleService:
         list_path: Path,
         lang: str = DEFAULT_LANG,
         subtitle_format: str = "vtt",
-        priority: int = 0,
+        priority: int = 50,
     ) -> List[Job]:
         """
         Enqueue dl-subs jobs for each ytid in a file (one per line).
@@ -109,7 +109,7 @@ class SubtitleService:
         subtitle_asset_path: Optional[str] = None,
         overwrite: bool = False,
         subtitle_format: str = "vtt",
-        priority: int = 0,
+        priority: int = 50,
     ) -> Job:
         """
         Enqueue a job that converts captions into *.words.yt.tsv via the legacy converter.

@@ -23,7 +23,7 @@ def stitch():
 @click.option("--clip", "clip_assets", multiple=True, help="Individual clip asset path (relative to storage).")
 @click.option("--output-name", required=True, help="Name for the stitched file (e.g. highlight.mp4).")
 @click.option("--method", default="batch", show_default=True, help="ffmpeg concat strategy (batch|cfr|simple).")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 def stitch_enqueue(clips_file: str, clip_assets: List[str], output_name: str, method: str, priority: int):
     """Enqueue a stitching job that concatenates existing clip assets."""
     sources: List[str] = []

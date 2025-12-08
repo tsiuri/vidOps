@@ -41,7 +41,7 @@ class AnalysisService:
         ytid: str,
         transcript_kind: str,
         analysis_model: str,
-        priority: int = 0,
+        priority: int = 50,
         output_name: Optional[str] = None,
     ) -> Job:
         transcript = self.transcript_repo.get(ytid, transcript_kind)

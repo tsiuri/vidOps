@@ -26,7 +26,7 @@ def dates():
 @click.option("--archive-cache", type=str, help="Archive cache path used by create-list.")
 @click.option("--dest-dir", type=str, help="Destination directory for move action.")
 @click.option("--output-name", type=str, help="Relative path for the output manifest (optional).")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 @click.option("--arg", "extra_args", multiple=True, help="Additional args passed through to workspace.sh.")
 def enqueue_dates(action, dates_file, source_dir, archive_cache, dest_dir, output_name, priority, extra_args):
     """Enqueue a legacy dates helper job."""

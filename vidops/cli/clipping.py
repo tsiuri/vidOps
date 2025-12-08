@@ -16,7 +16,7 @@ def clip():
 @click.option("--start", type=float, required=True, help="Start time of the clip in seconds.")
 @click.option("--end", type=float, required=True, help="End time of the clip in seconds.")
 @click.option("--label", default="manual_clip", help="A label for the clip (e.g., search term, event name).")
-@click.option("--priority", type=int, default=0, help="Job priority.")
+@click.option("--priority", type=int, default=50, help="Job priority.")
 def enqueue_clip(ytid: str, start: float, end: float, label: str, priority: int):
     """Enqueue a single video clipping job."""
     click.echo(f"Enqueuing clipping job for YTID: {ytid} from {start}s to {end}s (Label: {label}, Priority: {priority})...")
@@ -34,4 +34,3 @@ def enqueue_clip(ytid: str, start: float, end: float, label: str, priority: int)
     except Exception as e:
         logger.error(f"Error enqueuing clipping job for {ytid}: {e}", exc_info=True)
         click.echo(click.style(f"✗ Failed to enqueue clipping job: {e}", fg="red"), err=True)
-

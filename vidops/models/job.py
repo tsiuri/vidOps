@@ -22,7 +22,7 @@ class Job:
     job_id: str = field(default_factory=lambda: f"job_{uuid.uuid4()}")
     job_type: str = "generic"
     status: JobStatus = JobStatus.PENDING
-    priority: int = 0
+    priority: int = 50
     
     # Media identifiers
     ytid: Optional[str] = None
@@ -60,7 +60,7 @@ class Job:
             job_id=row['job_id'],
             job_type=row.get('job_type', 'generic'),
             status=status,
-            priority=row.get('priority', 0),
+            priority=row.get('priority', 50),
             ytid=row.get('ytid'),
             media_path=row.get('media_path'),
             config=row.get('config') or {},
@@ -110,7 +110,7 @@ if __name__ == "__main__":
         'job_id': job_obj.job_id,
         'job_type': 'transcription', # Added for from_row test
         'status': 'claimed',
-        'priority': 0,
+        'priority': 50,
         'ytid': 'dQw4w9WgXcQ',
         'media_path': '/path/to/media.mp4',
         'config': {'model': 'small'},

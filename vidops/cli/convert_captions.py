@@ -21,7 +21,7 @@ def convert_captions():
     help="Subtitle asset path (relative to storage) to convert. Falls back to latest subtitle asset.",
 )
 @click.option("--overwrite", is_flag=True, help="Forward --overwrite to the legacy converter.")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 def enqueue_convert(ytid: str, subtitle_path: Optional[str], overwrite: bool, priority: int):
     """Enqueue a convert-captions job for a single video."""
     click.echo(f"Enqueuing convert-captions for {ytid} (overwrite={overwrite})...")

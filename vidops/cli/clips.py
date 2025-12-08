@@ -185,7 +185,7 @@ def clips_hits(query: Optional[str], timestamp: Optional[str], source: Optional[
 @clips.command("cut")
 @click.argument("hits_file", type=click.Path(exists=True))
 @click.option("--name", help="Run name; if omitted, derived from hits_file run_name column.")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority for enqueued clips.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority for enqueued clips.")
 @click.option("--limit", type=int, default=None, help="Max rows to enqueue from the TSV.")
 @click.option("--mode", type=click.Choice(["net", "local"]), default="net", show_default=True, help="Use legacy cut-net (default) or cut-local.")
 def clips_cut(hits_file: str, name: Optional[str], priority: int, limit: Optional[int], mode: str):
@@ -232,7 +232,7 @@ def clips_cut(hits_file: str, name: Optional[str], priority: int, limit: Optiona
 @click.option("--start", type=float, required=True, help="Start time of the clip in seconds.")
 @click.option("--end", type=float, required=True, help="End time of the clip in seconds.")
 @click.option("--label", default="manual_clip", help="A label for the clip (e.g., search term, event name).")
-@click.option("--priority", type=int, default=0, help="Job priority.")
+@click.option("--priority", type=int, default=50, help="Job priority.")
 @click.option("--media-asset", type=str, help="Optional relative path to the source media asset.")
 def enqueue_clip_command(ytid: str, start: float, end: float, label: str, priority: int, media_asset: Optional[str]):
     """Enqueue a single video clipping job."""

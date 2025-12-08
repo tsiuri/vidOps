@@ -38,7 +38,7 @@ class DownloadService:
     def enqueue_download(
         self,
         url: str,
-        priority: int = 0,
+        priority: int = 50,
         cookies_browser: str | None = None,
         upload_type: str | None = None,
     ) -> Job:

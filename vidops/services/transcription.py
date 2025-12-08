@@ -55,7 +55,7 @@ class TranscriptionService:
         ytid: str,
         model: str,
         language: str = "en",
-        priority: int = 0,
+        priority: int = 50,
         force: bool = False,
         force_job: bool = False,
     ) -> Job:
@@ -137,7 +137,7 @@ class TranscriptionService:
         model: str,
         limit: int = 100,
         language: str = "en",
-        priority: int = 0
+        priority: int = 50
     ) -> List[Job]:
         """
         Enqueues videos that do not yet have a transcript for the specified model.

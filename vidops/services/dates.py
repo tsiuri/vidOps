@@ -38,7 +38,7 @@ class DatesService:
         dest_dir: Optional[str] = None,
         output_name: Optional[str] = None,
         extra_args: Optional[List[str]] = None,
-        priority: int = 0,
+        priority: int = 50,
     ) -> Job:
         if not action:
             raise ValueError("Action is required for dates jobs.")

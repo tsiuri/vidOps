@@ -19,7 +19,7 @@ def extra_utils():
 @click.option("--input", "inputs", multiple=True, type=click.Path(exists=True), help="Input files to materialize.")
 @click.option("--output-name", type=str, help="Relative output path to register (results/extra_utils/...).")
 @click.option("--arg", "extra_args", multiple=True, help="Additional args to pass to the legacy tool.")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 @click.option("--ytid", type=str, help="Optional ytid for asset registration context.")
 def enqueue_extra_utils(tool, inputs, output_name, extra_args, priority, ytid):
     """Enqueue a legacy extra-utils helper job."""

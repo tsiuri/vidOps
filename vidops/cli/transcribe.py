@@ -27,7 +27,7 @@ def _looks_like_video_id(ytid: str | None) -> bool:
 @click.argument("ytid")
 @click.option("--model", default="small", help="Whisper model to use (e.g., 'medium', 'large-v2').")
 @click.option("--lang", default="en", help="Language of the video (e.g., 'en').")
-@click.option("--priority", type=int, default=0, help="Job priority.")
+@click.option("--priority", type=int, default=50, help="Job priority.")
 @click.option("--force", is_flag=True, help="Force enqueue even if transcript exists.")
 @click.option("--force-job", is_flag=True, help="Allow duplicate pending/running jobs for the same video/model.")
 def enqueue_transcription(ytid: str, model: str, lang: str, priority: int, force: bool, force_job: bool):
@@ -48,7 +48,7 @@ def enqueue_transcription(ytid: str, model: str, lang: str, priority: int, force
 @click.option("--model", default="small", help="Whisper model to check for.")
 @click.option("--limit", type=int, default=100, help="Maximum number of videos to enqueue.")
 @click.option("--lang", default="en", help="Default language for new jobs.")
-@click.option("--priority", type=int, default=0, help="Job priority.")
+@click.option("--priority", type=int, default=50, help="Job priority.")
 def enqueue_pending(model: str, limit: int, lang: str, priority: int):
     """Enqueue videos that do not yet have a transcript for the specified model."""
     click.echo(f"Enqueuing up to {limit} pending videos for transcription (Model: {model}, Lang: {lang}, Priority: {priority})...")
@@ -72,7 +72,7 @@ def enqueue_pending(model: str, limit: int, lang: str, priority: int):
 @click.option("--url", help="Download URL/playlist/channel used when enqueuing the download job (media_path match).")
 @click.option("--model", default="small", show_default=True, help="Transcription model.")
 @click.option("--lang", default="en", show_default=True, help="Language.")
-@click.option("--priority", type=int, default=0, show_default=True, help="Job priority.")
+@click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 @click.option("--force", is_flag=True, help="Force enqueue even if transcript exists.")
 @click.option("--force-job", is_flag=True, help="Allow duplicate pending/running jobs for the same video/model.")
 def transcribe_from_download(job_id: str | None, url: str | None, model: str, lang: str, priority: int, force: bool, force_job: bool):

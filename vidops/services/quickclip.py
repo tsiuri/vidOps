@@ -47,7 +47,7 @@ class QuickClipService:
         session_name: Optional[str] = None,
         output_dir: Optional[str] = None,
         force: bool = False,
-        priority: int = 10,
+        priority: int = 50,
     ) -> Dict[str, Any]:
         """
         Create a QuickClip session with multiple clips.
@@ -62,7 +62,7 @@ class QuickClipService:
             session_name: Custom session name (auto-generated if None)
             output_dir: Custom output directory
             force: Force re-download even if video exists
-            priority: Job priority (default 10)
+            priority: Job priority (default 50)
 
         Returns:
             Dict with session info and clip paths

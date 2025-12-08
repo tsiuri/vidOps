@@ -13,7 +13,7 @@ def download():
 
 @download.command("enqueue")
 @click.argument("url")
-@click.option("--priority", type=int, default=0, help="Job priority.")
+@click.option("--priority", type=int, default=50, help="Job priority.")
 @click.option("--cookies-browser", default=None, help="Pass cookies from a browser (e.g., firefox, chrome). Overrides config.")
 @click.option(
     "--upload-type",

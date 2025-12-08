@@ -42,7 +42,7 @@ class DiarizationService:
         ytid: str,
         transcript_kind: str,
         diarization_model: str,
-        priority: int = 0,
+        priority: int = 50,
         reference_name: Optional[str] = None,
         match_threshold: float = 0.75,
         match_margin: float = 0.01,

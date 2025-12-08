@@ -35,7 +35,7 @@ class ExtraUtilsService:
         inputs: Optional[List[str]] = None,
         output_name: Optional[str] = None,
         args: Optional[List[str]] = None,
-        priority: int = 0,
+        priority: int = 50,
         ytid: Optional[str] = None,
     ) -> Job:
         if not tool:

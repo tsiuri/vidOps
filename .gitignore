@@ -22,3 +22,5 @@ tests/
 manual diarized/
 manual_diarized_rttm/
 data/references/
+tmp/
+
