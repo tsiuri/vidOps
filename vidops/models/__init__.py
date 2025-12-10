@@ -15,6 +15,7 @@ from .job import Job, JobStatus
 from .video import Video, Asset
 from .worker import Worker, WorkerStatus
 from .transcript import Transcript, Word
+from .analysis_task import AnalysisTask, TaskStatus
 
 __all__ = [
     "Job",
@@ -25,4 +26,6 @@ __all__ = [
     "WorkerStatus",
     "Transcript",
     "Word",
+    "AnalysisTask",
+    "TaskStatus",
 ]

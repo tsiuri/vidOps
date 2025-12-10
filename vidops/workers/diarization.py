@@ -4,13 +4,24 @@ import logging
 import os
 import time
 import signal
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from vidops.config import load_config
 from vidops.models import Worker, WorkerStatus, JobStatus
 from vidops.dal import WorkerRepository, JobRepository
 from vidops.services import get_diarization_service
+from vidops.monitoring.metrics import (
+    jobs_claimed_total,
+    jobs_completed_total,
+    job_processing_duration_seconds,
+    job_processing_duration_summary,
+    generic_worker_uptime_seconds,
+    generic_worker_memory_usage_bytes,
+    generic_worker_cpu_usage_percent,
+    worker_current_job_gauge,
+    generic_errors_total,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +30,7 @@ class DiarizeWorker:
     A worker process that claims and processes diarization jobs from the database.
     """
     
-    def __init__(self):
+    def __init__(self, metrics_port: int = 0):
         self.config = load_config()
         self.worker_id = f"{self.config.workers.machine_alias}-diarization-{os.getpid()}"
         self.worker_type = "diarization"
@@ -32,7 +43,20 @@ class DiarizeWorker:
         self.running = False
         self.current_job_id: Optional[str] = None
         self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
-        
+
+        # Metrics initialization
+        self.startup_time = datetime.now(timezone.utc)
+        self.metrics_port = metrics_port
+        self.metrics_server = None
+        if metrics_port > 0:
+            try:
+                from vidops.monitoring.exporter import MetricsServer
+                self.metrics_server = MetricsServer(port=metrics_port)
+                self.metrics_server.start()
+                logger.info("Metrics server started on port %d", metrics_port)
+            except Exception as e:
+                logger.warning("Failed to start metrics server: %s", e)
+
         # Configure logging
         logging.basicConfig(level=logging.INFO,
                             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -66,19 +90,69 @@ class DiarizeWorker:
             lease_duration=timedelta(seconds=self.heartbeat_interval * 4),
             job_types=[self.worker_type],
         )
-        
+
         if job:
             self.current_job_id = job.job_id
+            job_start_time = time.time()
+
+            # Record job claim
+            jobs_claimed_total.labels(
+                worker_id=self.worker_id,
+                job_type=self.worker_type,
+            ).inc()
+            worker_current_job_gauge.labels(
+                worker_id=self.worker_id,
+                worker_type=self.worker_type,
+            ).set(int(job.job_id) if job.job_id.isdigit() else hash(job.job_id) % 1000000)
+
             logger.info(f"DiarizeWorker '{self.worker_id}' claimed job '{job.job_id}' (YTID: {job.ytid}).")
             self._update_status(WorkerStatus.BUSY, job.job_id)
             try:
                 self.diarization_service.process_job(job)
-                logger.info(f"Job '{job.job_id}' (YTID: {job.ytid}) completed successfully.")
+
+                # Record successful job completion
+                job_duration = time.time() - job_start_time
+                jobs_completed_total.labels(
+                    worker_id=self.worker_id,
+                    job_type=self.worker_type,
+                    status="success",
+                ).inc()
+                job_processing_duration_seconds.labels(
+                    worker_id=self.worker_id,
+                    job_type=self.worker_type,
+                ).observe(job_duration)
+                job_processing_duration_summary.labels(
+                    worker_id=self.worker_id,
+                    job_type=self.worker_type,
+                ).observe(job_duration)
+
+                logger.info(f"Job '{job.job_id}' (YTID: {job.ytid}) completed successfully in {job_duration:.2f}s.")
             except Exception as e:
+                # Record failed job completion
+                job_duration = time.time() - job_start_time
+                jobs_completed_total.labels(
+                    worker_id=self.worker_id,
+                    job_type=self.worker_type,
+                    status="failed",
+                ).inc()
+                job_processing_duration_seconds.labels(
+                    worker_id=self.worker_id,
+                    job_type=self.worker_type,
+                ).observe(job_duration)
+                generic_errors_total.labels(
+                    worker_id=self.worker_id,
+                    worker_type=self.worker_type,
+                    error_category=type(e).__name__,
+                ).inc()
+
                 logger.error(f"Error processing job '{job.job_id}': {e}", exc_info=True)
                 # The service.process_job method already updates job status to FAILED on error
             finally:
                 self.current_job_id = None
+                worker_current_job_gauge.labels(
+                    worker_id=self.worker_id,
+                    worker_type=self.worker_type,
+                ).set(0)
                 self._update_status(WorkerStatus.IDLE)
         else:
             logger.debug(f"DiarizeWorker '{self.worker_id}' found no pending jobs.")
@@ -95,6 +169,52 @@ class DiarizeWorker:
             hostname=self.hostname,
             capabilities=["audio_processing"] # Dummy capabilities for now
         )
+
+    def _update_health_metrics(self) -> None:
+        """Update worker health gauges periodically."""
+        try:
+            # Update uptime
+            now = datetime.now(timezone.utc)
+            uptime_seconds = (now - self.startup_time).total_seconds()
+            generic_worker_uptime_seconds.labels(
+                worker_id=self.worker_id,
+                worker_type=self.worker_type,
+            ).set(uptime_seconds)
+
+            # Update memory usage (read from /proc/self/status)
+            try:
+                with open("/proc/self/status", "r") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            # VmRSS is in kB, convert to bytes
+                            memory_kb = int(line.split()[1])
+                            memory_bytes = memory_kb * 1024
+                            generic_worker_memory_usage_bytes.labels(
+                                worker_id=self.worker_id,
+                                worker_type=self.worker_type,
+                            ).set(memory_bytes)
+                            break
+            except Exception:
+                pass  # Non-Linux systems won't have /proc/self/status
+
+            # Update CPU usage (simplified: read from /proc/self/stat)
+            try:
+                with open("/proc/self/stat", "r") as f:
+                    stat_data = f.read().split()
+                    # Rough CPU estimate: utime + stime in jiffies
+                    utime = int(stat_data[13])
+                    stime = int(stat_data[14])
+                    total_time = (utime + stime) / 100.0  # Approximate percentage
+                    cpu_percent = min(total_time, 100.0)  # Cap at 100%
+                    generic_worker_cpu_usage_percent.labels(
+                        worker_id=self.worker_id,
+                        worker_type=self.worker_type,
+                    ).set(cpu_percent)
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.debug("Error updating health metrics: %s", e)
 
     def run(self):
         """Main loop for the worker."""
@@ -117,8 +237,9 @@ class DiarizeWorker:
                         logger.info(f"Processed {processed_jobs_count} jobs, reaching max_jobs limit. Shutting down.")
                         self.running = False
                 else:
-                    # No job claimed, send heartbeat and sleep
+                    # No job claimed, send heartbeat and update metrics
                     self._heartbeat()
+                    self._update_health_metrics()
                     time.sleep(self.heartbeat_interval)
             except Exception as e:
                 logger.error(f"Unhandled error in worker main loop: {e}", exc_info=True)

@@ -7,6 +7,7 @@ pull/
 media/
 *.log
 *.pyc
+*.kate-swp
 __pycache__/
 .DS_Store
 .claude/
@@ -18,9 +19,12 @@ tmp/
 analysis/
 clips/
 results/
-tests/
 manual diarized/
 manual_diarized_rttm/
 data/references/
 tmp/
 
+
+# Ignore the virtual environment directory
+venv/
+.venv/

@@ -1,0 +1,96 @@
+# Prometheus configuration for monitoring the distributed analysis worker
+# This configuration file is intended to be used in a local development or
+# Docker/Kubernetes environment.
+
+global:
+  scrape_interval: 15s      # Default scrape interval
+  evaluation_interval: 15s   # Default evaluation interval
+  external_labels:
+    cluster: 'vidops'
+    environment: 'development'
+
+# Alerting configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 'localhost:9093'
+      scheme: http
+      timeout: 10s
+
+# Load alert rules
+rule_files:
+  - 'alert_rules.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['prometheus:9090']
+
+  # Analysis Worker - Local Development (on host machine)
+  # Start worker with: python3 vo_cli.py worker start analysis-distributed --metrics-port 8888
+  # Note: Docker gateway 172.17.0.1 is used to reach host from inside container
+  - job_name: 'analysis_worker_local'
+    static_configs:
+      - targets: ['172.17.0.1:8888']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # Analysis Workers - Multiple instances (add more as needed)
+  # Each worker should expose metrics on a different port on the host
+  - job_name: 'analysis_workers'
+    static_configs:
+      - targets:
+          - '172.17.0.1:8888'
+          - '172.17.0.1:8889'
+          - '172.17.0.1:8890'
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    scrape_timeout: 5s
+
+  # Node Exporter for host metrics (running in Docker)
+  - job_name: 'node'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 15s
+
+  # Remote worker instances (configure as needed for multi-machine setups)
+  # Example for workers on other hosts:
+  # - job_name: 'analysis_workers_remote'
+  #   static_configs:
+  #     - targets:
+  #         - 'worker1.example.com:8888'
+  #         - 'worker2.example.com:8888'
+  #         - 'gpu-server.example.com:8888'
+  #   metrics_path: '/metrics'
+  #   scrape_interval: 10s
+  #   scrape_timeout: 5s
+
+  # Optional: PostgreSQL metrics (via postgres_exporter)
+  # Start with: postgres_exporter --web.listen-address=:9187
+  # - job_name: 'postgresql'
+  #   static_configs:
+  #     - targets: ['host.docker.internal:9187']
+  #   scrape_interval: 15s
+
+# Service discovery (optional)
+# For Kubernetes:
+# - job_name: 'kubernetes-pods'
+#   kubernetes_sd_configs:
+#     - role: pod
+#   relabel_configs:
+#     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+#       action: keep
+#       regex: true
+#     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+#       action: replace
+#       target_label: __metrics_path__
+#       regex: (.+)
+#     - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+#       action: replace
+#       regex: ([^:]+)(?::\d+)?;(\d+)
+#       replacement: $1:$2
+#       target_label: __address__

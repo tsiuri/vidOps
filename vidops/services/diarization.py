@@ -6,6 +6,7 @@ import subprocess
 import csv
 import sys
 import signal
+import time
 import yaml
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -36,6 +37,40 @@ class DiarizationService:
         self.fs_cache = fs_cache
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._load_memory_monitor_config()
+
+    def _wait_with_progress(self, proc: subprocess.Popen, description: str, log_interval: int = 60) -> int:
+        """
+        Wait for subprocess to complete with periodic progress logging.
+
+        Args:
+            proc: Subprocess to wait for
+            description: Description of what's running (for logs)
+            log_interval: Seconds between progress log messages
+
+        Returns:
+            Process return code
+        """
+        start_time = time.time()
+        last_log_time = start_time
+
+        while proc.poll() is None:
+            time.sleep(1)  # Check every second
+            elapsed = time.time() - start_time
+
+            # Log progress every log_interval seconds
+            if time.time() - last_log_time >= log_interval:
+                elapsed_min = int(elapsed / 60)
+                elapsed_sec = int(elapsed % 60)
+                logger.info(f"{description} - still running (elapsed: {elapsed_min}m {elapsed_sec}s)")
+                last_log_time = time.time()
+
+        return_code = proc.returncode
+        total_elapsed = time.time() - start_time
+        elapsed_min = int(total_elapsed / 60)
+        elapsed_sec = int(total_elapsed % 60)
+        logger.info(f"{description} - completed in {elapsed_min}m {elapsed_sec}s (exit code: {return_code})")
+
+        return return_code
 
     def enqueue_diarization_job(
         self,
@@ -560,14 +595,14 @@ class DiarizationService:
             text=True,
             start_new_session=True,  # allow clean group termination on interrupts
         )
-        
+
         # Register subprocess PID with memory monitor so it tracks all descendants
         if self._memory_monitor and self._memory_monitor.monitoring:
             self._memory_monitor.add_subprocess_pid(proc.pid)
             logger.debug(f"Registered batch_diarize subprocess PID {proc.pid} with memory monitor")
-        
+
         try:
-            return_code = proc.wait()
+            return_code = self._wait_with_progress(proc, f"Diarization for {job.ytid}", log_interval=60)
         except BaseException as exc:  # catch KeyboardInterrupt/SystemExit for cleanup
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
@@ -744,7 +779,11 @@ class DiarizationService:
                 self._memory_monitor.add_subprocess_pid(proc.pid)
 
             try:
-                return_code = proc.wait()
+                return_code = self._wait_with_progress(
+                    proc,
+                    f"Chunk {chunk_idx+1}/{num_chunks} ({chunk_ytid})",
+                    log_interval=60
+                )
             except BaseException as exc:
                 try:
                     os.killpg(proc.pid, signal.SIGTERM)

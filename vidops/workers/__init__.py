@@ -18,6 +18,7 @@ from .voice import VoiceFilterWorker
 from .general import GenericWorker
 from .dates import DatesWorker
 from .extra_utils import ExtraUtilsWorker
+from .analysis_distributed import AnalysisWorker as DistributedAnalysisWorker
 
 __all__ = [
     "GenericWorker",
@@ -25,6 +26,7 @@ __all__ = [
     "TranscriptionWorker",
     "ClippingWorker",
     "AnalysisWorker",
+    "DistributedAnalysisWorker",
     "DiarizeWorker",
     "StitchWorker",
     "SubtitleWorker", # Export the SubtitleWorker

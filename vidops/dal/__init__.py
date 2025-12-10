@@ -16,6 +16,8 @@ from .transcripts import TranscriptRepository, WordRepository
 from .cache import FilesystemCache
 from .hits import HitsRepository
 from .quickclip import QuickClipRepository
+from .analysis_task_repository import AnalysisTaskRepository
+from .analysis_results_repository import AnalysisResultsRepository
 
 __all__ = [
     "VideoRepository",
@@ -26,4 +28,6 @@ __all__ = [
     "FilesystemCache",
     "HitsRepository",
     "QuickClipRepository",
+    "AnalysisTaskRepository",
+    "AnalysisResultsRepository",
 ]

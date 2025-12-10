@@ -1,0 +1,194 @@
+# AlertManager rules for the distributed analysis worker
+# Simplified version with proper template escaping
+
+groups:
+  - name: analysis_worker_alerts
+    interval: 30s
+    rules:
+      # Task Processing Alerts
+      - alert: HighTaskFailureRate
+        expr: |
+          (sum(rate(analysis_worker_tasks_failed_total[5m])) by (worker_id) /
+           (sum(rate(analysis_worker_tasks_completed_total[5m])) by (worker_id) +
+            sum(rate(analysis_worker_tasks_failed_total[5m])) by (worker_id))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High task failure rate on worker_id {{ $labels.worker_id }}"
+          description: "Task failure rate exceeds 10% threshold"
+
+      - alert: TaskFailureRateCritical
+        expr: |
+          (sum(rate(analysis_worker_tasks_failed_total[5m])) by (worker_id) /
+           (sum(rate(analysis_worker_tasks_completed_total[5m])) by (worker_id) +
+            sum(rate(analysis_worker_tasks_failed_total[5m])) by (worker_id))
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Task failure rate on worker_id {{ $labels.worker_id }}"
+          description: "Task failure rate exceeds 25% threshold"
+
+      - alert: HighTaskLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(analysis_worker_task_processing_duration_seconds_bucket[5m])) by (pass_id, le))
+          > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High task latency for pass_id {{ $labels.pass_id }}"
+          description: "p95 latency exceeds 30 seconds"
+
+      # Queue Alerts
+      - alert: LargePendingTaskBacklog
+        expr: analysis_worker_pending_tasks > 100
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Large pending task backlog on worker_id {{ $labels.worker_id }}"
+          description: "Pending tasks exceed 100"
+
+      - alert: QueueBacklogCritical
+        expr: analysis_worker_pending_tasks > 500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Queue backlog critical"
+          description: "Pending tasks exceed 500"
+
+      - alert: WorkerStalled
+        expr: rate(analysis_worker_tasks_completed_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.worker_id }} appears stalled"
+          description: "No tasks completed in last 10 minutes"
+
+      # Worker Health Alerts
+      - alert: HighMemoryUsage
+        expr: analysis_worker_memory_usage_bytes > 2147483648
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on worker_id {{ $labels.worker_id }}"
+          description: "Memory usage exceeds 2GB"
+
+      - alert: CriticalMemoryUsage
+        expr: analysis_worker_memory_usage_bytes > 4294967296
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CRITICAL: Memory usage critical on worker_id {{ $labels.worker_id }}"
+          description: "Memory usage exceeds 4GB (OOM risk)"
+
+      - alert: HighCPUUsage
+        expr: analysis_worker_cpu_usage_percent > 80
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on worker_id {{ $labels.worker_id }}"
+          description: "CPU usage exceeds 80 percent"
+
+      - alert: WorkerDown
+        expr: up{job=~"analysis_worker.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Worker {{ $labels.instance }} is down"
+          description: "Worker has not been reachable for 5 minutes"
+
+      # LLM Alerts
+      - alert: LLMModelUnavailable
+        expr: analysis_worker_llm_model_available == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM model unavailable on worker_id {{ $labels.worker_id }}"
+          description: "LLM model {{ $labels.model_name }} is not available"
+
+      - alert: HighLLMInferenceLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(analysis_worker_llm_inference_duration_seconds_bucket[5m])) by (model_name, le))
+          > 15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High LLM inference latency for model_name {{ $labels.model_name }}"
+          description: "p95 inference latency exceeds 15 seconds"
+
+      - alert: HighLLMErrorRate
+        expr: |
+          (sum(rate(analysis_worker_llm_inference_total{status="failed"}[5m])) by (model_name) /
+           sum(rate(analysis_worker_llm_inference_total[5m])) by (model_name))
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High LLM error rate for model_name {{ $labels.model_name }}"
+          description: "LLM error rate exceeds 5 percent"
+
+      # Database Alerts
+      - alert: HighDatabaseQueryLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(analysis_worker_db_query_duration_seconds_bucket[5m])) by (query_type, le))
+          > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High database query latency for query_type {{ $labels.query_type }}"
+          description: "p95 query latency exceeds 1 second"
+
+      - alert: DatabaseConnectionErrors
+        expr: rate(analysis_worker_db_connection_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connection errors on worker_id {{ $labels.worker_id }}"
+          description: "Connection errors exceeding 0.1 per second"
+
+      # Error Alerts
+      - alert: HighErrorRate
+        expr: sum(rate(analysis_worker_errors_total[5m])) by (error_category) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate for error_category {{ $labels.error_category }}"
+          description: "Error rate exceeding 0.5 per second"
+
+      # Job Processing Alerts
+      - alert: JobAggregationSlow
+        expr: |
+          histogram_quantile(0.95, sum(rate(analysis_worker_job_aggregation_duration_seconds_bucket[5m])) by (worker_id, le))
+          > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow job aggregation on worker_id {{ $labels.worker_id }}"
+          description: "p95 job aggregation time exceeds 10 seconds"
+
+      - alert: FailedJobAggregation
+        expr: rate(analysis_worker_jobs_aggregated_total{status="failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Failed job aggregations on worker_id {{ $labels.worker_id }}"
+          description: "Worker is failing to aggregate completed jobs"

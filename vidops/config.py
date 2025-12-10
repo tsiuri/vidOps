@@ -111,6 +111,19 @@ class WorkerConfig:
 
 
 @dataclass
+class WorkspaceConfig:
+    """Workspace disk space management settings."""
+    # Maximum total workspace size (GB). Worker terminates if exceeded. 0 = disabled.
+    max_workspace_size_gb: float = 100.0
+    # How often to check workspace size (in heartbeats)
+    size_check_interval: int = 150
+    # Whether to monitor tmp/ directory separately
+    monitor_tmp_separately: bool = True
+    # Maximum tmp/ size (GB) if monitoring separately
+    max_tmp_size_gb: float = 50.0
+
+
+@dataclass
 class StorageBrokerConfig:
     """Settings for the optional storage broker service."""
     enabled: bool = False
@@ -149,6 +162,25 @@ class DownloadConfig:
     sub_langs: str = "en"
     no_transcript_log: str = "logs/no_transcripts_available.txt"
 
+@dataclass
+class OllamaConfig:
+    """Configuration for Ollama LLM backend used in transcript analysis."""
+    url: str = "http://localhost:11434"
+    model: str = "qwen2.5:7b-instruct"
+    timeout: int = 300
+    request_timeout: int = 60
+
+@dataclass
+class AnalysisConfig:
+    """Distributed transcript analysis system configuration."""
+    # Ollama LLM backend
+    ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    # Default analysis settings
+    chunk_size_words: int = 1000
+    chunk_overlap_words: int = 150
+    # Logging level for analysis workers
+    log_mode: str = "quiet"  # 'quiet', 'info', 'debug'
+
 
 @dataclass
 class Config:
@@ -157,8 +189,10 @@ class Config:
     paths: PathsConfig = field(default_factory=PathsConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     workers: WorkerConfig = field(default_factory=WorkerConfig)
+    workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     storage_broker: StorageBrokerConfig = field(default_factory=StorageBrokerConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
 
 # --- Loading Logic ---
@@ -220,6 +254,10 @@ def _apply_env_overrides(config_obj):
         "workers.machine_alias": ["VIDOPS_MACHINE_ALIAS"],
         "workers.max_jobs": ["VIDOPS_WORKER_MAX_JOBS"],
         "workers.heartbeat_interval": ["VIDOPS_WORKER_HEARTBEAT_INTERVAL"],
+        "workspace.max_workspace_size_gb": ["VIDOPS_MAX_WORKSPACE_SIZE_GB"],
+        "workspace.size_check_interval": ["VIDOPS_WORKSPACE_CHECK_INTERVAL"],
+        "workspace.monitor_tmp_separately": ["VIDOPS_MONITOR_TMP_SEPARATELY"],
+        "workspace.max_tmp_size_gb": ["VIDOPS_MAX_TMP_SIZE_GB"],
         "storage_broker.enabled": ["VIDOPS_BROKER_ENABLED"],
         "storage_broker.base_url": ["VIDOPS_BROKER_BASE_URL"],
         "storage_broker.listen_host": ["VIDOPS_BROKER_HOST"],
@@ -228,6 +266,13 @@ def _apply_env_overrides(config_obj):
         "storage_broker.mtls_client_cert": ["VIDOPS_BROKER_MTLS_CLIENT_CERT"],
         "storage_broker.mtls_client_key": ["VIDOPS_BROKER_MTLS_CLIENT_KEY"],
         "storage_broker.mtls_ca_cert": ["VIDOPS_BROKER_MTLS_CA_CERT"],
+        "analysis.ollama.url": ["OLLAMA_URL", "ANALYSIS_OLLAMA_URL"],
+        "analysis.ollama.model": ["OLLAMA_MODEL", "ANALYSIS_OLLAMA_MODEL"],
+        "analysis.ollama.timeout": ["OLLAMA_TIMEOUT", "ANALYSIS_OLLAMA_TIMEOUT"],
+        "analysis.ollama.request_timeout": ["OLLAMA_REQUEST_TIMEOUT", "ANALYSIS_REQUEST_TIMEOUT"],
+        "analysis.chunk_size_words": ["ANALYSIS_CHUNK_SIZE"],
+        "analysis.chunk_overlap_words": ["ANALYSIS_CHUNK_OVERLAP"],
+        "analysis.log_mode": ["ANALYSIS_LOG_MODE"],
     }
 
     for path, env_vars in ENV_MAP.items():
@@ -328,6 +373,13 @@ def load_config(config_path: str = "config.yaml") -> Config:
                         config.storage_broker = _load_config_from_dict(StorageBrokerConfig, yaml_data['storage_broker'])
                     if 'download' in yaml_data:
                         config.download = _load_config_from_dict(DownloadConfig, yaml_data['download'])
+                    if 'analysis' in yaml_data:
+                        analysis_data = yaml_data['analysis']
+                        if 'ollama' in analysis_data:
+                            config.analysis.ollama = _load_config_from_dict(OllamaConfig, analysis_data['ollama'])
+                        config.analysis.chunk_size_words = analysis_data.get('chunk_size_words', config.analysis.chunk_size_words)
+                        config.analysis.chunk_overlap_words = analysis_data.get('chunk_overlap_words', config.analysis.chunk_overlap_words)
+                        config.analysis.log_mode = analysis_data.get('log_mode', config.analysis.log_mode)
 
             except yaml.YAMLError as e:
                 _logger.warning(f"Could not parse '{config_path}': {e}") # <--- MODIFIED: Use _logger

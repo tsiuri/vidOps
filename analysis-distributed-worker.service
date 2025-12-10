@@ -1,0 +1,60 @@
+[Unit]
+Description=VidOps Distributed Analysis Worker
+Documentation=file:///home/billie/tools/vidops/docs/PHASE_3_COMPLETE.md
+After=network.target postgresql.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+User=billie
+WorkingDirectory=/home/billie/tools/vidops
+
+# Load environment variables from config file (optional)
+EnvironmentFile=-/etc/vidops/analysis-worker.env
+EnvironmentFile=-/home/billie/.vidops/analysis-worker.env
+
+# Set defaults if not in environment file
+Environment="VIDOPS_PROJECT_ROOT=/home/billie/tools/vidops"
+Environment="PYTHONUNBUFFERED=1"
+
+# These can be overridden per instance (see INSTANCE CONFIGURATION below)
+Environment="OLLAMA_URL=http://localhost:11434"
+Environment="OLLAMA_MODEL=qwen2.5:7b-instruct"
+Environment="ANALYSIS_WORKER_TYPE=analysis_gpu"
+Environment="ANALYSIS_CAPABILITIES=qwen2.5:7b-instruct,gpu_8gb"
+Environment="ANALYSIS_LEASE_MINUTES=60"
+
+# Main command - customize machine-alias and capabilities per instance
+ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start analysis-distributed \
+    --machine-alias %H-analysis-0 \
+    --model-url ${OLLAMA_URL} \
+    --model-name ${OLLAMA_MODEL} \
+    --capabilities gpu_8gb \
+    --capabilities ${OLLAMA_MODEL} \
+    --lease-minutes ${ANALYSIS_LEASE_MINUTES}
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=analysis-worker
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/home/billie/tools/vidops
+
+[Install]
+WantedBy=multi-user.target
