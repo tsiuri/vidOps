@@ -281,6 +281,15 @@ class DiarizationService:
             if not media_rel or not words_rel:
                 raise ValueError("Job missing media, words, or reference configuration.")
 
+            # If media path looks like a wildcard/placeholder, resolve from assets table
+            if "*" in media_rel or media_rel.startswith("data/media/"):
+                media_asset = self.video_repo.get_primary_asset(job.ytid, "media")
+                if media_asset and media_asset.path:
+                    logger.info(f"Resolved media placeholder to: {media_asset.path}")
+                    media_rel = media_asset.path
+                else:
+                    raise FileNotFoundError(f"No media asset registered for {job.ytid}")
+
             audio_path = self._stage_media(media_rel, workspace_root)
             words_path = self._stage_words(words_rel, workspace_root, job.job_id)
 
