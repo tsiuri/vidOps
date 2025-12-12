@@ -96,3 +96,5 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - **GPU helpers (scripts/gpu_tools/)**: `gpu-bind-status.sh`, `gpu-to-nvidia.sh`
 - **Management/maintenance (scripts/management/)**: `watch_jobs.py`, path fix/test scripts (`set_paths.sh`, `fix_paths.sh`, `reorganize.sh`, `find_path_references.sh`, `test_scripts.sh`, `test_clips_wrapper.sh`)
 - **Utilities (scripts/utilities/)**: `clips.sh`, `convert-captions.sh`, `quality_report.py`, `sort_clips.py`, `map_ids_to_files.py`, `monitor_transcription_memory.sh`, `mark_success.sh`, `repair_archive.sh`, `detailed_proc_watch.sh`, `filter_tsv_by_existing_segments.py`, `list_overlaps_and_filter_tsv.py`
+
+- DB schema snapshot: db/schema_dump.sql (pg_dump --schema-only)

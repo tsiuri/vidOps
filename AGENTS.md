@@ -26,10 +26,10 @@ VidOps started as a purely “workspace.sh” driven toolkit:
   the current state document; deprecated plans, phase logs, and
   old queue docs live under docs/deprecated/.
   
-Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep this document and the SOURCE_OF_TRUTH.md up-to-date as you make changes.
+Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGENTS.md, this document, and the SOURCE_OF_TRUTH.md up-to-date as you make changes.  There could be scripts and functions not documented currently in this evolving workspace.  Please document those as you locate them.
 
 ## Project Structure & Modules
-- Core code lives under `scripts/`, `services/`, `workers/`, and `cli/` (entrypoint `vo_cli.py`). Worker configs and web bits sit in `web/`. Shared utilities are in `utils/` and `wrappers/`.
+- Core code lives under `scripts/`, `services/`, `workers/`, and `cli/` (entrypoint `vo_cli.py`). Worker configs and web bits sit in `web/`. Shared utilities are in `utils/` and `wrappers/`.  ASK THE USER BEFORE CREATING ANY FOLDERS IN THE ROOTDIR OF THE PROJECT.  IDEALLY, USE EXISTING FOLDER STRUCTURE WITH SUBDIRS.
 - Data and run artifacts stay out of the repo; the workspace pattern uses `pull/`, `generated/`, `tmp/`, and `logs/` in your project root. Repo-level `tmp/` is safe for scratch.
 - Tests are in `tests/` plus a few top-level smoke helpers (e.g., `TEST_METRICS_INTEGRATION.sh`, `docs/SMOKE_TESTS.md`).
 
