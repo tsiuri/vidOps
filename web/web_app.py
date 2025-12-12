@@ -7,7 +7,7 @@ Simple Flask app for querying the analysis database.
 import os
 import sys
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, g, redirect, url_for
+from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort
 from pathlib import Path
 
 # Ensure local imports work when running as a script
@@ -24,6 +24,11 @@ from scripts.analysis.db_storage import AnalysisDatabase
 from scripts.analysis.analysis_config import AnalysisConfig
 from scripts.web_app.analyses_view import register_analyses_routes
 from scripts.web_app.drill_api import create_drill_blueprint
+from dal import QuickClipRepository, VideoRepository, FilesystemCache, JobRepository
+from configuration import get_project_root
+from services.download import DownloadService
+from services.clipping import ClippingService
+from services.quickclip import QuickClipService
 
 app = Flask(__name__)
 
@@ -67,6 +72,97 @@ def close_db(error):
         if error is None and db.conn:
             db.conn.commit()
         db.disconnect()
+
+
+def _get_quickclip_repos():
+    """Helper to initialize repositories for QuickClip routes."""
+    return QuickClipRepository(), VideoRepository()
+
+
+def _collect_quickclip_videos(sessions):
+    """Group QuickClip sessions by video for display."""
+    videos_map = {}
+    for session in sessions:
+        ytid = session['ytid']
+        if ytid not in videos_map:
+            videos_map[ytid] = {
+                'ytid': ytid,
+                'title': session.get('title', ytid),
+                'url': session.get('url', ''),
+                'sessions': [],
+                'total_clips': 0,
+            }
+        videos_map[ytid]['sessions'].append(session)
+        videos_map[ytid]['total_clips'] += session.get('clips_count', 0)
+    videos = sorted(
+        videos_map.values(),
+        key=lambda x: x['sessions'][0]['created_at'],
+        reverse=True,
+    )
+    return videos
+
+
+def _create_quickclip_session(**kwargs):
+    """Run QuickClipService.create_quickclip with fresh repositories/services."""
+    with QuickClipRepository() as quickclip_repo:
+        video_repo = VideoRepository()
+        job_repo = JobRepository()
+        fs_cache = FilesystemCache()
+        download_service = DownloadService(video_repo, job_repo, fs_cache)
+        clipping_service = ClippingService(video_repo, job_repo, fs_cache)
+        service = QuickClipService(
+            video_repo=video_repo,
+            quickclip_repo=quickclip_repo,
+            download_service=download_service,
+            clipping_service=clipping_service,
+            fs_cache=fs_cache,
+        )
+        return service.create_quickclip(**kwargs)
+
+
+def _get_job_statuses_for_ytid(ytid: str):
+    """
+    Query jobs table to get current status of processing jobs for a video.
+    Returns a list of jobs related to download, transcription, diarization, clipping.
+    """
+    try:
+        from db import get_connection
+        job_statuses = []
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        job_id,
+                        job_type,
+                        status,
+                        claimed_by,
+                        created_at,
+                        updated_at,
+                        started_at
+                    FROM jobs
+                    WHERE ytid = %s
+                    AND job_type IN ('download', 'transcription', 'diarization', 'clips', 'analysis-distributed')
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                    """,
+                    (ytid,)
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    job_statuses.append({
+                        'job_id': row[0][:12] + '...' if len(row[0]) > 12 else row[0],
+                        'job_type': row[1],
+                        'status': row[2],
+                        'claimed_by': row[3],
+                        'created_at': row[4],
+                        'updated_at': row[5],
+                        'started_at': row[6],
+                    })
+        return job_statuses
+    except Exception as e:
+        logger.warning(f"Failed to fetch job statuses for {ytid}: {e}")
+        return []
 
 
 # HTML Templates
@@ -1813,11 +1909,6 @@ def edit_speaker_filter(config_id):
     )
 
 
-if __name__ == '__main__':
-    print("Starting Transcript Analysis Browser...")
-    print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
-    print("Open http://localhost:5000 in your browser")
-    app.run(debug=True, host='0.0.0.0', port=5000)
 @app.route('/api/video/<ytid>/words')
 def api_video_words(ytid: str):
     db = get_db()
@@ -1841,3 +1932,183 @@ def api_video_words(ytid: str):
         for r in rows
     ]
     return jsonify(out)
+
+
+@app.route('/quickclip')
+def quickclip_index():
+    qc_repo, _ = _get_quickclip_repos()
+    sessions = qc_repo.list_recent_sessions(limit=1000)
+    videos = _collect_quickclip_videos(sessions)
+    return render_template('index.html', videos=videos)
+
+
+@app.route('/quickclip/video/<ytid>')
+def quickclip_video_detail(ytid: str):
+    qc_repo, video_repo = _get_quickclip_repos()
+    video = video_repo.get(ytid)
+    all_sessions = qc_repo.list_recent_sessions(limit=1000)
+    sessions = [s for s in all_sessions if s['ytid'] == ytid]
+    for session in sessions:
+        session['clips'] = qc_repo.get_session_clips(session['session_id'])
+    return render_template('video.html', video=video, ytid=ytid, sessions=sessions)
+
+
+@app.route('/quickclip/session/<session_id>')
+def quickclip_session_detail(session_id: str):
+    qc_repo, video_repo = _get_quickclip_repos()
+    session = qc_repo.get_session(session_id)
+    if not session:
+        abort(404, "Session not found")
+    clips = qc_repo.get_session_clips(session_id)
+    video = video_repo.get(session['ytid'])
+
+    project_root = get_project_root()
+    clip_files = []
+    session_dir = session.get('session_dir')
+    if session_dir:
+        base_dir = project_root / session_dir
+        if base_dir.exists():
+            for ext in ['mp4', 'mkv', 'webm', 'mp3', 'opus', 'mka']:
+                clip_files.extend(base_dir.glob(f"*.{ext}"))
+
+    for clip in clips:
+        clip['file'] = None
+        clip['file_exists'] = False
+        for clip_file in clip_files:
+            marker = f"{float(clip['start_sec']):.2f}-{float(clip['end_sec']):.2f}"
+            if marker in clip_file.name:
+                clip['file'] = str(clip_file.relative_to(project_root))
+                clip['file_exists'] = True
+                break
+
+    full_video_asset = None
+    if session.get('full_video_saved'):
+        asset = video_repo.get_primary_asset(session['ytid'], 'media')
+        if asset:
+            full_video_asset = {
+                'path': asset.rel_path or asset.path,
+                'bytes': getattr(asset, 'bytes', None),
+                'url': url_for('quickclip_stream_full_video', ytid=session['ytid']),
+            }
+
+    # Query job status for this video (for progress tracking)
+    job_statuses = _get_job_statuses_for_ytid(session['ytid'])
+
+    return render_template('session.html', session=session, clips=clips, video=video, full_video=full_video_asset, job_statuses=job_statuses)
+
+
+@app.route('/quickclip/play/<path:clip_path>')
+def quickclip_play_clip(clip_path: str):
+    project_root = get_project_root()
+    file_path = project_root / clip_path
+    if not file_path.exists():
+        abort(404, "Clip file not found")
+    return send_file(file_path)
+
+
+@app.route('/quickclip/search')
+def quickclip_search():
+    qc_repo, _ = _get_quickclip_repos()
+    query = request.args.get('q', '').strip()
+    if not query:
+        return render_template('search.html', results=[], query='')
+
+    results = qc_repo.search_sessions(query)
+    for result in results:
+        result['clips'] = qc_repo.get_session_clips(result['session_id'])
+    return render_template('search.html', results=results, query=query)
+
+
+@app.route('/quickclip/create', methods=['GET', 'POST'])
+def quickclip_create():
+    error = None
+    form_values = {
+        'url': '',
+        'spans': '',
+        'description': '',
+        'tags': '',
+        'session_name': '',
+        'output_dir': '',
+        'quality': 'best',
+        'priority': '90',
+        'clips_only': False,
+        'force': False,
+        'full_video_clip': False,
+        'full_video_label': 'full_video',
+    }
+    quality_options = ['best', '1080p', '720p', 'audio-only']
+
+    if request.method == 'POST':
+        form_values['url'] = request.form.get('url', '').strip()
+        form_values['spans'] = request.form.get('spans', '').strip()
+        form_values['description'] = request.form.get('description', '')
+        form_values['tags'] = request.form.get('tags', '')
+        form_values['session_name'] = request.form.get('session_name', '').strip()
+        form_values['output_dir'] = request.form.get('output_dir', '').strip()
+        form_values['quality'] = request.form.get('quality', 'best')
+        form_values['priority'] = request.form.get('priority', '90').strip()
+        form_values['clips_only'] = request.form.get('clips_only') == 'on'
+        form_values['force'] = request.form.get('force') == 'on'
+        form_values['full_video_clip'] = request.form.get('full_video_clip') == 'on'
+        form_values['full_video_label'] = request.form.get('full_video_label', 'full_video').strip() or 'full_video'
+
+        spans_list = [line.strip() for line in form_values['spans'].splitlines() if line.strip()]
+        tags_list = [t.strip() for t in form_values['tags'].split(',') if t.strip()]
+        if form_values['full_video_clip']:
+            spans_list.append(f"(start)-(end):{form_values['full_video_label']}")
+
+        if not form_values['url']:
+            error = "Video URL or ID is required."
+        elif not spans_list:
+            error = "Provide at least one clip span or enable the full video clip option."
+        else:
+            try:
+                priority_val = int(form_values['priority'] or 90)
+            except ValueError:
+                error = "Priority must be an integer."
+            if error is None:
+                try:
+                    result = _create_quickclip_session(
+                        url=form_values['url'],
+                        spans=spans_list,
+                        description=form_values['description'] or None,
+                        tags=tags_list or None,
+                        clips_only=form_values['clips_only'],
+                        quality=form_values['quality'] or 'best',
+                        session_name=form_values['session_name'] or None,
+                        output_dir=form_values['output_dir'] or None,
+                        force=form_values['force'],
+                        priority=priority_val,
+                    )
+                    return redirect(url_for('quickclip_session_detail', session_id=result['session_id']))
+                except Exception as exc:
+                    error = str(exc)
+
+    return render_template(
+        'quickclip_create.html',
+        error=error,
+        form=form_values,
+        quality_options=quality_options,
+    )
+
+
+if __name__ == '__main__':
+    print("Starting Transcript Analysis Browser...")
+    print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
+    print("Open http://localhost:5000 in your browser")
+    app.run(debug=True, host='0.0.0.0', port=5000)
+@app.route('/quickclip/full/<ytid>')
+def quickclip_stream_full_video(ytid: str):
+    video_repo = VideoRepository()
+    asset = video_repo.get_primary_asset(ytid, 'media')
+    if not asset:
+        abort(404, "Full video not available")
+    rel_path = asset.rel_path or asset.path
+    if not rel_path:
+        abort(404, "Full video not registered")
+    fs_cache = FilesystemCache()
+    try:
+        local_path = fs_cache.pull_to_cache(rel_path)
+    except FileNotFoundError:
+        abort(404, "Full video missing from storage")
+    return send_file(local_path)

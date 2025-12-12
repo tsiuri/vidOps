@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 
 {% block title %}{{ session.session_id }} - QuickClip Browser{% endblock %}
+{% block nav_quickclip %}active{% endblock %}
 
 {% block content %}
 <nav aria-label="breadcrumb">
     <ol class="breadcrumb">
-        <li class="breadcrumb-item"><a href="/">All Videos</a></li>
-        <li class="breadcrumb-item"><a href="/video/{{ session.ytid }}">{{ video.title if video else session.ytid }}</a></li>
+        <li class="breadcrumb-item"><a href="{{ url_for('quickclip_index') }}">All Videos</a></li>
+        <li class="breadcrumb-item"><a href="{{ url_for('quickclip_video_detail', ytid=session.ytid) }}">{{ video.title if video else session.ytid }}</a></li>
         <li class="breadcrumb-item active">{{ session.session_id }}</li>
     </ol>
 </nav>
@@ -50,6 +51,30 @@
     </div>
 </div>
 
+{% if full_video %}
+<div class="card mb-4">
+    <div class="card-body">
+        <h4>Full Video</h4>
+        <p class="text-muted small mb-2">
+            {% if full_video.bytes %}
+            Size: {{ (full_video.bytes / (1024*1024))|round(1) }} MB
+            {% endif %}
+        </p>
+        <div class="mb-3">
+            <video controls preload="metadata" class="w-100">
+                <source src="{{ full_video.url }}" type="video/mp4">
+                Your browser does not support video playback.
+            </video>
+        </div>
+        <a href="{{ full_video.url }}" class="btn btn-sm btn-outline-primary" download>Download full video</a>
+    </div>
+</div>
+{% elif session.full_video_saved %}
+<div class="alert alert-warning">
+    Full video is marked as saved, but the media asset is not yet available.
+</div>
+{% endif %}
+
 <h3 class="mb-3">Clips ({{ clips|length }})</h3>
 
 {% if clips %}
@@ -73,16 +98,33 @@
                 {% if clip.file_exists and clip.file %}
                 <div class="mb-3">
                     <video controls preload="metadata" class="w-100">
-                        <source src="/play/{{ clip.file }}" type="video/mp4">
+                        <source src="{{ url_for('quickclip_play_clip', clip_path=clip.file) }}" type="video/mp4">
                         Your browser does not support video playback.
                     </video>
                 </div>
-                <a href="/play/{{ clip.file }}" class="btn btn-sm btn-outline-primary" download>
+                <a href="{{ url_for('quickclip_play_clip', clip_path=clip.file) }}" class="btn btn-sm btn-outline-primary" download>
                     Download Clip
                 </a>
                 {% else %}
                 <div class="alert alert-warning small mb-0">
-                    Clip file not found. Worker may still be processing.
+                    <strong>Clip file not found.</strong> Worker may still be processing.
+                    {% if job_statuses %}
+                    <div class="mt-2">
+                        <small><strong>Job Status:</strong></small>
+                        <ul class="list-unstyled small mb-0">
+                            {% for job in job_statuses %}
+                            <li>
+                                <span class="badge {% if job.status == 'COMPLETED' %}bg-success{% elif job.status == 'RUNNING' or job.status == 'CLAIMED' %}bg-info{% elif job.status == 'FAILED' %}bg-danger{% else %}bg-warning{% endif %}">{{ job.status }}</span>
+                                <strong>{{ job.job_type }}</strong>
+                                ({{ job.job_id }})
+                                {% if job.claimed_by %}
+                                <br><small>Worker: {{ job.claimed_by }} | Updated: {{ job.updated_at.strftime('%H:%M:%S') if job.updated_at else 'N/A' }}</small>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% endif %}
                 </div>
                 {% endif %}
             </div>
