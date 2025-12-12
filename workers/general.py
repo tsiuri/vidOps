@@ -6,6 +6,8 @@ import signal
 import subprocess
 import time
 import gc
+import threading
+import socket
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -16,6 +18,7 @@ from models import JobStatus, Worker, WorkerStatus
 from exceptions import WorkerLocalError, DiskSpaceError
 from services import (
     get_analysis_service,
+    get_distributed_analysis_service,
     get_clipping_service,
     get_diarization_service,
     get_download_service,
@@ -37,7 +40,7 @@ class GenericWorker:
     can service any job type in the queue.
     """
 
-    def __init__(self):
+    def __init__(self, web_port: int = 5000, metrics_port: int = 8888):
         self.config = load_config()
         self.worker_repo = WorkerRepository()
         self.job_repo = JobRepository()
@@ -60,6 +63,7 @@ class GenericWorker:
             "transcription": get_transcription_service,
             "clipping": get_clipping_service,
             "analysis": get_analysis_service,
+            "analysis-distributed": get_distributed_analysis_service,
             "diarization": get_diarization_service,
             "stitching": get_stitching_service,
             "dl_subs": get_subtitle_service,
@@ -76,6 +80,12 @@ class GenericWorker:
         self.workspace_root = Path(os.environ.get("TOOL_ROOT", Path(__file__).parent.parent.parent))
         self.tmp_dir = self.workspace_root / "tmp"
 
+        # Web and metrics servers
+        self.web_port = web_port
+        self.metrics_port = metrics_port
+        self.web_thread: Optional[threading.Thread] = None
+        self.metrics_thread: Optional[threading.Thread] = None
+
         signal.signal(signal.SIGINT, self._handle_shutdown_signal)
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
 
@@ -90,6 +100,9 @@ class GenericWorker:
         if not self._preflight_checks():
             logger.error("Pre-flight health checks failed. Worker cannot start.")
             return
+
+        # Start web and metrics servers in background threads
+        self._start_background_servers()
 
         self._register()
         jobs_processed = 0
@@ -135,6 +148,81 @@ class GenericWorker:
     def _heartbeat(self):
         self.worker_repo.heartbeat(self.worker_id)
         logger.info("Heartbeat for worker %s", self.worker_id)
+
+    def _start_background_servers(self):
+        """Start web UI and metrics servers in background daemon threads."""
+        # Start web server if port is enabled
+        if self.web_port > 0:
+            if self._port_is_available("127.0.0.1", self.web_port):
+                self.web_thread = threading.Thread(
+                    target=self._run_web_server,
+                    daemon=True,
+                    name="GenericWorker-WebUI",
+                )
+                self.web_thread.start()
+                logger.info("Web UI server started on http://127.0.0.1:%d", self.web_port)
+            else:
+                logger.warning(
+                    "Web UI port %d already in use; skipping web server startup",
+                    self.web_port,
+                )
+
+        # Start metrics server if port is enabled
+        if self.metrics_port > 0:
+            if self._port_is_available("0.0.0.0", self.metrics_port):
+                self.metrics_thread = threading.Thread(
+                    target=self._run_metrics_server,
+                    daemon=True,
+                    name="GenericWorker-Metrics",
+                )
+                self.metrics_thread.start()
+                logger.info("Metrics server started on http://0.0.0.0:%d/metrics", self.metrics_port)
+            else:
+                logger.warning(
+                    "Metrics port %d already in use; skipping metrics server startup",
+                    self.metrics_port,
+                )
+
+    def _port_is_available(self, host: str, port: int) -> bool:
+        """Check if a port is available for listening."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((host, port))
+                return True
+        except OSError:
+            return False
+
+    def _run_web_server(self):
+        """Run Flask web server for analysis config and drills (runs in background thread)."""
+        try:
+            import sys
+            from pathlib import Path
+
+            # Add project paths so the web app can find scripts/analysis modules
+            web_dir = Path(__file__).parent.parent / "web"
+            project_root = web_dir.parent
+            sys.path.insert(0, str(project_root / "scripts" / "analysis"))
+            sys.path.insert(0, str(project_root / "scripts"))
+            sys.path.insert(0, str(web_dir / "scripts"))
+            sys.path.insert(0, str(web_dir))
+
+            from web_app import app
+
+            # Run Flask in this thread (daemon, so won't block shutdown)
+            app.run(host="127.0.0.1", port=self.web_port, debug=False, use_reloader=False)
+        except Exception as e:
+            logger.error("Failed to start web server: %s", e, exc_info=True)
+
+    def _run_metrics_server(self):
+        """Run Prometheus metrics server (runs in background thread)."""
+        try:
+            from monitoring.exporter import start_metrics_server
+
+            # Start metrics server (blocking call, runs in this thread)
+            start_metrics_server(host="0.0.0.0", port=self.metrics_port)
+        except Exception as e:
+            logger.error("Failed to start metrics server: %s", e, exc_info=True)
 
     def _update_state(
         self,

@@ -21,6 +21,10 @@
   .top { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
   .top .card h3 { margin-top:0; }
   .badge { display:inline-block; padding:4px 10px; background:#eef5fd; color:#1976d2; border-radius:12px; font-size:.85rem; }
+  .hotlinks { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .hotlinks a { padding:10px 14px; background:#2c3e50; color:#ecf0f1; border-radius:999px; font-weight:600; display:inline-flex; align-items:center; gap:8px; text-decoration:none; }
+  .hotlinks a.secondary { background:#455a64; }
+  .hotlinks a:hover { opacity:0.9; text-decoration:none; }
   .no-results { text-align:center; color:#95a5a6; padding:20px; }
   .loading { text-align:center; color:#95a5a6; padding:20px; }
   code.k { background:#f0f3f7; padding:2px 6px; border-radius:4px; }
@@ -143,6 +147,11 @@
         <div class="muted">Search AI summaries, topics, and people</div>
       </div>
       <div class="muted">DB: {{ (config.DB_NAME or 'transcripts') if config else '' }}</div>
+    </div>
+    <div class="hotlinks">
+      <a href="/analysis-configs">Analysis Configs →</a>
+      <a class="secondary" href="/dbsearch">DB Search →</a>
+      <a class="secondary" href="/videos">Videos Table →</a>
     </div>
   </div>
 

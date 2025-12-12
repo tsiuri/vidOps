@@ -112,6 +112,12 @@ def worker():
     default=8888,
     help="Port for Prometheus metrics export (default: 8888, set to 0 to disable)."
 )
+@click.option(
+    "--web-port",
+    type=int,
+    default=5000,
+    help="Port for web UI server (analysis config & drills; default: 5000, set to 0 to disable)."
+)
 def start_worker(
     worker_type: str,
     machine_alias: str,
@@ -121,6 +127,7 @@ def start_worker(
     capabilities: tuple,
     lease_minutes: int,
     metrics_port: int,
+    web_port: int,
 ):
     """Start a worker process."""
     click.echo(f"Starting {worker_type} worker...")
@@ -134,7 +141,9 @@ def start_worker(
     # which would call the worker script directly.
 
     if worker_type == "general":
-        worker_instance = GenericWorker()
+        click.echo(f"  Metrics: {'enabled on port ' + str(metrics_port) if metrics_port > 0 else 'disabled'}")
+        click.echo(f"  Web UI: {'enabled on http://127.0.0.1:' + str(web_port) if web_port > 0 else 'disabled'}")
+        worker_instance = GenericWorker(web_port=web_port, metrics_port=metrics_port)
         worker_instance.run()
     elif worker_type == "download":
         worker_instance = DownloadWorker()

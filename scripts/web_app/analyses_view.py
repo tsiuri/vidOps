@@ -122,8 +122,9 @@ ANALYSES_TEMPLATE = """
       });
     }
 
-    async function loadAnalysis() {
-      const ytid = document.getElementById('ytid').value.trim();
+    async function loadAnalysis(initialYtid) {
+      const input = document.getElementById('ytid');
+      const ytid = (initialYtid || input.value || '').trim();
       const errorEl = document.getElementById('error');
       errorEl.textContent = '';
       if (!ytid) {
@@ -142,6 +143,7 @@ ANALYSES_TEMPLATE = """
         document.getElementById('meta').textContent = `Video ID: ${data.ytid} | Date: ${data.title_date || 'n/a'} | Sentiment: ${data.dominant_sentiment || 'n/a'}`;
         document.getElementById('tldr').textContent = data.tldr_one_sentence || '';
         document.getElementById('summary').textContent = data.summary_paragraph || '';
+        input.value = ytid;
         renderSpans('conflict-spans', data.conflict_spans, 'description');
         renderSpans('topic-spans', data.topic_spans, 'topic');
         renderSpans('person-spans', data.person_spans, 'person_name');
@@ -151,6 +153,19 @@ ANALYSES_TEMPLATE = """
         errorEl.textContent = err.message;
       }
     }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const params = new URLSearchParams(window.location.search);
+      const queryYtid = params.get('ytid');
+      const match = window.location.pathname.match(/^\\/analyses\\/(.+)$/);
+      const pathYtid = match ? decodeURIComponent(match[1]) : '';
+      const initial = queryYtid || pathYtid;
+      if (initial) {
+        const input = document.getElementById('ytid');
+        input.value = initial;
+        loadAnalysis(initial);
+      }
+    });
   </script>
 </body>
 </html>
@@ -160,6 +175,10 @@ ANALYSES_TEMPLATE = """
 def register_analyses_routes(app, get_db):
     @app.route("/analyses")
     def analyses_page():
+        return render_template_string(ANALYSES_TEMPLATE)
+
+    @app.route("/analyses/<ytid>")
+    def analyses_page_with_id(ytid: str):
         return render_template_string(ANALYSES_TEMPLATE)
 
     @app.route("/api/analyses/<ytid>")

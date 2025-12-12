@@ -5,9 +5,10 @@ import logging
 from pathlib import Path
 
 from configuration import load_config
-from dal import TranscriptRepository
+from dal import TranscriptRepository, JobRepository
 from dal.analysis_task_repository import AnalysisDatabase
 from db import get_connection
+from models import Job, JobStatus
 from scripts.analysis.analyze_transcript import VTTParser, TranscriptChunker
 from scripts.analysis.analyze_to_db import create_analysis_job, export_vtt_from_db
 from scripts.analysis.analysis_config import AnalysisConfig
@@ -53,12 +54,14 @@ def enqueue_analysis(ytid: str, transcript_kind: str, model: str, priority: int,
 @click.option("--transcript-kind", default=None, help="Transcript kind to use (defaults to best available).")
 @click.option("--chunk-size", type=int, default=None, help="Chunk size override (words).")
 @click.option("--chunk-overlap", type=int, default=None, help="Overlap override (words).")
+@click.option("--priority", type=int, default=50, help="Job priority (higher = claimed first; default: 50).")
 def enqueue_distributed_analysis(
     ytid: str,
     config_id: str,
     transcript_kind: str | None,
     chunk_size: int | None,
     chunk_overlap: int | None,
+    priority: int,
 ) -> None:
     """
     Chunk a transcript locally and enqueue distributed-analysis tasks.
@@ -124,6 +127,36 @@ def enqueue_distributed_analysis(
         )
     finally:
         db.disconnect()
+
+    # Also create a job entry in the generic jobs table for GenericWorker
+    try:
+        job_repo = JobRepository()
+        job_config = {
+            "analysis_job_id": job_id,
+            "config_id": config_id,
+            "ytid": ytid,
+            "transcript_kind": transcript.kind or "unknown",
+            "model_url": cfg.analysis.ollama.url,
+            "model_name": cfg.analysis.ollama.model,
+        }
+        generic_job = Job(
+            job_type="analysis-distributed",
+            ytid=ytid,
+            config=job_config,
+            priority=priority,
+            status=JobStatus.PENDING,
+        )
+        created_job = job_repo.create(generic_job)
+        click.echo(click.style(f"✓ GenericWorker job created: {created_job.job_id}", fg="green"))
+    except Exception as e:
+        logger.error(f"Failed to create generic job for distributed analysis: {e}")
+        click.echo(
+            click.style(
+                f"✗ Warning: Failed to create GenericWorker job (distributed analysis will not be picked up by general worker): {e}",
+                fg="yellow"
+            ),
+            err=True,
+        )
 
     click.echo(click.style(f"✓ Distributed analysis job created: {job_id}", fg="green"))
     click.echo(f"  Chunks: {len(chunk_payload)} | Config: {config_id} | Transcript: {transcript.kind}")

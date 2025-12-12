@@ -1,117 +1,437 @@
 {% extends 'base.html' %}
-{% block title %}Video Detail{% endblock %}
+{% block title %}Video Analysis{% endblock %}
 {% block head %}
 <style>
-  .grid { display:grid; grid-template-columns: 1fr 1.2fr; gap:16px; }
   .muted { color:#7f8c8d; }
   .badge { display:inline-block; padding:4px 10px; background:#eef5fd; color:#1976d2; border-radius:12px; font-size:.85rem; }
-  .pill { display:inline-block; padding:2px 8px; background:#f0f3f7; border-radius:999px; font-size:.85rem; margin:2px 6px 2px 0; }
-  .seg { background:#fff; padding:14px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,.08); border-left:4px solid #3498db; margin-bottom:10px; }
-  .controls { display:flex; gap:8px; margin-bottom:10px; }
-  input[type=number], input[type=text] { padding:10px; border:1px solid #ddd; border-radius:4px; }
-  button { padding:10px 14px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer; }
-  button:hover { background:#2980b9; }
-  a.ext { color:#3498db; }
-  .k { background:#f0f3f7; padding:2px 6px; border-radius:4px; }
+  .pill { display:inline-flex; align-items:center; padding:4px 10px; background:#f0f3f7; border-radius:999px; font-size:.85rem; margin:3px; }
+  .pill strong { margin-right:6px; color:#2c3e50; }
+  .pill-list { display:flex; flex-wrap:wrap; margin:-3px; }
+  .grid.two { display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:16px; }
+  .grid.three { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+  .hero h2 { margin:0 0 6px 0; }
+  .hero .meta { display:flex; flex-wrap:wrap; gap:12px; margin-top:8px; font-size:0.95rem; }
+  .chip-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .chip { padding:6px 12px; border-radius:999px; background:#eef2f7; font-size:0.85rem; }
+  .highlights { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; }
+  .highlights section { background:#fff; border-radius:8px; padding:16px; box-shadow:0 2px 4px rgba(0,0,0,.06); }
+  .quote-item { border-left:3px solid #3498db; padding:10px 12px; background:#fff; border-radius:4px; margin-bottom:10px; box-shadow:0 2px 4px rgba(0,0,0,.04); }
+  .span-entry { border:1px solid #e0e6ef; border-radius:6px; padding:10px 12px; margin-bottom:10px; background:#fafbfc; }
+  .span-entry h4 { margin:0 0 4px; font-size:1rem; color:#2c3e50; }
+  .span-entry .meta { font-size:0.85rem; }
+  .controls { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+  .controls input, .controls select { padding:10px; border:1px solid #d0d7e2; border-radius:6px; font-size:0.95rem; }
+  .controls button { padding:10px 14px; border:none; border-radius:6px; background:#3498db; color:#fff; cursor:pointer; }
+  .controls button.secondary { background:#95a5a6; }
+  .controls button.active { background:#2c3e50; }
+  .segments table { width:100%; border-collapse:collapse; font-size:0.95rem; }
+  .segments th, .segments td { padding:10px; border-bottom:1px solid #ecf0f1; text-align:left; }
+  .segments th { background:#f8fafc; font-weight:600; }
+  .table-wrap { overflow:auto; }
+  .actions a { display:inline-flex; align-items:center; padding:10px 14px; border-radius:6px; text-decoration:none; font-weight:600; }
+  .actions a.primary { background:#3498db; color:#fff; }
+  .actions a.secondary { background:#ecf0f1; color:#2c3e50; }
+  .trunc-badge { margin-left:6px; font-size:0.75rem; color:#95a5a6; text-transform:uppercase; letter-spacing:0.05em; }
 </style>
 <script>
+  const SEGMENT_LIMIT = 2000;
+  let SEGMENTS = [];
+  let FILTERS = { search: '', sentiment: '', spansOnly: false };
+  let SPAN_CHUNK_IDS = new Set();
+  let VIDEO_URL = '';
+  let LAST_DETAIL = null;
+  let WORDS_CACHE = [];
+
   function escapeHtml(t){ const d=document.createElement('div'); d.textContent=t??''; return d.innerHTML; }
-  function truncate(s, n){ if (!s) return ''; const t = String(s); return t.length>n ? t.slice(0,n).trim()+"…" : t; }
+  function truncate(s, n){ if (!s) return ''; const t=String(s); return t.length>n ? t.slice(0,n).trim()+"…" : t; }
+  function formatTime(sec){
+    if (sec === null || sec === undefined) return '';
+    const value = Math.max(0, Math.floor(sec));
+    const h = Math.floor(value / 3600);
+    const m = Math.floor((value % 3600) / 60);
+    const s = value % 60;
+    if (h > 0) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    return `${m}:${String(s).padStart(2,'0')}`;
+  }
+  function formatDuration(sec){
+    if (!sec) return '—';
+    const minutes = Math.round(sec / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
+  }
   async function loadAll(){
     const ytid = '{{ ytid }}';
-    const [dres, sres] = await Promise.all([
+    const [dres, wordsRes, segmentsRes] = await Promise.all([
       fetch(`/api/video/${encodeURIComponent(ytid)}/detail`),
-      fetch(`/api/video/${encodeURIComponent(ytid)}/segments?limit=1000`)
+      fetch(`/api/video/${encodeURIComponent(ytid)}/words`),
+      fetch(`/api/video/${encodeURIComponent(ytid)}/segments?limit=${SEGMENT_LIMIT}`)
     ]);
     const detail = await dres.json();
-    const segs = await sres.json();
+    if (detail.error){
+      document.getElementById('overview').innerHTML = `<div class="muted">${escapeHtml(detail.error)}</div>`;
+      return;
+    }
+    const words = await wordsRes.json();
+    const segs = await segmentsRes.json();
+    WORDS_CACHE = words;
+    LAST_DETAIL = detail;
+    SEGMENTS = segs;
+    VIDEO_URL = (detail.video && detail.video.url) || `https://youtube.com/watch?v=${ytid}`;
+    collectSpanChunks(detail);
     renderDetail(detail);
     renderSegments(segs);
   }
-  function renderDetail(d){
-    const head = document.getElementById('v-head');
-    const you = `https://youtube.com/watch?v=${d.ytid}`;
-    const dsent = d.dominant_sentiment ? `<span class=\"badge\">${escapeHtml(d.dominant_sentiment)}</span>` : '';
-    head.innerHTML = `
-      <div style="display:flex; justify-content:space-between; gap:12px;">
+
+  function collectSpanChunks(detail){
+    SPAN_CHUNK_IDS = new Set();
+    ['target_spans','topic_spans','person_spans'].forEach(key => {
+      (detail[key] || []).forEach(span => {
+        (span.chunk_ids || []).forEach(id => {
+          if (typeof id === 'number' || typeof id === 'string') {
+            SPAN_CHUNK_IDS.add(Number(id));
+          }
+        });
+      });
+    });
+  }
+
+  function renderDetail(detail){
+    const video = detail.video || {};
+    const analysis = detail.analysis || {};
+    const configId = analysis.config_id || (detail.analysis_run && detail.analysis_run.config_id);
+    const overview = document.getElementById('overview');
+    const dsent = analysis.dominant_sentiment ? `<span class="badge">${escapeHtml(analysis.dominant_sentiment)}</span>` : '';
+    overview.innerHTML = `
+      <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <div>
-          <h2 style="margin:0 0 6px 0;">${escapeHtml(d.title || d.ytid)}</h2>
-          <div class="muted">${d.title_date || ''} • <a class="ext" href="${you}" target="_blank" rel="noopener">Open on YouTube</a></div>
+          <h2>${escapeHtml(video.title || video.ytid || 'Video')}</h2>
+          <div class="muted">${video.title_date || video.upload_date || 'Unknown date'} • ${video.channel || 'Unknown channel'}</div>
+          <div class="meta">
+            <span>Duration: ${formatDuration(video.duration_sec)}</span>
+            <span>Chunks: ${analysis.total_chunks ?? '—'}</span>
+            <span>Model: ${escapeHtml(analysis.model || 'unknown')}</span>
+          </div>
         </div>
-        <div>${dsent}</div>
+        <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
+          ${dsent}
+          <a class="ext" href="${video.url}" target="_blank" rel="noopener">Open on YouTube ↗</a>
+        </div>
       </div>
-      ${d.tldr_one_sentence ? `<div style=\"margin-top:8px;\"><strong>TLDR:</strong> ${escapeHtml(d.tldr_one_sentence)}</div>` : ''}
-      ${d.summary_paragraph ? `<div style=\"margin-top:8px;\"><strong>Summary:</strong> ${escapeHtml(d.summary_paragraph)}</div>` : ''}
-      ${d.political_overview ? `<div style=\"margin-top:8px;\"><strong>Political:</strong> ${escapeHtml(d.political_overview)}</div>` : ''}
-      ${d.controversies ? `<div style=\"margin-top:8px;\"><strong>Controversies:</strong> ${escapeHtml(d.controversies)}</div>` : ''}
-      ${Array.isArray(d.issues) && d.issues.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Issues:</strong> ${escapeHtml(d.issues.join(', '))}</div>` : ''}
-      ${Array.isArray(d.noteworthy_statements) && d.noteworthy_statements.length ? `<div style=\"margin-top:8px;\"><strong>Noteworthy:</strong> ${escapeHtml(d.noteworthy_statements.join(' | '))}</div>` : ''}
-      ${Array.isArray(d.personal_conflicts) && d.personal_conflicts.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Conflicts:</strong> ${escapeHtml(d.personal_conflicts.join(', '))}</div>` : ''}
-      ${d.speaker_overview ? `<div style=\"margin-top:8px;\"><strong>Speaker:</strong> ${escapeHtml(d.speaker_overview)}</div>` : ''}
-      ${Array.isArray(d.personal_themes) && d.personal_themes.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Themes:</strong> ${escapeHtml(d.personal_themes.join(', '))}</div>` : ''}
-      <div class="muted" style="margin-top:8px;">Total chunks: ${d.total_chunks ?? '—'} • Batch ${d.batch_id ?? ''} • Type ${escapeHtml(d.analysis_type || 'normal')}</div>
-      ${d.request_text && d.request_text !== 'none' ? `<div class=\"muted\" style=\"margin-top:6px;\"><span class=\"k\">request</span> ${escapeHtml(d.request_text)}</div>` : ''}
+      ${analysis.tldr_one_sentence ? `<div style="margin-top:10px;"><strong>TLDR:</strong> ${escapeHtml(analysis.tldr_one_sentence)}</div>` : ''}
+      ${analysis.summary_paragraph ? `<div style="margin-top:10px;"><strong>Summary:</strong> ${escapeHtml(analysis.summary_paragraph)}</div>` : ''}
+      ${analysis.request_text && analysis.request_text !== 'none' ? `<div class="muted" style="margin-top:6px;"><span class="badge" style="background:#f0f3f7; color:#2c3e50;">Request</span> ${escapeHtml(analysis.request_text)}</div>` : ''}
+      ${configId ? `<div style="margin-top:8px;"><a class="ext" href="/analysis-configs/${encodeURIComponent(configId)}" target="_blank" rel="noopener">See config ↗</a></div>` : ''}
     `;
 
-    const ppl = document.getElementById('v-people');
-    ppl.innerHTML = '';
-    (d.people || []).forEach(p => {
-      const span = document.createElement('span');
-      span.className = 'pill';
-      span.textContent = `${p.person_name} • ${p.mention_count}`;
-      ppl.appendChild(span);
-    });
-    const tops = document.getElementById('v-topics');
-    tops.innerHTML='';
-    (d.topics || []).forEach(t => {
-      const span = document.createElement('span');
-      span.className='pill';
-      span.textContent = `${t.topic} • ${t.occurrence_count}`;
-      tops.appendChild(span);
-    });
+    renderHighlights(analysis);
+    renderPills(detail.people || [], 'v-people', 'person_name', 'mention_count');
+    renderPills(detail.topics || [], 'v-topics', 'topic', 'occurrence_count');
+    renderSummaries(detail);
+    renderQuotes(detail.quotes || [], detail.key_points || []);
+    renderSpans(detail);
+    renderInspector(detail);
   }
+
+  function renderHighlights(analysis){
+    const specs = [
+      { label: 'Issues', values: analysis.issues },
+      { label: 'Noteworthy Statements', values: analysis.noteworthy_statements },
+      { label: 'Conflicts', values: analysis.personal_conflicts },
+      { label: 'Themes', values: analysis.personal_themes }
+    ];
+    const wrap = document.getElementById('highlights');
+    wrap.innerHTML = specs.map(spec => {
+      const items = Array.isArray(spec.values) ? spec.values : [];
+      const content = items.length ? items.map(v => `<span class="chip">${escapeHtml(v)}</span>`).join('') : `<div class="muted">No data.</div>`;
+      return `<section><h4 style="margin:0 0 6px;">${spec.label}</h4>${content}</section>`;
+    }).join('');
+  }
+
+  function renderPills(list, target, labelKey, countKey){
+    const el = document.getElementById(target);
+    if (!el) return;
+    if (!list.length){
+      el.innerHTML = '<div class="muted">No entries.</div>';
+      return;
+    }
+    el.innerHTML = list.map(item => `<span class="pill"><strong>${escapeHtml(item[labelKey] || '')}</strong>${item[countKey] ?? ''}</span>`).join('');
+  }
+
+  function renderSummaries(detail){
+    const analysis = detail.analysis || {};
+    const political = document.getElementById('political');
+    political.innerHTML = `
+      <h3 style="margin-top:0;">Political Overview</h3>
+      ${analysis.political_overview ? `<p>${escapeHtml(analysis.political_overview)}</p>` : '<div class="muted">No political overview recorded.</div>'}
+      ${analysis.controversies ? `<div style="margin-top:8px;"><strong>Controversies:</strong> ${escapeHtml(analysis.controversies)}</div>` : ''}
+    `;
+    const speaker = document.getElementById('speaker');
+    speaker.innerHTML = `
+      <h3 style="margin-top:0;">Speaker Profile</h3>
+      ${analysis.speaker_overview ? `<p>${escapeHtml(analysis.speaker_overview)}</p>` : '<div class="muted">Speaker summary unavailable.</div>'}
+      ${(analysis.personal_themes || []).length ? `<div style="margin-top:8px;"><strong>Personal themes:</strong> ${escapeHtml((analysis.personal_themes || []).join(', '))}</div>` : ''}
+    `;
+  }
+
+  function renderQuotes(quotes, keyPoints){
+    const card = document.getElementById('quotes-card');
+    const quoteHtml = quotes.length ? quotes.map(q => `<div class="quote-item"><div class="muted">Chunk ${q.chunk_id ?? '—'}</div><div style="margin-top:4px;">“${escapeHtml(q.text || '')}”</div></div>`).join('') : '<div class="muted">No quotes captured for this transcript.</div>';
+    const kpHtml = keyPoints.length ? keyPoints.map(k => `<li>Chunk ${k.chunk_id ?? '—'} — ${escapeHtml(k.text || '')}</li>`).join('') : '<div class="muted">No key points logged.</div>';
+    card.innerHTML = `
+      <h3 style="margin-top:0;">Quotes & Key Points</h3>
+      <div class="grid two" style="gap:20px;">
+        <div>
+          <h4>Quotes</h4>
+          ${quoteHtml}
+        </div>
+        <div>
+          <h4>Key Points</h4>
+          ${keyPoints.length ? `<ul>${kpHtml}</ul>` : kpHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderSpans(detail){
+    renderSpanList(detail.target_spans || [], 'conflict-spans', 'No conflict or drill spans recorded.', span => {
+      const parties = Array.isArray(span.parties) && span.parties.length ? `Parties: ${span.parties.join(', ')}` : '';
+      return `
+        <div class="span-entry">
+          <h4>${escapeHtml(span.description || span.source_pass || 'Span')}</h4>
+          <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.source_pass || 'hot_target')} ${spanJumpLink(span)}</div>
+          ${span.context ? `<div style="margin-top:6px;">${escapeHtml(span.context)}</div>` : ''}
+          ${parties ? `<div class="muted" style="margin-top:4px;">${escapeHtml(parties)}</div>` : ''}
+        </div>`;
+    });
+    renderSpanList(detail.topic_spans || [], 'topic-spans', 'No topic spans detected.', span => `
+      <div class="span-entry">
+        <h4>${escapeHtml(span.topic || '')}</h4>
+        <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.source_pass || '')} ${spanJumpLink(span)}</div>
+        ${span.context ? `<div style="margin-top:6px;">${escapeHtml(span.context)}</div>` : ''}
+      </div>
+    `);
+    renderSpanList(detail.person_spans || [], 'person-spans', 'No person spans detected.', span => `
+      <div class="span-entry">
+        <h4>${escapeHtml(span.person_name || '')}</h4>
+        <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.sentiment || '')} ${spanJumpLink(span)}</div>
+        ${span.context ? `<div style="margin-top:6px;">${escapeHtml(span.context)}</div>` : ''}
+      </div>
+    `);
+  }
+
+  function renderSpanList(spans, targetId, emptyText, renderer){
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    if (!spans.length){
+      el.innerHTML = `<div class="muted">${emptyText}</div>`;
+      return;
+    }
+    el.innerHTML = spans.map(renderer).join('');
+  }
+
+  function renderInspector(detail){
+    const box = document.getElementById('inspector');
+    const run = detail.analysis_run;
+    const info = run ? `
+      <div class="muted">Run ${escapeHtml(run.job_id || '')} (${escapeHtml(run.status || '')})</div>
+      <div>Config: <strong>${escapeHtml(run.config_id || 'n/a')}</strong></div>
+      <div>Tasks: ${run.completed_tasks ?? 0}/${run.total_tasks ?? 0} · Failures: ${run.failed_tasks ?? 0}</div>
+      <div class="muted">Started ${escapeHtml(run.created_at || 'unknown')} · Completed ${escapeHtml(run.completed_at || '—')}</div>
+    ` : '<div class="muted">No analysis run metadata recorded.</div>';
+    box.innerHTML = `
+      <h3 style="margin-top:0;">Data Inspector</h3>
+      ${info}
+      <div class="actions" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+        <a class="secondary" href="/analyses/{{ ytid }}" target="_blank" rel="noopener">Open JSON viewer ↗</a>
+        <a class="primary" href="/api/analyses/{{ ytid }}" target="_blank" rel="noopener">Download raw JSON</a>
+      </div>
+    `;
+  }
+
+  function setFilter(key, value){
+    FILTERS[key] = value;
+    applySegmentFilters();
+  }
+
+  function toggleSpanFilter(btn){
+    FILTERS.spansOnly = !FILTERS.spansOnly;
+    if (btn){
+      btn.classList.toggle('active', FILTERS.spansOnly);
+      btn.textContent = FILTERS.spansOnly ? 'Showing span chunks' : 'Span chunks only';
+    }
+    applySegmentFilters();
+  }
+
+  function applySegmentFilters(){
+    const search = (FILTERS.search || '').toLowerCase();
+    const sentiment = FILTERS.sentiment || '';
+    const filtered = SEGMENTS.filter(seg => {
+      if (sentiment && (seg.sentiment || '') !== sentiment) return false;
+      if (FILTERS.spansOnly && !SPAN_CHUNK_IDS.has(Number(seg.chunk_id))) return false;
+      if (search){
+        const body = `${seg.summary || ''}`.toLowerCase();
+        if (!body.includes(search)) return false;
+      }
+      return true;
+    });
+    renderSegments(filtered);
+  }
+
   function renderSegments(rows){
-    const wrap = document.getElementById('v-segments');
-    wrap.innerHTML = '';
-    rows.forEach(r => {
-      const div = document.createElement('div');
-      div.className = 'seg';
-      const sent = r.sentiment ? `<span class="badge">${escapeHtml(r.sentiment)}</span>` : '';
-      const model = r.model ? `<span class="pill" title="Model used">${escapeHtml(r.model)}</span>` : '';
-      div.innerHTML = `
-        <div class="muted">Chunk ${r.chunk_id} • ${r.word_count} words ${sent} ${model}</div>
-        <div style="margin-top:6px;">${escapeHtml(truncate(r.summary, 800))}</div>
+    const count = document.getElementById('seg-count');
+    count.textContent = `${rows.length}/${SEGMENTS.length}`;
+    const body = document.getElementById('seg-body');
+    body.innerHTML = rows.map(r => {
+      const jump = r.start_sec != null ? `${VIDEO_URL}${VIDEO_URL.includes('watch?v=') ? '&' : '?'}t=${Math.floor(r.start_sec)}` : VIDEO_URL;
+      return `
+        <tr>
+          <td>${r.chunk_id}</td>
+          <td>${formatTime(r.start_sec)}</td>
+          <td>${formatTime(r.end_sec)}</td>
+          <td>${r.word_count ?? ''}</td>
+          <td>${escapeHtml(r.sentiment || '')}</td>
+          <td>${escapeHtml(r.model || '')}</td>
+          <td>${formatSummaryCell(r)}</td>
+          <td><a href="${jump}" target="_blank" rel="noopener">Jump ↗</a></td>
+        </tr>
       `;
-      wrap.appendChild(div);
-    });
-    document.getElementById('seg-count').textContent = rows.length;
+    }).join('');
   }
+
+  function formatSummaryCell(row){
+    const full = String(row.summary || '');
+    if (full.length <= 280) {
+      return escapeHtml(full);
+    }
+    const snippet = escapeHtml(truncate(full, 280));
+    return `
+      <div>${snippet}</div>
+      <button class="summary-btn" onclick="showFullSummary(${row.chunk_id})" type="button">Show full</button>
+    `;
+  }
+
+  function showFullSummary(chunkId){
+    const entry = SEGMENTS.find(s => Number(s.chunk_id) === Number(chunkId));
+    if (!entry) return;
+    const modal = document.getElementById('summary-modal');
+    const text = document.getElementById('summary-modal-text');
+    text.textContent = entry.summary || '';
+    modal.showModal();
+  }
+
+  function spanJumpLink(span){
+    if (span.start_sec == null) return '';
+    const href = `${VIDEO_URL}${VIDEO_URL.includes('watch?v=') ? '&' : '?'}t=${Math.floor(span.start_sec)}`;
+    return `<a href="${href}" target="_blank" rel="noopener" style="margin-left:8px;">Jump ↗</a>`;
+  }
+
+  function reconstructChunkText(entry){
+    if (!WORDS_CACHE || !WORDS_CACHE.length) return '';
+    const startSec = typeof entry.start_sec === 'number' ? entry.start_sec : null;
+    const endSec = typeof entry.end_sec === 'number' ? entry.end_sec : null;
+    let slice = WORDS_CACHE;
+    if (startSec !== null || endSec !== null) {
+      slice = WORDS_CACHE.filter(w => {
+        const ws = typeof w.start_sec === 'number' ? w.start_sec : null;
+        if (ws === null) return true;
+        if (startSec !== null && ws < startSec - 0.1) return false;
+        if (endSec !== null && ws > endSec + 0.1) return false;
+        return true;
+      });
+    }
+    if (!slice.length) slice = WORDS_CACHE;
+    return slice.map(w => w.word).join(' ').replace(/\s+/g,' ').trim();
+  }
+
   window.addEventListener('DOMContentLoaded', loadAll);
 </script>
 {% endblock %}
 
 {% block content %}
-  <div class="card" style="margin-bottom:16px;">
-    <div id="v-head"></div>
+  <div class="card hero" id="overview"></div>
+
+  <div id="highlights" class="highlights" style="margin:18px 0;"></div>
+
+  <div class="grid two">
+    <div class="card" id="political"></div>
+    <div class="card" id="speaker"></div>
   </div>
 
-  <div class="grid">
+  <div class="grid two" style="margin-top:16px;">
     <div class="card">
       <h3 style="margin-top:0;">People</h3>
-      <div id="v-people"></div>
+      <div id="v-people" class="pill-list"></div>
     </div>
     <div class="card">
       <h3 style="margin-top:0;">Topics</h3>
-      <div id="v-topics"></div>
+      <div id="v-topics" class="pill-list"></div>
     </div>
   </div>
 
-  <div class="card" style="margin-top:16px;">
-    <div class="controls">
-      <div class="muted">Segments: <span id="seg-count">0</span></div>
-      <div style="flex:1"></div>
-      <a class="ext" href="/">← Back</a>
+  <div class="card" style="margin-top:16px;" id="quotes-card"></div>
+
+  <div class="grid three" style="margin-top:16px;">
+    <div class="card" id="conflict-spans">
+      <h3 style="margin-top:0;">Conflict / Drill Spans</h3>
     </div>
-    <div id="v-segments"></div>
+    <div class="card" id="topic-spans">
+      <h3 style="margin-top:0;">Topic Spans</h3>
+    </div>
+    <div class="card" id="person-spans">
+      <h3 style="margin-top:0;">Person Spans</h3>
+    </div>
   </div>
+
+  <div class="card segments" style="margin-top:16px;">
+    <div class="controls">
+      <input type="text" placeholder="Search chunk summaries…" oninput="setFilter('search', this.value)">
+      <select onchange="setFilter('sentiment', this.value)">
+        <option value="">Any sentiment</option>
+        <option value="analytical">Analytical</option>
+        <option value="concerned">Concerned</option>
+        <option value="excited">Excited</option>
+        <option value="frustrated">Frustrated</option>
+        <option value="joking">Joking</option>
+        <option value="serious">Serious</option>
+        <option value="optimistic">Optimistic</option>
+        <option value="pessimistic">Pessimistic</option>
+        <option value="angry">Angry</option>
+        <option value="sad">Sad</option>
+        <option value="joyful">Joyful</option>
+        <option value="neutral">Neutral</option>
+      </select>
+      <button id="span-filter-btn" type="button" onclick="toggleSpanFilter(this)">Span chunks only</button>
+      <div style="flex:1"></div>
+      <div class="muted">Segments: <span id="seg-count">0</span></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Chunk</th>
+            <th>Start</th>
+            <th>End</th>
+            <th>Words</th>
+            <th>Sentiment</th>
+            <th>Model</th>
+            <th>Summary</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="seg-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;" id="inspector"></div>
+
+  <dialog id="summary-modal" class="summary-modal">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <strong>Full Chunk Summary</strong>
+      <button type="button" onclick="document.getElementById('summary-modal').close()">Close</button>
+    </div>
+    <div id="summary-modal-text" style="white-space:pre-wrap;"></div>
+  </dialog>
 {% endblock %}

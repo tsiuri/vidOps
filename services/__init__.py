@@ -12,6 +12,7 @@ from .clipping import ClippingService
 from .download import DownloadService
 from .overlord import OverlordService
 from .analysis import AnalysisService
+from .distributed_analysis import DistributedAnalysisService
 from .voice_filter import VoiceFilterService
 from .diarization import DiarizationService
 from .stitching import StitchingService
@@ -19,6 +20,7 @@ from .subtitle import SubtitleService
 from .dates import DatesService
 from .extra_utils import ExtraUtilsService
 from dal import VideoRepository, JobRepository, TranscriptRepository, WordRepository, FilesystemCache, WorkerRepository
+from configuration import load_config
 
 __all__ = [
     "TranscriptionService",
@@ -26,6 +28,7 @@ __all__ = [
     "DownloadService",
     "OverlordService",
     "AnalysisService",
+    "DistributedAnalysisService",
     "DiarizationService",
     "StitchingService",
     "SubtitleService",
@@ -183,3 +186,22 @@ def get_extra_utils_service() -> ExtraUtilsService:
     job_repo = JobRepository()
     fs_cache = FilesystemCache()
     return ExtraUtilsService(video_repo=video_repo, job_repo=job_repo, fs_cache=fs_cache)
+
+
+def get_distributed_analysis_service() -> DistributedAnalysisService:
+    """
+    Returns a configured instance of DistributedAnalysisService with its dependencies.
+    Uses config to get Ollama URL and model name.
+    """
+    config = load_config()
+    job_repo = JobRepository()
+
+    return DistributedAnalysisService(
+        job_repo=job_repo,
+        db_host=config.database.host,
+        db_name=config.database.name,
+        db_user=config.database.user,
+        db_password=config.database.password,
+        model_url=config.analysis.ollama.url,
+        model_name=config.analysis.ollama.model,
+    )

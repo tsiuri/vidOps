@@ -171,6 +171,25 @@ class OllamaConfig:
     request_timeout: int = 60
 
 @dataclass
+class DiarizationConfig:
+    """Default settings for diarization workers and jobs."""
+    # Diarization model to use (e.g., 'pyannote', 'resemblyzer')
+    model: str = "pyannote"
+    # Device to run diarization on: 'cuda', 'cpu', or 'auto' (auto-detect)
+    device: str = "auto"
+    # Audio chunking for processing long files
+    chunk_seconds: float = 15.0
+    overlap_seconds: float = 2.5
+    # Speaker matching thresholds
+    similarity_threshold: float = 0.6
+    gap_threshold: float = 0.15
+    # Reference-based speaker matching (optional, for improved accuracy)
+    match_threshold: float = 0.75
+    match_margin: float = 0.01
+    match_force_best: bool = True
+
+
+@dataclass
 class AnalysisConfig:
     """Distributed transcript analysis system configuration."""
     # Ollama LLM backend
@@ -190,6 +209,7 @@ class Config:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
+    diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     workers: WorkerConfig = field(default_factory=WorkerConfig)
     workspace: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     storage_broker: StorageBrokerConfig = field(default_factory=StorageBrokerConfig)
@@ -253,6 +273,13 @@ def _apply_env_overrides(config_obj):
         "transcription.language": ["WHISPER_LANGUAGE", "LANGUAGE"],
         "transcription.nvidia.compute_type": ["NV_COMPUTE"],
         "transcription.nvidia.vad_filter": ["NV_VAD_FILTER"],
+        "diarization.model": ["DIARIZATION_MODEL"],
+        "diarization.device": ["DIARIZATION_DEVICE"],
+        "diarization.chunk_seconds": ["DIARIZATION_CHUNK_SECONDS"],
+        "diarization.overlap_seconds": ["DIARIZATION_OVERLAP_SECONDS"],
+        "diarization.similarity_threshold": ["DIARIZATION_SIMILARITY_THRESHOLD"],
+        "diarization.gap_threshold": ["DIARIZATION_GAP_THRESHOLD"],
+        "diarization.match_threshold": ["DIARIZATION_MATCH_THRESHOLD"],
         "workers.machine_alias": ["VIDOPS_MACHINE_ALIAS"],
         "workers.max_jobs": ["VIDOPS_WORKER_MAX_JOBS"],
         "workers.heartbeat_interval": ["VIDOPS_WORKER_HEARTBEAT_INTERVAL"],
@@ -364,12 +391,14 @@ def load_config(config_path: str = "config.yaml") -> Config:
                     # Manual merge for top-level to preserve defaults
                     if 'database' in yaml_data: config.database = _load_config_from_dict(DatabaseConfig, yaml_data['database'])
                     if 'paths' in yaml_data: config.paths = _load_config_from_dict(PathsConfig, yaml_data['paths'])
-                    if 'transcription' in yaml_data: 
+                    if 'transcription' in yaml_data:
                         trans_data = yaml_data['transcription']
                         config.transcription.model = trans_data.get('model', config.transcription.model)
                         config.transcription.language = trans_data.get('language', config.transcription.language)
                         if 'nvidia' in trans_data: config.transcription.nvidia = _load_config_from_dict(NvidiaConfig, trans_data['nvidia'])
                         if 'cpu' in trans_data: config.transcription.cpu = _load_config_from_dict(CpuConfig, trans_data['cpu'])
+                    if 'diarization' in yaml_data:
+                        config.diarization = _load_config_from_dict(DiarizationConfig, yaml_data['diarization'])
                     if 'workers' in yaml_data: config.workers = _load_config_from_dict(WorkerConfig, yaml_data['workers'])
                     if 'storage_broker' in yaml_data:
                         config.storage_broker = _load_config_from_dict(StorageBrokerConfig, yaml_data['storage_broker'])

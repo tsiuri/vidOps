@@ -19,10 +19,13 @@ VidOps started as a purely “workspace.sh” driven toolkit:
   and storage before marking jobs complete.
 
   Legacy compatibility remains for critical flows (diarize,
-  analyze, dates, extra-utils) by treating workspace.sh as an
+  dates, extra-utils) by treating workspace.sh as an
   implementation detail behind DB jobs. Modern flows (download,
-  transcribe, clips/stitch, analysis) have native services and
-  workers. SOURCE_OF_TRUTH.md in docs/REFACTOR_ARCHITECTURE is
+  transcribe, clips/stitch, analysis-distributed) have native services and
+  workers. GenericWorker now unifies all job types (download, transcription,
+  analysis-distributed, diarization, etc.), allowing a single
+  `vo worker start general` process to handle any job type.
+  SOURCE_OF_TRUTH.md in docs/REFACTOR_ARCHITECTURE is
   the current state document; deprecated plans, phase logs, and
   old queue docs live under docs/deprecated/.
   
@@ -59,3 +62,9 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 - Secrets: set tokens via env (`HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`, DB creds); never commit them. Check `db.cfg` for DB defaults.
 - GPU/CPU: diarization pins `torch/torchaudio` 2.8.0+cu128; rerun the setup script if the venv drifts. For CPU runs, use `--cpu` flag.
 - Paths: honor `TOOL_ROOT` (repo) vs `PROJECT_ROOT` (data). Don’t write under repo except `tmp/` and generated logs/tests.***
+
+## Active Analysis Updates (2025-12-11)
+- GenericWorker now claims distributed analysis work through `services/distributed_analysis.py`, so `vo worker start general` covers download, transcription, clips, diarization, stitching, and `analysis-distributed` in one process. See `tests/workers/test_generic_worker_distributed_analysis.py` for the handoff coverage.
+- The analysis web UI (`web/templates/video_detail.html`, `/analysis-configs*` templates, `web/web_app.py`) was rebuilt: nav includes an Analysis Configs link, the video detail page shows TLDR/summary, quotes, spans, per-chunk tables with filters, “Show full” modals, jump links, and a “See config ↗” action. Drill counts on `/analysis-configs` now come from the `drills` table, and the config/detail editors expose all drill + hot target settings (model/endpoint overrides, options JSON, prompt text, dependencies).
+- Distributed analysis workers now hydrate drills from the DB (`workers/analysis_distributed.py`), run them through `DrillExecutor`, and persist emitted spans via `store_target_spans`, independent of hot targets. Hot targets remain a separate pass driven by their pattern rules but share the refreshed configurability UI.
+- `/api/video/<ytid>/detail`, `/segments`, and the new `/words` endpoint power the UI. Chunk detail uses DB start/end offsets and word indices to highlight whether text was truncated; future edits should keep these endpoints in sync with the templates and update this note if contract changes.

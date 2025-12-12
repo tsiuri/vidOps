@@ -440,7 +440,7 @@ HOME_TEMPLATE = '''
 
             showLoading();
             try {
-                const response = await fetch(\`/api/search/fulltext?q=$\{encodeURIComponent(query)}&limit=$\{limit}\`);
+                const response = await fetch(`/api/search/fulltext?q=${encodeURIComponent(query)}&limit=${limit}`);
                 const data = await response.json();
                 showResults(data, 'fulltext');
             } catch (error) {
@@ -459,7 +459,7 @@ HOME_TEMPLATE = '''
 
             showLoading();
             try {
-                const response = await fetch(\`/api/search/topic?q=$\{encodeURIComponent(query)}&limit=$\{limit}\`);
+                const response = await fetch(`/api/search/topic?q=${encodeURIComponent(query)}&limit=${limit}`);
                 const data = await response.json();
                 showResults(data, 'topic');
             } catch (error) {
@@ -478,7 +478,7 @@ HOME_TEMPLATE = '''
 
             showLoading();
             try {
-                const response = await fetch(\`/api/search/person?q=$\{encodeURIComponent(query)}&limit=$\{limit}\`);
+                const response = await fetch(`/api/search/person?q=${encodeURIComponent(query)}&limit=${limit}`);
                 const data = await response.json();
                 showResults(data, 'person');
             } catch (error) {
@@ -491,7 +491,7 @@ HOME_TEMPLATE = '''
 
             showLoading();
             try {
-                const response = await fetch(\`/api/browse/recent?limit=$\{limit}\`);
+                const response = await fetch(`/api/browse/recent?limit=${limit}`);
                 const data = await response.json();
                 showResults(data, 'browse');
             } catch (error) {
@@ -741,7 +741,8 @@ def video_detail_page(ytid: str):
 @app.route('/api/video/<ytid>/detail')
 def api_video_detail(ytid: str):
     db = get_db()
-    # Fetch video + analysis
+    video_block = None
+    analysis_block = None
     try:
         db.cursor.execute(
             """
@@ -749,6 +750,11 @@ def api_video_detail(ytid: str):
                 v.ytid,
                 v.title,
                 v.title_date,
+                v.upload_date,
+                v.duration_sec,
+                v.channel,
+                v.channel_id,
+                v.url,
                 va.total_chunks,
                 va.dominant_sentiment,
                 va.tldr_one_sentence,
@@ -762,7 +768,11 @@ def api_video_detail(ytid: str):
                 va.noteworthy_statements,
                 va.personal_conflicts,
                 va.speaker_overview,
-                va.personal_themes
+                va.personal_themes,
+                va.analyzed_at,
+                va.model,
+                va.diarized,
+                va.transcription_machine
             FROM videos v
             JOIN video_analysis va USING (ytid)
             WHERE v.ytid = %s
@@ -770,13 +780,55 @@ def api_video_detail(ytid: str):
             (ytid,)
         )
         row = db.cursor.fetchone()
+        if row:
+            cols = [c[0] for c in db.cursor.description]
+            data = dict(zip(cols, row))
+            video_block = {
+                'ytid': data.get('ytid'),
+                'title': data.get('title'),
+                'title_date': str(data.get('title_date')) if data.get('title_date') else None,
+                'upload_date': str(data.get('upload_date')) if data.get('upload_date') else None,
+                'duration_sec': data.get('duration_sec'),
+                'channel': data.get('channel'),
+                'channel_id': data.get('channel_id'),
+                'url': data.get('url') or f"https://youtube.com/watch?v={data.get('ytid')}",
+            }
+            analysis_block = {
+                'total_chunks': data.get('total_chunks'),
+                'dominant_sentiment': data.get('dominant_sentiment'),
+                'tldr_one_sentence': data.get('tldr_one_sentence') or '',
+                'summary_paragraph': data.get('summary_paragraph') or '',
+                'batch_id': data.get('batch_id'),
+                'analysis_type': data.get('analysis_type') or 'normal',
+                'request_text': data.get('request_text') or 'none',
+                'political_overview': data.get('political_overview') or '',
+                'controversies': data.get('controversies') or '',
+                'issues': data.get('issues') or [],
+                'noteworthy_statements': data.get('noteworthy_statements') or [],
+                'personal_conflicts': data.get('personal_conflicts') or [],
+                'speaker_overview': data.get('speaker_overview') or '',
+                'personal_themes': data.get('personal_themes') or [],
+                'analyzed_at': data.get('analyzed_at').isoformat() if data.get('analyzed_at') else None,
+                'model': data.get('model'),
+                'diarized': data.get('diarized'),
+                'transcription_machine': data.get('transcription_machine'),
+            }
     except Exception:
+        video_block = None
+        analysis_block = None
+
+    if video_block is None or analysis_block is None:
         db.cursor.execute(
             """
             SELECT
                 v.ytid,
                 v.title,
                 v.title_date,
+                v.upload_date,
+                v.duration_sec,
+                v.channel,
+                v.channel_id,
+                v.url,
                 va.total_chunks,
                 va.dominant_sentiment,
                 va.tldr_one_sentence,
@@ -791,28 +843,38 @@ def api_video_detail(ytid: str):
             (ytid,)
         )
         row = db.cursor.fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
-
-    detail = {
-        'ytid': row[0],
-        'title': row[1],
-        'title_date': str(row[2]) if row[2] else None,
-        'total_chunks': row[3],
-        'dominant_sentiment': row[4],
-        'tldr_one_sentence': row[5] or '',
-        'summary_paragraph': row[6] or '',
-        'batch_id': row[7],
-        'analysis_type': row[8] or 'normal',
-        'request_text': row[9] or 'none',
-        'political_overview': row[10] or '',
-        'controversies': row[11] or '',
-        'issues': row[12] or [],
-        'noteworthy_statements': row[13] or [],
-        'personal_conflicts': row[14] or [],
-        'speaker_overview': row[15] or '',
-        'personal_themes': row[16] or []
-    }
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        video_block = {
+            'ytid': row[0],
+            'title': row[1],
+            'title_date': str(row[2]) if row[2] else None,
+            'upload_date': str(row[3]) if row[3] else None,
+            'duration_sec': row[4],
+            'channel': row[5],
+            'channel_id': row[6],
+            'url': row[7] or f"https://youtube.com/watch?v={row[0]}",
+        }
+        analysis_block = {
+            'total_chunks': row[8],
+            'dominant_sentiment': row[9],
+            'tldr_one_sentence': row[10] or '',
+            'summary_paragraph': row[11] or '',
+            'batch_id': row[12],
+            'analysis_type': row[13] or 'normal',
+            'request_text': row[14] or 'none',
+            'political_overview': '',
+            'controversies': '',
+            'issues': [],
+            'noteworthy_statements': [],
+            'personal_conflicts': [],
+            'speaker_overview': '',
+            'personal_themes': [],
+            'analyzed_at': None,
+            'model': None,
+            'diarized': None,
+            'transcription_machine': None,
+        }
 
     # People
     db.cursor.execute(
@@ -840,8 +902,108 @@ def api_video_detail(ytid: str):
     )
     topics = [{ 'topic': r[0], 'occurrence_count': r[1] } for r in db.cursor.fetchall()]
 
-    detail['people'] = people
-    detail['topics'] = topics
+    def fetch_spans(sql, field_names):
+        db.cursor.execute(sql, (ytid,))
+        rows = db.cursor.fetchall()
+        items = []
+        for row in rows:
+            entry = {}
+            for idx, field in enumerate(field_names):
+                value = row[idx]
+                if isinstance(value, datetime):
+                    entry[field] = value.isoformat()
+                else:
+                    entry[field] = value
+            items.append(entry)
+        return items
+
+    target_spans = fetch_spans(
+        """
+        SELECT id, parties, description, start_sec, end_sec, chunk_ids, context, sentiment, polarity, source_pass
+        FROM target_spans
+        WHERE ytid = %s
+        ORDER BY start_sec NULLS LAST, id
+        """,
+        ['id', 'parties', 'description', 'start_sec', 'end_sec', 'chunk_ids', 'context', 'sentiment', 'polarity', 'source_pass']
+    )
+
+    topic_spans = fetch_spans(
+        """
+        SELECT id, topic, normalized_topic, start_sec, end_sec, chunk_ids, context, sentiment, source_pass
+        FROM topic_spans
+        WHERE ytid = %s
+        ORDER BY start_sec NULLS LAST, id
+        """,
+        ['id', 'topic', 'normalized_topic', 'start_sec', 'end_sec', 'chunk_ids', 'context', 'sentiment', 'source_pass']
+    )
+
+    person_spans = fetch_spans(
+        """
+        SELECT id, person_name, normalized_name, start_sec, end_sec, chunk_ids, context, sentiment, polarity, source_pass
+        FROM person_spans
+        WHERE ytid = %s
+        ORDER BY start_sec NULLS LAST, id
+        """,
+        ['id', 'person_name', 'normalized_name', 'start_sec', 'end_sec', 'chunk_ids', 'context', 'sentiment', 'polarity', 'source_pass']
+    )
+
+    db.cursor.execute(
+        """
+        SELECT seg.chunk_id, si.item_type, si.value
+        FROM segment_items si
+        JOIN analyzed_segments seg ON seg.id = si.segment_id
+        WHERE seg.ytid = %s AND si.item_type IN ('quote', 'key_point')
+        ORDER BY si.item_type, si.item_order NULLS LAST, seg.chunk_id
+        LIMIT 120
+        """,
+        (ytid,)
+    )
+    quote_rows = db.cursor.fetchall()
+    quotes = []
+    key_points = []
+    for chunk_id, item_type, text in quote_rows:
+        payload = {'chunk_id': chunk_id, 'text': text}
+        if item_type == 'quote':
+            quotes.append(payload)
+        else:
+            key_points.append(payload)
+
+    db.cursor.execute(
+        """
+        SELECT config_id, job_id, status, total_tasks, completed_tasks, failed_tasks, created_at, completed_at
+        FROM analysis_results
+        WHERE ytid = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (ytid,)
+    )
+    run_row = db.cursor.fetchone()
+    analysis_run = None
+    if run_row:
+        analysis_run = {
+            'config_id': run_row[0],
+            'job_id': run_row[1],
+            'status': run_row[2],
+            'total_tasks': run_row[3],
+            'completed_tasks': run_row[4],
+            'failed_tasks': run_row[5],
+            'created_at': run_row[6].isoformat() if run_row[6] else None,
+            'completed_at': run_row[7].isoformat() if run_row[7] else None,
+        }
+
+    detail = {
+        'video': video_block,
+        'analysis': analysis_block,
+        'people': people,
+        'topics': topics,
+        'target_spans': target_spans,
+        'topic_spans': topic_spans,
+        'person_spans': person_spans,
+        'quotes': quotes,
+        'key_points': key_points,
+        'analysis_run': analysis_run,
+    }
     return jsonify(detail)
 
 
@@ -851,7 +1013,9 @@ def api_video_segments(ytid: str):
     db = get_db()
     db.cursor.execute(
         """
-        SELECT id, chunk_id, word_count, sentiment, summary, model
+        SELECT id, chunk_id, word_count, sentiment, summary, model,
+               start_sec, end_sec, batch_id, analysis_type, request_text,
+               start_offset, end_offset
         FROM analyzed_segments
         WHERE ytid = %s
         ORDER BY chunk_id ASC
@@ -867,7 +1031,14 @@ def api_video_segments(ytid: str):
             'word_count': r[2],
             'sentiment': r[3],
             'summary': r[4],
-            'model': r[5]
+            'model': r[5],
+            'start_sec': float(r[6]) if r[6] is not None else None,
+            'end_sec': float(r[7]) if r[7] is not None else None,
+            'batch_id': r[8],
+            'analysis_type': r[9],
+            'request_text': r[10],
+            'start_word_index': r[11],
+            'end_word_index': r[12],
         }
         for r in rows
     ]
@@ -1059,6 +1230,19 @@ app.register_blueprint(_drill_bp)
 def list_analysis_configs():
     db = get_db()
     configs = db.list_analysis_configs()
+    drill_counts = {}
+    try:
+        db.cursor.execute(
+            """
+            SELECT config_id, COUNT(*) AS drill_count
+            FROM drills
+            GROUP BY config_id
+            """
+        )
+        for config_id, count in db.cursor.fetchall():
+            drill_counts[config_id] = count
+    except Exception:
+        drill_counts = {}
 
     class Obj(dict):
         __getattr__ = dict.get
@@ -1069,7 +1253,10 @@ def list_analysis_configs():
         cfg_json = c.get('config_json') or {}
         drills = cfg_json.get('drills') or []
         summary = ""
-        if drills:
+        drill_count = drill_counts.get(c.get('id'), 0)
+        if drill_count:
+            summary = f"{drill_count} drill(s)"
+        elif drills:
             dep_count = sum(len(d.get('depends_on') or []) for d in drills)
             summary = f"{len(drills)} drills, {dep_count} deps"
         obj = Obj(c)
@@ -1631,3 +1818,26 @@ if __name__ == '__main__':
     print(f"Database: {DB_CONFIG['dbname']}@{DB_CONFIG['host']}")
     print("Open http://localhost:5000 in your browser")
     app.run(debug=True, host='0.0.0.0', port=5000)
+@app.route('/api/video/<ytid>/words')
+def api_video_words(ytid: str):
+    db = get_db()
+    db.cursor.execute(
+        """
+        SELECT idx, word, start_sec, end_sec
+        FROM words
+        WHERE ytid = %s
+        ORDER BY idx
+        """,
+        (ytid,)
+    )
+    rows = db.cursor.fetchall()
+    out = [
+        {
+            'idx': r[0],
+            'word': r[1],
+            'start_sec': float(r[2]) if r[2] is not None else None,
+            'end_sec': float(r[3]) if r[3] is not None else None,
+        }
+        for r in rows
+    ]
+    return jsonify(out)

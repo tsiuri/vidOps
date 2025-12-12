@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block nav_configs %}active{% endblock %}
 {% block content %}
 <style>
   .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
@@ -302,6 +303,39 @@
               <input type="text" class="ht-category" value="{{ ht.get('category', '') }}" placeholder="e.g., conflict">
             </div>
           </div>
+          <div class="form-group">
+            <label>Pattern / Keyword / Regex:</label>
+            <input type="text" class="ht-pattern" value="{{ ht.get('pattern', '') }}" placeholder="Text, keyword, or regex depending on type">
+          </div>
+          <div class="form-group" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
+            <label><input type="checkbox" class="ht-always" {% if ht.get('always') %}checked{% endif %}> Always run (ignore triggers)</label>
+            <div>
+              <label>Minimum hits:</label>
+              <input type="number" class="ht-min-hits" min="0" value="{{ ht.get('min_hits', 0) }}">
+            </div>
+            <div>
+              <label>Output shape:</label>
+              <input type="text" class="ht-output-shape" value="{{ ht.get('output_shape', '') }}" placeholder="e.g., span, presence">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Prompt / Instruction:</label>
+            <textarea class="ht-prompt" rows="3" placeholder="What should the LLM do when this target fires?">{{ ht.get('prompt', '') }}</textarea>
+          </div>
+          <div class="form-group" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:12px;">
+            <div>
+              <label>Model override:</label>
+              <input type="text" class="ht-model" value="{{ ht.get('model', '') }}" placeholder="Leave blank to use config default (current: chunk_analysis model)">
+            </div>
+            <div>
+              <label>Endpoint override:</label>
+              <input type="text" class="ht-endpoint" value="{{ ht.get('endpoint', '') }}" placeholder="e.g., http://localhost:11434">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Options (JSON):</label>
+            <textarea class="ht-options" rows="2" placeholder='{"temperature":0.2}'>{{ ht.get('options')|tojson if ht.get('options') is not none else '' }}</textarea>
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -357,6 +391,39 @@ function addHotTarget() {
           <label>Category:</label>
           <input type="text" class="ht-category" placeholder="e.g., conflict">
         </div>
+      </div>
+      <div class="form-group">
+        <label>Pattern / Keyword / Regex:</label>
+        <input type="text" class="ht-pattern" placeholder="Text, keyword, or regex depending on type">
+      </div>
+      <div class="form-group" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
+        <label><input type="checkbox" class="ht-always"> Always run (ignore triggers)</label>
+        <div>
+          <label>Minimum hits:</label>
+          <input type="number" class="ht-min-hits" min="0" value="0">
+        </div>
+        <div>
+          <label>Output shape:</label>
+          <input type="text" class="ht-output-shape" placeholder="e.g., span, presence">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Prompt / Instruction:</label>
+        <textarea class="ht-prompt" rows="3" placeholder="What should the LLM do when this target fires?"></textarea>
+      </div>
+      <div class="form-group" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:12px;">
+        <div>
+          <label>Model override:</label>
+          <input type="text" class="ht-model" placeholder="Leave blank to use config default (current: chunk_analysis model)">
+        </div>
+        <div>
+          <label>Endpoint override:</label>
+          <input type="text" class="ht-endpoint" placeholder="e.g., http://localhost:11434">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Options (JSON):</label>
+        <textarea class="ht-options" rows="2" placeholder='{"temperature":0.2}'></textarea>
       </div>
     </div>
   `;
@@ -466,13 +533,33 @@ function getHotTargets() {
     const name = el.querySelector('.ht-name').value;
     if (name) {
       const patternType = el.querySelector('.ht-pattern-type').value || 'keyword';
-      // Use the name as the pattern for keyword matching
+      const pattern = el.querySelector('.ht-pattern').value || name;
+      const prompt = el.querySelector('.ht-prompt').value;
+      const model = el.querySelector('.ht-model').value;
+      const endpoint = el.querySelector('.ht-endpoint').value;
+      const outputShape = el.querySelector('.ht-output-shape').value;
+      const always = el.querySelector('.ht-always').checked;
+      const minHits = parseInt(el.querySelector('.ht-min-hits').value || '0', 10);
+      let options = undefined;
+      const optionsText = el.querySelector('.ht-options').value.trim();
+      if (optionsText) {
+        try { options = JSON.parse(optionsText); } catch (e) { options = optionsText; }
+      }
       targets.push({
         id: name,
+        name: name,
         description: el.querySelector('.ht-description').value,
         pattern_type: patternType,
-        pattern: name,  // Use target name as the pattern
-        enabled: true
+        pattern: pattern,
+        category: el.querySelector('.ht-category').value,
+        enabled: true,
+        prompt: prompt,
+        model: model,
+        endpoint: endpoint,
+        options: options,
+        output_shape: outputShape || undefined,
+        always: always,
+        min_hits: isNaN(minHits) ? 0 : minHits
       });
     }
   });

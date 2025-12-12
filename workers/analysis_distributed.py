@@ -20,7 +20,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import logging
 from pathlib import Path
 
@@ -30,6 +30,7 @@ from models import AnalysisTask
 from dal import AnalysisResultsRepository
 from scripts.analysis.analyze_transcript import OllamaAnalyzer, AnalysisAggregator, VTTParser, TranscriptChunker
 from scripts.analysis.analysis_config import AnalysisConfig, HotTargetRule, Drill
+from scripts.analysis.drills import DrillExecutor
 from monitoring.exporter import start_metrics_server, stop_metrics_server
 from monitoring.metrics import (
     tasks_claimed_total,
@@ -48,6 +49,15 @@ from monitoring.metrics import (
     errors_total,
     last_error_timestamp,
 )
+
+
+def _to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 # Setup logging
 logging.basicConfig(
@@ -69,6 +79,11 @@ class JobContext:
     chunk_results: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     aggregated_result: Optional[Dict[str, Any]] = None
     metadata_template: Dict[str, Any] = field(default_factory=dict)
+    chunk_texts: Dict[int, str] = field(default_factory=dict)
+    chunk_metadata_map: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    drill_results_map: Dict[str, Any] = field(default_factory=dict)
+    drill_summary: List[Dict[str, Any]] = field(default_factory=list)
+    drill_spans: List[Dict[str, Any]] = field(default_factory=list)
 
     def is_ready_for_aggregation(self) -> bool:
         return len(self.chunk_results) >= self.total_chunks
@@ -142,10 +157,6 @@ class AnalysisWorker:
         self._last_uptime_update = datetime.now(timezone.utc)
         worker_uptime_seconds.labels(worker_id=self.worker_id).set(0)
 
-    # ------------------------------------------------------------------
-    # Context helpers
-    # ------------------------------------------------------------------
-
     def _get_job_context(self, task: AnalysisTask) -> JobContext:
         ctx = self.job_contexts.get(task.job_id)
         if ctx:
@@ -193,6 +204,38 @@ class AnalysisWorker:
             if not payload:
                 payload = {}
             config = AnalysisConfig.model_validate(payload)
+
+        # Attach drills managed via the dedicated drills table.
+        try:
+            drill_rows = self.db.list_drills_for_config(config_id)
+        except Exception as exc:
+            logger.warning("Failed to load drills for config %s: %s", config_id, exc)
+            drill_rows = []
+        if drill_rows:
+            normalized_drills: List[Drill] = []
+            for d in drill_rows:
+                try:
+                    drill_payload = {
+                        "id": d.get("id"),
+                        "name": d["name"],
+                        "description": d.get("description", ""),
+                        "prompt": d.get("prompt", ""),
+                        "scope": d.get("scope", "chunks"),
+                        "depends_on": d.get("depends_on") or [],
+                        "output_shape": d.get("output_shape", "span"),
+                        "always": bool(d.get("always")),
+                        "min_hits": int(d.get("min_hits") or 0),
+                        "keywords": d.get("keywords") or [],
+                        "match": d.get("match") or [],
+                        "category": d.get("category"),
+                        "cooldown": int(d.get("cooldown") or 0),
+                        "detail_pass": d.get("detail_pass") or {},
+                    }
+                    normalized_drills.append(Drill.model_validate(drill_payload))
+                except Exception as exc:
+                    logger.warning("Failed to normalize drill %s: %s", d.get("name"), exc)
+            if normalized_drills:
+                config.drills = normalized_drills
 
         return config
 
@@ -442,9 +485,13 @@ class AnalysisWorker:
         Real implementation of chunk_analysis using OllamaAnalyzer.
         """
         # Use the existing single-chunk helper
-        analysis = self.analyzer.analyze_chunk(chunk_text, int(task.chunk_id))
+        chunk_idx = int(task.chunk_id)
+        analysis = self.analyzer.analyze_chunk(chunk_text, chunk_idx)
+        self._ensure_chunk_defaults(analysis, chunk_text)
         # Attach bookkeeping / metadata
-        context.chunk_results[int(task.chunk_id)] = analysis
+        context.chunk_results[chunk_idx] = analysis
+        context.chunk_texts[chunk_idx] = chunk_text
+        context.chunk_metadata_map[chunk_idx] = metadata or {}
         return {
             "pass_id": "chunk_analysis",
             "status": "completed",
@@ -452,6 +499,22 @@ class AnalysisWorker:
             "metadata": metadata,
             "model_used": self.model_name,
         }
+
+    def _ensure_chunk_defaults(self, analysis: Dict[str, Any], chunk_text: str) -> None:
+        text = (chunk_text or "").strip()
+        if text and not analysis.get("summary"):
+            analysis["summary"] = text[:600]
+        if text and not analysis.get("key_points"):
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+            analysis["key_points"] = sentences[:3]
+        if text and not analysis.get("notable_quotes"):
+            quotes = re.findall(r'"([^"]{10,})"', text)
+            if quotes:
+                analysis["notable_quotes"] = quotes[:3]
+        if not analysis.get("topics"):
+            cats = analysis.get("categories")
+            if isinstance(cats, list) and cats:
+                analysis["topics"] = cats[:5]
 
     def _pass_sentiment(
         self,
@@ -548,11 +611,29 @@ class AnalysisWorker:
             }
 
         if pass_id == "drills":
-            drill_hits = self._run_drills(chunk_text, context.config)
+            if not context.is_ready_for_aggregation():
+                return {
+                    "pass_id": pass_id,
+                    "status": "waiting",
+                    "note": "Aggregation not ready.",
+                    "metadata": metadata,
+                }
+            drill_results, drill_summary, emitted_spans = self._run_drill_executor(context)
+            if context.aggregated_result is not None:
+                if drill_results:
+                    context.aggregated_result.setdefault("drill_results", drill_results)
+                if drill_summary:
+                    context.aggregated_result.setdefault("drill_summary", drill_summary)
+            context.drill_results_map = drill_results
+            context.drill_summary = drill_summary
+            formatted = self._normalize_drill_spans(emitted_spans, context)
+            if formatted:
+                context.drill_spans.extend(formatted)
             return {
                 "pass_id": pass_id,
                 "status": "completed",
-                "drill_hits": drill_hits,
+                "drill_results": drill_results,
+                "summary": drill_summary,
                 "metadata": metadata,
             }
 
@@ -595,8 +676,176 @@ class AnalysisWorker:
         metadata = dict(context.metadata_template)
         metadata.setdefault("analysis_generated_at", datetime.now(timezone.utc).isoformat())
         aggregated = aggregator.aggregate(ordered_chunks, metadata)
+        self._attach_summaries(aggregated, context.config)
         context.aggregated_result = aggregated
         return aggregated
+
+    def _run_drill_executor(self, context: JobContext) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+        drills = getattr(context.config, "drills", []) or []
+        if not drills:
+            return {}, [], {}
+
+        def drill_to_dict(drill: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(drill, Drill):
+                if hasattr(drill, "model_dump"):
+                    return drill.model_dump()
+                if hasattr(drill, "dict"):
+                    return drill.dict()
+            elif isinstance(drill, dict):
+                return drill
+            else:
+                try:
+                    return {k: v for k, v in vars(drill).items() if not k.startswith("_")}
+                except Exception:
+                    return None
+            return None
+
+        specs: List[Dict[str, Any]] = []
+        for raw in drills:
+            spec = drill_to_dict(raw)
+            if spec:
+                specs.append(spec)
+
+        if not specs:
+            return {}, [], {}
+
+        chunk_entries: List[Dict[str, Any]] = []
+        chunk_text_map: Dict[int, str] = {}
+        for chunk_id in sorted(context.chunk_results):
+            text = context.chunk_texts.get(chunk_id, "")
+            chunk_text_map[chunk_id] = text
+            analysis = context.chunk_results.get(chunk_id) or {}
+            categories = analysis.get("categories") or analysis.get("analysis", {}).get("categories") or []
+            topics = analysis.get("topics") or analysis.get("analysis", {}).get("topics") or []
+            meta = context.chunk_metadata_map.get(chunk_id) or {}
+            chunk_entries.append(
+                {
+                    "chunk_id": chunk_id,
+                    "text": text,
+                    "categories": categories,
+                    "topics": topics,
+                    "start_sec": _to_float(meta.get("start_sec")),
+                    "end_sec": _to_float(meta.get("end_sec")),
+                }
+            )
+
+        if not chunk_entries:
+            return {}, [], {}
+
+        executor = DrillExecutor(
+            drills=specs,
+            base_model=self.model_name,
+            base_url=self.model_url,
+            options=getattr(self.analyzer, "options", {}) or {},
+            log_mode="quiet",
+            output_shapes=getattr(context.config, "output_shapes", {}) or {},
+        )
+        results, summary, emitted = executor.run(chunk_entries, chunk_texts=chunk_text_map)
+        return results or {}, summary or [], emitted or {}
+
+    def _normalize_drill_spans(
+        self,
+        emitted_spans: Dict[str, List[Dict[str, Any]]],
+        context: JobContext,
+    ) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        if not emitted_spans:
+            return normalized
+        for drill_name, spans in emitted_spans.items():
+            for span in spans or []:
+                chunk_id = span.get("chunk_id")
+                meta = context.chunk_metadata_map.get(chunk_id) or {}
+                start_sec = _to_float(span.get("start_sec"))
+                end_sec = _to_float(span.get("end_sec"))
+                if start_sec is None:
+                    start_sec = _to_float(meta.get("start_sec"))
+                if end_sec is None:
+                    end_sec = _to_float(meta.get("end_sec"))
+                normalized.append(
+                    {
+                        "description": span.get("label") or span.get("description") or drill_name,
+                        "context": span.get("context") or "",
+                        "chunk_ids": [chunk_id] if chunk_id is not None else [],
+                        "start_sec": start_sec,
+                        "end_sec": end_sec,
+                        "target_name": drill_name,
+                        "parties": span.get("parties"),
+                        "sentiment": span.get("sentiment"),
+                        "polarity": span.get("polarity"),
+                    }
+                )
+        return normalized
+
+    def _attach_summaries(self, aggregated: Dict[str, Any], config: AnalysisConfig) -> None:
+        """
+        Generate TLDR/outline/speaker summaries for new-style jobs so the web UI
+        can render the same rich cards as legacy runs.
+        """
+        if aggregated.get("summaries"):
+            return
+
+        backend = getattr(config, "backend_params", {}) or {}
+        if backend.get("skip_summaries"):
+            return
+
+        merged: Dict[str, Any] = {}
+        try:
+            primary = self.analyzer.summarize(aggregated)
+            if primary:
+                merged.update(primary)
+        except Exception as exc:
+            logger.warning("Failed to generate aggregate summaries: %s", exc)
+
+        try:
+            speaker_bits = self.analyzer.summarize_speaker(aggregated)
+            if speaker_bits:
+                merged.setdefault("speaker_overview", speaker_bits.get("speaker_overview", ""))
+                merged.setdefault("personal_themes", speaker_bits.get("personal_themes", []))
+                if speaker_bits.get("noteworthy_statements"):
+                    merged.setdefault("noteworthy_statements", [])
+                    merged["noteworthy_statements"].extend(speaker_bits["noteworthy_statements"])
+                if speaker_bits.get("personal_conflicts"):
+                    merged.setdefault("personal_conflicts", [])
+                    merged["personal_conflicts"].extend(speaker_bits["personal_conflicts"])
+        except Exception as exc:
+            logger.warning("Failed to generate speaker summaries: %s", exc)
+
+        if not merged:
+            return
+
+        alias = backend.get("speaker_alias") or backend.get("speaker_name") or "the speaker"
+        for key in ("tldr_one_sentence", "summary_paragraph", "political_overview", "controversies", "speaker_overview"):
+            if merged.get(key):
+                merged[key] = self._rewrite_third_person(str(merged[key]), alias)
+
+        aggregated["summaries"] = {**aggregated.get("summaries", {}), **merged}
+
+    def _rewrite_third_person(self, text: str, alias: str) -> str:
+        """Lightweight helper mirrored from TranscriptAnalysisPipeline."""
+        if not isinstance(text, str) or not text:
+            return text
+        parts = re.split(r'(".*?")', text, flags=re.DOTALL)
+        rewritten: List[str] = []
+        for part in parts:
+            if len(part) >= 2 and part.startswith('"') and part.endswith('"'):
+                rewritten.append(part)
+                continue
+            updated = part
+            replacements = [
+                (r"\byou\s+are\b", f"{alias} is"),
+                (r"\byou\s+were\b", f"{alias} was"),
+                (r"\byou're\b", f"{alias} is"),
+                (r"\byoure\b", f"{alias} is"),
+                (r"\byour\b", f"{alias}'s"),
+                (r"\byours\b", f"{alias}'s"),
+                (r"\byourself\b", f"{alias}"),
+                (r"\byourselves\b", f"{alias}"),
+                (r"\byou\b", alias),
+            ]
+            for pattern, replacement in replacements:
+                updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE)
+            rewritten.append(updated)
+        return "".join(rewritten)
 
     def _detect_hot_targets(self, chunk_text: str, config: AnalysisConfig) -> List[Dict[str, Any]]:
         detections: List[Dict[str, Any]] = []
@@ -633,35 +882,6 @@ class AnalysisWorker:
                 )
         return detections
 
-    def _run_drills(self, chunk_text: str, config: AnalysisConfig) -> List[Dict[str, Any]]:
-        hits: List[Dict[str, Any]] = []
-        if not config.drills:
-            return hits
-        lower_text = chunk_text.lower()
-        for drill in config.drills:
-            if not isinstance(drill, Drill):
-                continue
-            triggered = False
-            keywords = drill.keywords or []
-            for kw in keywords:
-                if kw.lower() in lower_text:
-                    triggered = True
-                    break
-            if drill.match and not triggered:
-                for cat in drill.match:
-                    if cat.lower() in lower_text:
-                        triggered = True
-                        break
-            if triggered:
-                hits.append(
-                    {
-                        "drill": drill.name,
-                        "scope": drill.scope,
-                        "excerpt": self._excerpt_for_matches(chunk_text, keywords[0] if keywords else ""),
-                    }
-                )
-        return hits
-
     def _store_full_analysis(self, context: JobContext, aggregated: Dict[str, Any]) -> bool:
         if not hasattr(self.db, "store_full_analysis_with_chunks"):
             return False
@@ -679,6 +899,17 @@ class AnalysisWorker:
                 diarized=context.config.diarized,
                 transcription_machine=self.machine_alias,
             )
+            if context.drill_spans:
+                self.db.store_target_spans(
+                    context.ytid,
+                    context.drill_spans,
+                    source_pass="drill",
+                    pass_tier="drill",
+                    analysis_type=context.config.analysis_type,
+                    batch_id=0,
+                    diarized=context.config.diarized,
+                    transcription_machine=self.machine_alias,
+                )
             return True
         except Exception as exc:
             logger.warning("Failed to store full analysis for job %s: %s", context.job_id, exc)

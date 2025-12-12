@@ -1,11 +1,11 @@
 # Overlord Refactor — Source of Truth
 
-Updated: 2025-12-02 (Legacy Bridges for Voice/Diarization, Stitch/Analyze, Dates/Extra-Utils, Subtitles)
+Updated: 2025-12-11 (GenericWorker + DistributedAnalysisService integration)
 
 This is the canonical status and working instructions for the refactor to the database-first, remote-worker Overlord system. Read this before touching any other doc. All superseded plans/logs are in `docs/REFACTOR_ARCHITECTURE/archived/`. The latest execution log is `docs/REFACTOR_ARCHITECTURE/FIRST_VIDEO_COMPLETE.md`. Latest changelog: `logs/changelog/2025-11-30_claude_overlord.txt`.
 
 ## Current State (based on most recent docs and code)
-- **Jobs/workers:** ✅ COMPLETE. Single `jobs` queue plus `workers` registry with `job_type` discriminators. `JobRepository` defaults to `jobs`, no transcribe_jobs references. Migration 002 applied. All service factories use generic JobRepository(). Forward-only, no legacy compatibility. Default `vo worker start` now runs a generic worker that claims any job type and resets to the starter state after each completion.
+- **Jobs/workers:** ✅ COMPLETE. Single `jobs` queue plus `workers` registry with `job_type` discriminators. `JobRepository` defaults to `jobs`, no transcribe_jobs references. Migration 002 applied. All service factories use generic JobRepository(). Forward-only, no legacy compatibility. Default `vo worker start general` runs a GenericWorker that claims any job type and resets to the starter state after each completion. GenericWorker now supports `job_type="analysis-distributed"` via DistributedAnalysisService, enabling unified job handling (download, transcription, analysis-distributed, etc.) in a single worker process.
 - **Download:** ✅ OPERATIONAL. `vo worker start download` successfully fetches videos, registers in database, and registers assets. Downloads to `/mnt/mainroot/mnt/13tb_sas/vidops/storage/raw/`. Worker registration uses `workers` table. Job results stored in jobs.result JSONB.
   - yt-dlp defaults are now configurable in `config.yaml` (`download.*` block) and applied at enqueue time. Defaults mirror legacy `pull.sh` (audio-only opus, metadata embed) with archive/cookies/pacing/auto-subs/no-overwrites knobs. Legacy `pull.sh` is deprecated for queued downloads; all other legacy scripts remain bridged via workers.
   - Config path resolution prefers `VIDOPS_PROJECT_ROOT` or the current working directory (falling back to the config location), so per-project cache dirs work (e.g., `pull/` under the project root/CWD).
@@ -22,6 +22,7 @@ This is the canonical status and working instructions for the refactor to the da
 - **Orchestration:** ✅ AUTOMATED. Overlord polls the generic queue to chain completed transcription jobs into analysis jobs, releases stale leases after ~2h, and marks heartbeat-missing workers as STALE.
 - **Monitoring CLI:** ✅ UPDATED. `vo_cli.py status workers` and `status jobs` hit the unified tables, expose heartbeat ages/stale counts, and support per-`job_type` breakdowns.
 - **Clips/Stitch CLI:** ✅ UPDATED. `vo_cli.py clips hits/cut` replaces the legacy workspace flow (DAL-backed phrase search + manifest-driven enqueue). `clips cut` is manifest-level (one job per TSV), defaults to `--mode net` (legacy cut-net), supports `--mode local`, and outputs under `generated/hits/<run_name>/`. `vo_cli.py stitch enqueue` handles manifest-based concatenation jobs.
+- **Distributed analysis + UI:** ✅ REFRESHED. `vo analyze enqueue-distributed` now produces an `analysis_tasks` entry plus a `jobs` row that `DistributedAnalysisService` claims, so `vo worker start general` handles download, transcription, analysis-distributed, diarization, stitching, etc. `workers/analysis_distributed.py` hydrates drills from the `drills` table, runs them via `DrillExecutor`, and stores spans through `store_target_spans` while running hot targets as their own pass. The analysis web UI (`/video/<ytid>`, `/analysis-configs`, `/analysis-configs/<id>` and the drill/hot-target editors) now surfaces TLDR + summary blocks, quotes, spans with jump links, chunk tables with filters/“Show full” modals, and “See config” links, and it counts drills from the DB. `web/web_app.py` exposes `/api/video/<ytid>/words` alongside enriched `/detail` + `/segments` payloads (start/end seconds + word indices) that back those pages.
 - **Tests:** ⚠️ PARTIAL. DAL coverage includes JobRepository/WorkerRepository and FilesystemCache (see `tests/dal/`). The smoke harness (`tests/smoke/`, documented in `docs/SMOKE_TESTS.md`) covers transcription, voice+analysis (with `VIDOPS_FAKE_VOICE`), diarization (`VIDOPS_FAKE_DIARIZATION`), subtitles, and stitch→analyze bridging (`PYTHONPATH=. .venv/bin/pytest tests/smoke -m smoke`). Broader CI-friendly storage + Overlord flows still pending.
 
 ## Decisions and Rules
@@ -96,6 +97,44 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - Storage interface documentation: `docs/STORAGE_INTERFACE.md` - read this before implementing storage access in any service (now documents clips/analysis/stitch directories).
 - Overlord monitoring guide: `docs/OVERLORD_MONITORING.md` covers responsibilities, thresholds, CLI commands, and troubleshooting flows.
 - Use this file as the single reference for priorities and status. If you need historical context, consult files under `archived/`; do not treat them as requirements.
+
+## Recent Changes (2025-12-11)
+
+**GenericWorker + DistributedAnalysisService Integration (Claude):**
+- Created `DistributedAnalysisService` that bridges GenericWorker (jobs table) to the distributed analysis system (analysis_tasks table).
+- When `vo analyze enqueue-distributed` is called, it now creates TWO job entries: one in `analysis_tasks` for the distributed system, and one in `jobs` table with `job_type="analysis-distributed"` for GenericWorker.
+- GenericWorker's service factories now include `"analysis-distributed": get_distributed_analysis_service`, allowing a single `vo worker start general` to handle analysis-distributed jobs alongside download, transcription, and other job types.
+- `DistributedAnalysisService.process_job()` claims and executes all analysis_tasks for a given job, aggregates results, and marks the main job complete. No architectural changes to the distributed analysis system itself; the service acts as a bridge.
+- New integration test suite (`tests/workers/test_generic_worker_distributed_analysis.py`) verifies GenericWorker can claim and process analysis-distributed jobs.
+- Benefits: Single worker process can now handle all job types; users can `vo worker start general` instead of managing multiple specialized workers.
+
+**Files Created:**
+- `vidops/services/distributed_analysis.py`
+- `tests/workers/test_generic_worker_distributed_analysis.py`
+
+**Files Modified:**
+- `vidops/services/__init__.py` (added `get_distributed_analysis_service()` factory)
+- `vidops/workers/general.py` (added `"analysis-distributed"` service factory)
+- `vidops/cli/analysis.py` (modified `enqueue-distributed` to create jobs table entry)
+
+## Recent Changes (2025-12-11 — Analysis UI & Drill Integration)
+
+**Web UI + API (Codex):**
+- Navigation (`web/templates/base.html`, `web/templates/home.html`) includes an “Analysis Configs” quick-link. `/analysis-configs` shows drill counts pulled directly from the `drills` table rather than `config_json`.
+- `/video/<ytid>` (`web/templates/video_detail.html`) now renders TLDR/summary text, quote & key-point grids, people/topic chips, span cards (conflict/topic/person) with jump-to-YouTube anchors, and a chunk summary table with search/sentiment filters plus “Show full” modals. Each view links to the active config (“See config ↗”) and exposes truncated text indicators.
+- Config detail + editor templates (`analysis_config_detail.html`, `analysis_config_editor.html`, `chunk_analysis_editor.html`, `subchunks_editor.html`, `categories_pass_editor.html`, `speaker_filter_editor.html`, `drill_editor.html`) now surface all editable fields, including drill visibility/dependencies, scopes, output shapes, prompt text, and hot target model/endpoint/options overrides. “Model override” inputs now describe the default inherited model in their help text.
+- `web/web_app.py` exposes `/api/video/<ytid>/words` (idx, text, start/end sec) and augments `/api/video/<ytid>/segments` with start/end offsets + word indices so the UI can reconstruct longer chunks without storing duplicate text.
+
+**Workers + Drills (Codex):**
+- `workers/analysis_distributed.py` loads drill definitions from the DB, feeds them into `scripts.analysis.drills.DrillExecutor`, and stores emitted spans via `store_target_spans`. Drill execution is independent of the hot target pass but shares the aggregated metadata so `/video/<ytid>` can render context, parties, and timings.
+- Hot target editing now lives in the config detail page, with pattern/category matching, always-run flags, min hits, prompt text, model/endpoint overrides, and JSON options exposed so operators do not need to edit raw config JSON.
+
+**Files Modified (primary touchpoints):**
+- `web/templates/base.html`, `home.html`, `analysis_configs.html`, `analysis_config_detail.html`, `analysis_config_editor.html`, `chunk_analysis_editor.html`, `subchunks_editor.html`, `categories_pass_editor.html`, `speaker_filter_editor.html`, `drill_editor.html`, `video_detail.html`
+- `web/web_app.py`, `scripts/web_app/analyses_view.py`
+- `workers/analysis_distributed.py`, `workers/general.py`, `services/__init__.py`
+
+**Files Created:** *(none)*
 
 ## Recent Changes (2025-12-02)
 

@@ -35,6 +35,18 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
   - `jobs`
 - `worker` (`cli/worker.py`)
   - `start` (start a worker for a given role/model/caps)
+    - `general` — GenericWorker: claims and processes any job type (download, transcription, clipping, analysis-distributed, diarization, stitching, etc.). Returns to IDLE after each job. Recommended for unified worker deployments.
+    - `download` — DownloadWorker: download jobs only
+    - `transcription` — TranscriptionWorker: transcription jobs only
+    - `clipping` — ClippingWorker: clipping jobs only
+    - `analysis` — AnalysisWorker: legacy analysis jobs only
+    - `analysis-distributed` — DistributedAnalysisWorker: distributed analysis tasks (fine-grained, model-aware)
+    - `diarization` — DiarizeWorker: diarization jobs only
+    - `stitching` — StitchWorker: stitching jobs only
+    - `subtitle` — SubtitleWorker: subtitle jobs (dl_subs, convert_captions)
+    - `voice` — VoiceFilterWorker: voice filter jobs only
+    - `dates` — DatesWorker: dates helper jobs only
+    - `extra_utils` — ExtraUtilsWorker: extra utility jobs only
 - `download` (`cli/download.py`)
   - `enqueue` (enqueue download job)
 - `transcribe` (`cli/transcribe.py`)
@@ -55,8 +67,8 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - `convert_captions` (`cli/convert_captions.py`)
   - `enqueue` (caption conversion)
 - `analysis` (`cli/analysis.py`)
-  - `enqueue` (legacy single analysis)
-  - `enqueue-distributed` (distributed analysis job)
+  - `enqueue` (legacy single analysis job; creates job_type="analysis")
+  - `enqueue-distributed` (distributed analysis; creates two job entries: one in analysis_tasks table + one in jobs table with job_type="analysis-distributed" for GenericWorker to claim and execute)
 - `diarize` (`cli/diarization.py`)
   - `enqueue` (ytid-based diarization)
   - `enqueue-file` (ad-hoc file diarization)
