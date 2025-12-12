@@ -106,15 +106,16 @@
                     Download Clip
                 </a>
                 {% else %}
-                <div class="alert alert-warning small mb-0">
-                    <strong>Clip file not found.</strong> Worker may still be processing.
+                <div class="alert {% if job_statuses %}alert-info{% else %}alert-danger{% endif %} small mb-0">
+                    <strong>Clip file not found.</strong>
                     {% if job_statuses %}
+                    Worker is processing this clip.
                     <div class="mt-2">
-                        <small><strong>Job Status:</strong></small>
+                        <small><strong>Processing Jobs:</strong></small>
                         <ul class="list-unstyled small mb-0">
                             {% for job in job_statuses %}
                             <li>
-                                <span class="badge {% if job.status == 'COMPLETED' %}bg-success{% elif job.status == 'RUNNING' or job.status == 'CLAIMED' %}bg-info{% elif job.status == 'FAILED' %}bg-danger{% else %}bg-warning{% endif %}">{{ job.status }}</span>
+                                <span class="badge {% if job.status == 'COMPLETED' %}bg-success{% elif job.status == 'RUNNING' %}bg-primary{% elif job.status == 'CLAIMED' %}bg-info{% elif job.status == 'FAILED' %}bg-danger{% else %}bg-warning{% endif %}">{{ job.status }}</span>
                                 <strong>{{ job.job_type }}</strong>
                                 ({{ job.job_id }})
                                 {% if job.claimed_by %}
@@ -124,6 +125,8 @@
                             {% endfor %}
                         </ul>
                     </div>
+                    {% else %}
+                    <br>No active jobs found for this session. Check if processing completed or if an error occurred.
                     {% endif %}
                 </div>
                 {% endif %}

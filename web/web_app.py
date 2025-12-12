@@ -120,18 +120,40 @@ def _create_quickclip_session(**kwargs):
         return service.create_quickclip(**kwargs)
 
 
-def _get_job_statuses_for_ytid(ytid: str):
+def _get_job_statuses_for_ytid(ytid: str, session_created_at=None):
     """
     Query jobs table to get current status of processing jobs for a video.
-    Returns a list of jobs related to download, transcription, diarization, clipping.
+    Prioritizes active jobs (PENDING, CLAIMED, RUNNING) and filters to recent jobs.
+
+    Args:
+        ytid: Video ID
+        session_created_at: Optional session creation time to filter jobs created after this time
+
+    Returns:
+        List of jobs, with active jobs first, then recent completed jobs.
     """
     try:
         from db import get_connection
+        from datetime import datetime, timedelta, UTC
+
         job_statuses = []
         with get_connection() as conn:
             with conn.cursor() as cur:
+                # First, get active jobs (PENDING, CLAIMED, RUNNING)
+                params = [ytid, 'COMPLETED']
+                where_clause = """
+                    WHERE ytid = %s
+                    AND job_type IN ('download', 'transcription', 'diarization', 'clips', 'analysis-distributed')
+                    AND status != %s
+                """
+
+                # If session_created_at provided, filter to jobs created after session
+                if session_created_at:
+                    where_clause += " AND created_at >= %s"
+                    params.append(session_created_at)
+
                 cur.execute(
-                    """
+                    f"""
                     SELECT
                         job_id,
                         job_type,
@@ -141,12 +163,18 @@ def _get_job_statuses_for_ytid(ytid: str):
                         updated_at,
                         started_at
                     FROM jobs
-                    WHERE ytid = %s
-                    AND job_type IN ('download', 'transcription', 'diarization', 'clips', 'analysis-distributed')
-                    ORDER BY created_at DESC
+                    {where_clause}
+                    ORDER BY
+                        CASE status
+                            WHEN 'RUNNING' THEN 1
+                            WHEN 'CLAIMED' THEN 2
+                            WHEN 'PENDING' THEN 3
+                            ELSE 4
+                        END,
+                        updated_at DESC
                     LIMIT 20
                     """,
-                    (ytid,)
+                    tuple(params)
                 )
                 rows = cur.fetchall()
                 for row in rows:
@@ -1992,7 +2020,9 @@ def quickclip_session_detail(session_id: str):
             }
 
     # Query job status for this video (for progress tracking)
-    job_statuses = _get_job_statuses_for_ytid(session['ytid'])
+    # Pass session creation time to filter to relevant jobs only
+    session_created_at = session.get('created_at')
+    job_statuses = _get_job_statuses_for_ytid(session['ytid'], session_created_at=session_created_at)
 
     return render_template('session.html', session=session, clips=clips, video=video, full_video=full_video_asset, job_statuses=job_statuses)
 
