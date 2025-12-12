@@ -29,7 +29,6 @@ class DownloadService:
         video_repo: VideoRepository,
         job_repo: JobRepository,
         fs_cache: FilesystemCache,
-        ytdlp_overrides: dict[str, Any] | None = None,
     ):
         self.video_repo = video_repo
         self.job_repo = job_repo
@@ -42,6 +41,7 @@ class DownloadService:
         priority: int = 50,
         cookies_browser: str | None = None,
         upload_type: str | None = None,
+        ytdlp_overrides: dict[str, Any] | None = None,
     ) -> Job:
         """
         Enqueues a video download job.
@@ -206,6 +206,7 @@ class DownloadService:
             use_archive = bool(ytdlp_cfg.get("use_archive", False))
             archive_path = ytdlp_cfg.get("archive_path") or ""
             no_overwrites = bool(ytdlp_cfg.get("no_overwrites", False))
+            merge_output_format = ytdlp_cfg.get("merge_output_format")
             cookies_browser = ytdlp_cfg.get("cookies_browser") or None
             sleep_requests = int(ytdlp_cfg.get("sleep_requests", 0) or 0)
             sleep_interval = int(ytdlp_cfg.get("sleep_interval", 0) or 0)
@@ -249,6 +250,8 @@ class DownloadService:
                 ydl_opts["max_sleep_interval"] = sleep_max_interval
             if embed_metadata:
                 ydl_opts["embedmetadata"] = True
+            if merge_output_format:
+                ydl_opts["merge_output_format"] = merge_output_format
             if audio_only:
                 ydl_opts["format"] = fmt or "bestaudio/best"
                 ydl_opts["postprocessors"] = [
