@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 
 from dal import FilesystemCache, JobRepository, TranscriptRepository, VideoRepository
 from models import Job, JobStatus
+from configuration import load_config
 from .reference_builder import ReferenceBuilder
 from .memory_monitor import MemoryMonitor
 
@@ -35,6 +36,10 @@ class DiarizationService:
         self.job_repo = job_repo
         self.transcript_repo = transcript_repo
         self.fs_cache = fs_cache
+
+        # Load diarization defaults from config
+        self.config = load_config()
+
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._load_memory_monitor_config()
 
@@ -76,56 +81,82 @@ class DiarizationService:
         self,
         ytid: str,
         transcript_kind: str,
-        diarization_model: str,
+        diarization_model: Optional[str] = None,
         priority: int = 50,
         reference_name: Optional[str] = None,
-        match_threshold: float = 0.75,
-        match_margin: float = 0.01,
-        match_force_best: bool = True,
+        match_threshold: Optional[float] = None,
+        match_margin: Optional[float] = None,
+        match_force_best: Optional[bool] = None,
         words_path: Optional[str] = None,
-        device: str = "auto",
-        chunk_seconds: float = 15.0,
-        overlap_seconds: float = 2.5,
-        similarity_threshold: float = 0.6,
-        gap_threshold: float = 0.15,
+        device: Optional[str] = None,
+        chunk_seconds: Optional[float] = None,
+        overlap_seconds: Optional[float] = None,
+        similarity_threshold: Optional[float] = None,
+        gap_threshold: Optional[float] = None,
         output_dir: Optional[str] = None,
         build_reference: bool = False,
+        force_enqueue: bool = False,
     ) -> Job:
         """
         Enqueues a single diarization job.
 
+        All parameters (except ytid, transcript_kind, and priority) default to values
+        from config.yaml (diarization section) if not explicitly provided.
+
         If transcript_kind is "best", automatically selects the highest quality
         transcript available for this ytid.
+
+        Args:
+            force_enqueue: If True, skip validation checks (for pipeline orchestration).
+                          Useful when enqueueing jobs before dependencies are complete.
         """
-        video = self.video_repo.get(ytid)
-        if not video:
-            raise ValueError(f"Video with ytid '{ytid}' not found.")
+        # Apply config defaults for any None parameters
+        diarization_model = diarization_model or self.config.diarization.model
+        device = device or self.config.diarization.device
+        chunk_seconds = chunk_seconds or self.config.diarization.chunk_seconds
+        overlap_seconds = overlap_seconds or self.config.diarization.overlap_seconds
+        similarity_threshold = similarity_threshold or self.config.diarization.similarity_threshold
+        gap_threshold = gap_threshold or self.config.diarization.gap_threshold
+        match_threshold = match_threshold or self.config.diarization.match_threshold
+        match_margin = match_margin or self.config.diarization.match_margin
+        match_force_best = match_force_best if match_force_best is not None else self.config.diarization.match_force_best
+        if not force_enqueue:
+            video = self.video_repo.get(ytid)
+            if not video:
+                raise ValueError(f"Video with ytid '{ytid}' not found.")
 
-        # Handle "best" transcript selection
-        if transcript_kind.lower() == "best":
-            transcript = self.transcript_repo.get_best_available(ytid)
-            if not transcript:
-                raise ValueError(f"No transcripts available for video '{ytid}'.")
-            logger.info(f"Selected best available transcript for {ytid}: {transcript.kind}")
-            transcript_kind = transcript.kind
+            # Handle "best" transcript selection
+            if transcript_kind.lower() == "best":
+                transcript = self.transcript_repo.get_best_available(ytid)
+                if not transcript:
+                    raise ValueError(f"No transcripts available for video '{ytid}'.")
+                logger.info(f"Selected best available transcript for {ytid}: {transcript.kind}")
+                transcript_kind = transcript.kind
+            else:
+                transcript = self.transcript_repo.get(ytid, transcript_kind)
+                if not transcript or not transcript.path:
+                    raise ValueError(f"Transcript of kind '{transcript_kind}' not found for video '{ytid}'.")
+
+            media_asset = self._resolve_media_asset_path(ytid)
+            words_rel = self._normalize_relative(words_path or transcript.path, allow_dir=False)
+            ref_name = reference_name or ytid
+            ref_rel = self._normalize_relative(f"data/references/{ref_name}", allow_dir=True)
+            output_rel = self._normalize_output_dir(output_dir, ytid)
+
+            reference_dir = self._ensure_reference_at_enqueue(
+                ytid=ytid,
+                media_rel=media_asset,
+                words_rel=words_rel,
+                reference_rel=ref_rel,
+                build_reference=build_reference,
+            )
         else:
-            transcript = self.transcript_repo.get(ytid, transcript_kind)
-            if not transcript or not transcript.path:
-                raise ValueError(f"Transcript of kind '{transcript_kind}' not found for video '{ytid}'.")
-
-        media_asset = self._resolve_media_asset_path(ytid)
-        words_rel = self._normalize_relative(words_path or transcript.path, allow_dir=False)
-        ref_name = reference_name or ytid
-        ref_rel = self._normalize_relative(f"data/references/{ref_name}", allow_dir=True)
-        output_rel = self._normalize_output_dir(output_dir, ytid)
-
-        reference_dir = self._ensure_reference_at_enqueue(
-            ytid=ytid,
-            media_rel=media_asset,
-            words_rel=words_rel,
-            reference_rel=ref_rel,
-            build_reference=build_reference,
-        )
+            # For forced enqueue (pipeline mode), skip reference setup and use defaults
+            media_asset = f"data/media/{ytid}/{ytid}.*"  # Wildcard - will be resolved at runtime
+            words_rel = self._normalize_relative(words_path or f"data/transcripts/{ytid}/words_{transcript_kind}.jsonl", allow_dir=False)
+            ref_rel = self._normalize_relative(f"data/references/{reference_name or ytid}", allow_dir=True)
+            output_rel = self._normalize_output_dir(output_dir, ytid)
+            reference_dir = None  # Will be created during processing if needed
 
         config = {
             "ytid": ytid,

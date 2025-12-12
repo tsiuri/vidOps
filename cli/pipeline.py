@@ -10,7 +10,8 @@ from services import (
     get_transcription_service,
     get_diarization_service,
 )
-from dal import JobRepository
+from dal import JobRepository, VideoRepository
+from models import Video
 from configuration import load_config
 from db import get_connection
 
@@ -81,6 +82,7 @@ def enqueue_pipeline(
     """
     config = load_config()
     job_repo = JobRepository()
+    video_repo = VideoRepository()
 
     # Generate unique pipeline ID
     pipeline_id = f"pipe_{uuid.uuid4().hex[:8]}"
@@ -95,6 +97,15 @@ def enqueue_pipeline(
         url = f"https://youtube.com/watch?v={ytid}"
 
     click.echo(f"Enqueuing pipeline {pipeline_id} for {ytid}")
+
+    # Create placeholder video record so dependent stages can reference it
+    # The download job will fill in full metadata when it completes
+    placeholder_video = Video(
+        ytid=ytid,
+        url=url,
+        title=f"[Pending] {ytid}"  # Placeholder title, will be updated by download job
+    )
+    video_repo.upsert(placeholder_video)
 
     # Track created jobs
     jobs_created = []
@@ -158,6 +169,7 @@ def enqueue_pipeline(
             transcript_kind=transcript_kind,
             device=diarization_device,  # None = use config default
             priority=priority,
+            force_enqueue=True,  # Skip validation - transcript will exist when job runs
         )
 
         # Add pipeline metadata and dependency
@@ -179,55 +191,9 @@ def enqueue_pipeline(
 
     # Stage 4: Analysis
     if not skip_analysis:
-        # Use CLI analysis command's enqueue logic
-        from cli.analysis import enqueue_distributed_analysis
-        from click.testing import CliRunner
-
-        # Create analysis job via enqueue-distributed
-        # This creates both analysis_tasks and jobs entry
-        runner = CliRunner()
-        result = runner.invoke(
-            enqueue_distributed_analysis,
-            [ytid, str(analysis_config_id), "--priority", str(priority)],
-            catch_exceptions=False,
-            standalone_mode=False,
-        )
-
-        # Get the created job (last PENDING analysis-distributed job for this ytid)
-        time.sleep(0.1)  # Brief delay to ensure job is committed
-
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT job_id FROM jobs
-                    WHERE ytid = %s AND job_type = 'analysis-distributed'
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (ytid,),
-                )
-                row = cur.fetchone()
-                analysis_job_id = row[0] if row else None
-
-        if analysis_job_id:
-            # Add pipeline metadata and dependency
-            analysis_job = job_repo.get(analysis_job_id)
-            if analysis_job:
-                analysis_job.config["pipeline_id"] = pipeline_id
-                analysis_job.config["pipeline_stage"] = "analysis-distributed"
-                if prev_job_id:
-                    analysis_job.config["depends_on"] = prev_job_id
-                job_repo.update_config(analysis_job_id, analysis_job.config)
-
-                jobs_created.append(("analysis-distributed", analysis_job_id))
-
-                dep_msg = (
-                    f" (depends on {prev_job_id[:8]}...)" if prev_job_id else ""
-                )
-                click.echo(
-                    f"  ✓ Analysis job created: {analysis_job_id}{dep_msg}"
-                )
+        # Note: Analysis job creation is deferred until transcription/diarization complete
+        # This allows us to properly chunk the transcript that may not exist yet
+        click.echo(f"  ℹ Analysis will be enqueued after diarization completes (manual: vo analyze enqueue {ytid} --config-id {analysis_config_id})")
 
     click.echo(
         f"\n✓ Pipeline {pipeline_id} enqueued with {len(jobs_created)} stages"
