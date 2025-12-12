@@ -3,7 +3,7 @@
 Utility script to launch the VidOps storage broker server.
 """
 
-from vidops.broker.server import run
+from broker.server import run
 
 
 def main():

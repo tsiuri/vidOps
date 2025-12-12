@@ -19,8 +19,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from vidops.dal.jobs import JobRepository
-from vidops.models import JobStatus
+from dal.jobs import JobRepository
+from models import JobStatus
 
 
 def reset_stuck_jobs(max_age_minutes: int = 30, dry_run: bool = False):

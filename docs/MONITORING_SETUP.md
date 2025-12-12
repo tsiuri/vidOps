@@ -257,7 +257,7 @@ docker run -d \
 
 ### Worker Configuration
 
-Edit `/home/billie/tools/vidops/vidops/config.py` (if needed) to adjust metrics:
+Edit `/home/billie/tools/vidops/configuration.py` (if needed) to adjust metrics:
 
 ```python
 # Metrics collection is enabled by default

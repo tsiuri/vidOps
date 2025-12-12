@@ -5,7 +5,7 @@ Live curses-based watcher for the jobs queue.
 Usage:
   PYTHONPATH=.<or repo> python scripts/management/watch_jobs.py [--interval 1.0] [--limit 10]
 
-Reads DB config via vidops/config.py (respects VIDOPS_PROJECT_ROOT/config.yaml).
+Reads DB config via configuration.py (respects VIDOPS_PROJECT_ROOT/config.yaml).
 Controls: q to quit.
 """
 import argparse
@@ -20,8 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from vidops.db import get_connection  # type: ignore  # noqa: E402
-from vidops.config import load_config  # type: ignore  # noqa: E402
+from db import get_connection  # type: ignore  # noqa: E402
+from configuration import load_config  # type: ignore  # noqa: E402
 
 
 def fetch_status(limit: int = 10):

@@ -2,7 +2,7 @@
 
 import pytest
 from datetime import datetime, date, UTC
-from vidops.models import Video, Asset, Job, JobStatus, Worker, WorkerStatus, Transcript, Word
+from models import Video, Asset, Job, JobStatus, Worker, WorkerStatus, Transcript, Word
 
 @pytest.fixture
 def sample_video_data():

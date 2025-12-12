@@ -1,8 +1,8 @@
 import pytest
 from datetime import datetime, timedelta, timezone
-from vidops.dal.jobs import JobRepository
-from vidops.models import Job, JobStatus, Worker
-from vidops.db import check_connection, get_connection # Added this line
+from dal.jobs import JobRepository
+from models import Job, JobStatus, Worker
+from db import check_connection, get_connection # Added this line
 import threading
 
 # Mark all tests in this file as 'integration' and skip if DB is not available

@@ -1,6 +1,6 @@
 import pytest
 from psycopg2 import sql
-from vidops.db import get_connection
+from db import get_connection
 
 
 @pytest.fixture(scope="function", autouse=True)

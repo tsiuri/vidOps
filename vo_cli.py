@@ -1,25 +1,25 @@
 # vo_cli.py
 
 import click
-from vidops.db import close_pool
-from vidops.cli.status import status
-from vidops.cli.worker import worker
-from vidops.cli.download import download
-from vidops.cli.transcribe import transcribe
-from vidops.cli.clipping import clip
-from vidops.cli.overlord import overlord
-from vidops.cli.analysis import analyze
-from vidops.cli.diarization import diarize
-from vidops.cli.clips import clips
-from vidops.cli.dl_subs import dl_subs
-from vidops.cli.stitch import stitch
-from vidops.cli.voice import voice
-from vidops.cli.query_ids import query_ids
-from vidops.cli.convert_captions import convert_captions
-from vidops.cli.dates import dates
-from vidops.cli.extra_utils import extra_utils
-from vidops.cli.quickclip import quickclip
-from vidops import __version__ # Import the version from the package
+from db import close_pool
+from cli.status import status
+from cli.worker import worker
+from cli.download import download
+from cli.transcribe import transcribe
+from cli.clipping import clip
+from cli.overlord import overlord
+from cli.analysis import analyze
+from cli.diarization import diarize
+from cli.clips import clips
+from cli.dl_subs import dl_subs
+from cli.stitch import stitch
+from cli.voice import voice
+from cli.query_ids import query_ids
+from cli.convert_captions import convert_captions
+from cli.dates import dates
+from cli.extra_utils import extra_utils
+from cli.quickclip import quickclip
+from __init__ import __version__  # Import the version from the package
 
 @click.group(
     help="""

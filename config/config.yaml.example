@@ -4,7 +4,7 @@
 # Settings are defined here with sensible defaults.
 #
 # Precedence Order:
-# 1. Default values in the Config classes (`vidops/config.py`)
+# 1. Default values in the Config classes (`configuration.py`)
 # 2. Values in this `config.yaml` file
 # 3. Environment variables (e.g., VIDOPS_DB_HOST)
 #
@@ -139,3 +139,11 @@ download:
   sub_langs: "en"
   # Log file for videos with no transcripts found
   no_transcript_log: "logs/no_transcripts_available.txt"
+
+# --- Analysis Defaults ---
+analysis:
+  # Default capabilities advertised when starting analysis-distributed workers.
+  # Override per-machine via --capabilities if needed.
+  default_capabilities:
+    - qwen2.5:7b-instruct
+    - gpu_8gb

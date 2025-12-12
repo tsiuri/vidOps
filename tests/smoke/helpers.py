@@ -12,9 +12,9 @@ import wave
 from pathlib import Path
 from typing import List, Sequence
 
-from vidops.db import check_connection, get_connection
-from vidops.dal import VideoRepository
-from vidops.models import Video
+from db import check_connection, get_connection
+from dal import VideoRepository
+from models import Video
 
 SMOKE_MEDIA_ROOT = Path("tmp/smoke_media")
 SMOKE_LOG_ROOT = Path("logs/smoke")

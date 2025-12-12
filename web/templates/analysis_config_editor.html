@@ -1,0 +1,489 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  h1 { margin-top: 0; }
+  .error { color: #d32f2f; background: #ffebee; padding: 10px; margin-bottom: 20px; border-radius: 4px; }
+  .section { margin-bottom: 30px; border: 1px solid #ddd; padding: 20px; border-radius: 4px; background: #f9f9f9; }
+  .section h2 { margin-top: 0; margin-bottom: 15px; font-size: 1.3em; border-bottom: 2px solid #2196F3; padding-bottom: 10px; }
+  .form-group { margin-bottom: 15px; display: flex; flex-direction: column; }
+  label { font-weight: 600; margin-bottom: 5px; }
+  input[type="text"],
+  input[type="number"],
+  textarea,
+  select { padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; }
+  input[type="text"],
+  input[type="number"],
+  select { min-width: 300px; }
+  textarea { width: 100%; font-size: 0.9em; }
+
+  .pass-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 15px; }
+  .pass-item { background: white; border: 1px solid #ddd; padding: 12px; border-radius: 4px; cursor: pointer; transition: 0.2s; }
+  .pass-item:hover { background: #f0f0f0; }
+  .pass-item.disabled { opacity: 0.6; background: #f5f5f5; }
+  .pass-toggle { display: flex; align-items: center; margin-bottom: 10px; }
+  .pass-toggle input[type="checkbox"] { width: 20px; height: 20px; cursor: pointer; margin-right: 10px; }
+  .pass-info { flex: 1; }
+  .pass-id { font-weight: 600; color: #1976D2; }
+  .pass-phase { display: inline-block; font-size: 0.8em; padding: 2px 6px; margin-left: 8px; border-radius: 3px; font-weight: 600; }
+  .pass-phase.chunk { background: #E3F2FD; color: #1976D2; }
+  .pass-phase.aggregation { background: #F3E5F5; color: #7B1FA2; }
+  .pass-description { font-size: 0.9em; color: #666; margin-top: 4px; }
+
+  .hot-target { background: white; border: 1px solid #ddd; padding: 12px; border-radius: 4px; margin-bottom: 10px; }
+  .hot-target-remove { float: right; cursor: pointer; color: #d32f2f; font-weight: bold; }
+  .hot-target-remove:hover { text-decoration: underline; }
+
+  .chunk-params { background: white; border: 1px solid #ddd; padding: 15px; border-radius: 4px; }
+  .chunk-params .form-group { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+
+  .buttons { margin-top: 30px; display: flex; gap: 10px; }
+  button { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
+  .btn-save { background: #4CAF50; color: white; }
+  .btn-save:hover { background: #45a049; }
+  .btn-back { background: #2196F3; color: white; }
+  .btn-back:hover { background: #0b7dda; }
+  .btn-add { background: #FF9800; color: white; }
+  .btn-add:hover { background: #e68900; }
+
+  .checkbox-section { display: flex; align-items: center; }
+  input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+  .checkbox-label { margin-left: 8px; font-weight: normal; }
+</style>
+
+<div class="container">
+  <p><a href="{{ url_for('list_analysis_configs') }}">&larr; Back to configs</a></p>
+
+  {% if error %}
+    <div class="error">{{ error }}</div>
+  {% endif %}
+
+  <h1>{{ "Edit" if config_id else "Create New" }} Analysis Config</h1>
+
+  <form method="post" id="configForm">
+    <!-- METADATA SECTION -->
+    <div class="section">
+      <h2>Metadata</h2>
+      <div class="form-group">
+        <label for="name">Config Name:</label>
+        <input type="text" id="name" name="name" value="{{ name or '' }}" placeholder="e.g., Fast Analysis, Heavy Analysis" required>
+      </div>
+      <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+        <div>
+          <label for="analysis_type">Analysis Type:</label>
+          <input type="text" id="analysis_type" name="analysis_type" value="{{ analysis_type or 'normal' }}" placeholder="normal, custom, etc.">
+        </div>
+        <div>
+          <label for="version">Version:</label>
+          <input type="number" id="version" name="version" value="{{ version or 1 }}" min="1">
+        </div>
+        <div>
+          <label for="is_default" class="checkbox-section">
+            <input type="checkbox" id="is_default" name="is_default" value="1" {% if is_default %}checked{% endif %}>
+            <span class="checkbox-label">Default for this type</span>
+          </label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="description">Description:</label>
+        <textarea id="description" name="description" rows="2" placeholder="Optional description of this config...">{{ config_json_parsed.get('description', '') if config_json_parsed else '' }}</textarea>
+      </div>
+      <div class="form-group">
+        <label for="strict_pass_validation" class="checkbox-section">
+          <input type="checkbox" id="strict_pass_validation" name="strict_pass_validation" value="1" {% if strict_pass_validation %}checked{% endif %}>
+          <span class="checkbox-label">Strict pass validation (error on unknown passes)</span>
+        </label>
+      </div>
+      {% if config_id %}
+      <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd;">
+        <a href="{{ url_for('edit_speaker_filter', config_id=config_id) }}" style="text-decoration: none; font-size: 0.9em; color: #fff; background-color: #FF9800; padding: 8px 16px; border-radius: 3px; display: inline-block;">👥 Filter Speakers</a>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- CHUNKING PARAMETERS SECTION -->
+    <div class="section">
+      <h2>Chunking Parameters</h2>
+      <div class="chunk-params">
+        <div class="form-group">
+          <div>
+            <label for="max_words">Max Words per Chunk:</label>
+            <input type="number" id="max_words" name="max_words" value="{{ max_words or 1000 }}" min="100" step="1">
+            <small style="color: #666;">Default: 1000</small>
+          </div>
+          <div>
+            <label for="overlap_words">Overlap Words:</label>
+            <input type="number" id="overlap_words" name="overlap_words" value="{{ overlap_words or 150 }}" min="0" step="1">
+            <small style="color: #666;">Default: 150 (multiples of 50 recommended, e.g., 100, 150)</small>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="per_speaker_tracks" class="checkbox-section">
+            <input type="checkbox" id="per_speaker_tracks" name="per_speaker_tracks" value="1" {% if per_speaker_tracks %}checked{% endif %}>
+            <span class="checkbox-label">Enable per-speaker subchunk tracking (requires VTT metadata)</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANALYSIS PASSES SECTION -->
+    <div class="section">
+      <h2>AI Passes (Chunk-Level)</h2>
+      <p style="color: #666; margin-top: 0;">Chunk-level analysis passes sent to the AI for each transcript chunk.</p>
+      <div class="pass-grid" id="passesGrid">
+        <!-- Chunk-level passes -->
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_chunk_analysis" name="pass_chunk_analysis" value="1" {% if 'chunk_analysis' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">chunk_analysis</span>
+              <span class="pass-phase chunk">CHUNK</span>
+              <div class="pass-description">Primary per-chunk LLM analysis (required)</div>
+              {% if config_id %}
+              <a href="{{ url_for('edit_chunk_analysis', config_id=config_id) }}" class="pass-action-btn" style="text-decoration: none; font-size: 0.85em; color: #fff; background-color: #2196F3; padding: 4px 10px; border-radius: 3px; display: inline-block; margin-top: 5px;">⚙️ Configure</a>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_subchunks" name="pass_subchunks" value="1" {% if 'subchunks' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">subchunks</span>
+              <span class="pass-phase chunk">CHUNK</span>
+              <div class="pass-description">Speaker/subchunk-level analysis</div>
+              {% if config_id %}
+              <a href="{{ url_for('edit_subchunks', config_id=config_id) }}" class="pass-action-btn" style="text-decoration: none; font-size: 0.85em; color: #fff; background-color: #2196F3; padding: 4px 10px; border-radius: 3px; display: inline-block; margin-top: 5px;">⚙️ Configure</a>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_sentiment_pass" name="pass_sentiment_pass" value="1" {% if 'sentiment_pass' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">sentiment_pass</span>
+              <span class="pass-phase chunk">CHUNK</span>
+              <div class="pass-description">Sentiment analysis (folded into chunk_analysis)</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_categories_pass" name="pass_categories_pass" value="1" {% if 'categories_pass' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">categories_pass</span>
+              <span class="pass-phase chunk">CHUNK</span>
+              <div class="pass-description">Category tagging (folded into chunk_analysis)</div>
+              {% if config_id %}
+              <a href="{{ url_for('edit_categories_pass', config_id=config_id) }}" class="pass-action-btn" style="text-decoration: none; font-size: 0.85em; color: #fff; background-color: #2196F3; padding: 4px 10px; border-radius: 3px; display: inline-block; margin-top: 5px;">⚙️ Configure</a>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AGGREGATION PASSES SECTION -->
+    <div class="section">
+      <h2>AI Passes (Aggregation)</h2>
+      <p style="color: #666; margin-top: 0;">Aggregation passes run after all chunks are processed, sent to AI for synthesis and drill operations.</p>
+      <div class="pass-grid" id="aggregationGrid">
+        <!-- Aggregation passes -->
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_aggregate_results" name="pass_aggregate_results" value="1" {% if 'aggregate_results' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">aggregate_results</span>
+              <span class="pass-phase aggregation">AGGREGATION</span>
+              <div class="pass-description">Aggregate chunks into transcript-wide view</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_hot_targets" name="pass_hot_targets" value="1" {% if 'hot_targets' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">hot_targets</span>
+              <span class="pass-phase aggregation">AGGREGATION</span>
+              <div class="pass-description">Hot-target detection & detail passes</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_drills" name="pass_drills" value="1" {% if 'drills' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">drills</span>
+              <span class="pass-phase aggregation">AGGREGATION</span>
+              <div class="pass-description">LLM drill passes (defined via --drills-config)</div>
+              {% if config_id %}
+              <a href="{{ url_for('edit_drills', config_id=config_id) }}" class="pass-action-btn" style="text-decoration: none; font-size: 0.85em; color: #fff; background-color: #2196F3; padding: 4px 10px; border-radius: 3px; display: inline-block; margin-top: 5px;">🛠️ Configure</a>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OUTPUT STAGES SECTION -->
+    <div class="section">
+      <h2>Output Stages</h2>
+      <p style="color: #666; margin-top: 0;">Where to save the analysis results. Select one or more output destinations.</p>
+      <div class="pass-grid" id="outputGrid">
+        <!-- Output stages -->
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_db_store" name="pass_db_store" value="1" {% if 'db_store' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">db_store</span>
+              <span class="pass-phase" style="background: #E8F5E9; color: #2E7D32;">OUTPUT</span>
+              <div class="pass-description">Persist to PostgreSQL database</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_local_json" name="pass_local_json" value="1" {% if 'local_json' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">local_json</span>
+              <span class="pass-phase" style="background: #E8F5E9; color: #2E7D32;">OUTPUT</span>
+              <div class="pass-description">Write analysis.json + chunks/</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pass-item">
+          <div class="pass-toggle">
+            <input type="checkbox" id="pass_markdown_report" name="pass_markdown_report" value="1" {% if 'markdown_report' in enabled_passes %}checked{% endif %}>
+            <div class="pass-info">
+              <span class="pass-id">markdown_report</span>
+              <span class="pass-phase" style="background: #E8F5E9; color: #2E7D32;">OUTPUT</span>
+              <div class="pass-description">Generate analysis.md markdown report</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HOT TARGETS SECTION -->
+    <div class="section">
+      <h2>Hot Targets</h2>
+      <p style="color: #666; margin-top: 0;">Custom hot targets to detect and drill into. These override file-based config.</p>
+      <div id="hotTargetsContainer">
+        {% for ht in hot_targets %}
+        <div class="hot-target">
+          <span class="hot-target-remove" onclick="this.parentElement.remove();">✕ Remove</span>
+          <div class="form-group">
+            <label>Target Name (ID):</label>
+            <input type="text" class="ht-name" value="{{ ht.get('name') or ht.get('id') or '' }}" placeholder="e.g., conflict, politics">
+          </div>
+          <div class="form-group">
+            <label>Description:</label>
+            <input type="text" class="ht-description" value="{{ ht.get('description', '') }}" placeholder="What to look for...">
+          </div>
+          <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+            <div>
+              <label>Pattern Type:</label>
+              <select class="ht-pattern-type">
+                <option value="keyword" {% if ht.get('pattern_type') == 'keyword' %}selected{% endif %}>keyword</option>
+                <option value="regex" {% if ht.get('pattern_type') == 'regex' %}selected{% endif %}>regex</option>
+                <option value="llm_tag" {% if ht.get('pattern_type') == 'llm_tag' %}selected{% endif %}>llm_tag</option>
+              </select>
+            </div>
+            <div>
+              <label>Category:</label>
+              <input type="text" class="ht-category" value="{{ ht.get('category', '') }}" placeholder="e.g., conflict">
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn-add" onclick="addHotTarget()">+ Add Hot Target</button>
+    </div>
+
+    <!-- RAW JSON (FALLBACK) -->
+    <div class="section">
+      <h2>Raw Configuration JSON (Advanced)</h2>
+      <p style="color: #666; margin-top: 0;">For advanced users: edit the complete config JSON directly.</p>
+      <textarea id="config_json" name="config_json" rows="20" style="width: 100%; font-family: monospace;">{{ config_json or '' }}</textarea>
+    </div>
+
+    <!-- BUTTONS -->
+    <div class="buttons">
+      <button type="submit" class="btn-save">💾 Save Config</button>
+      {% if config_id %}
+      <a href="{{ url_for('edit_chunk_analysis', config_id=config_id) }}" class="btn-back" style="text-decoration: none; display: inline-flex; align-items: center;">⚙️ Configure Chunk Size</a>
+      <a href="{{ url_for('edit_speaker_filter', config_id=config_id) }}" class="btn-back" style="text-decoration: none; display: inline-flex; align-items: center;">👥 Filter Speakers</a>
+      <a href="{{ url_for('edit_subchunks', config_id=config_id) }}" class="btn-back" style="text-decoration: none; display: inline-flex; align-items: center;">📍 Configure Subchunks</a>
+      <a href="{{ url_for('edit_drills', config_id=config_id) }}" class="btn-back" style="text-decoration: none; display: inline-flex; align-items: center;">🛠️ Configure Drills</a>
+      <a href="{{ url_for('edit_categories_pass', config_id=config_id) }}" class="btn-back" style="text-decoration: none; display: inline-flex; align-items: center;">📂 Configure Categories</a>
+      {% endif %}
+      <button type="button" class="btn-back" onclick="history.back();">← Back</button>
+    </div>
+  </form>
+</div>
+
+<script>
+function addHotTarget() {
+  const container = document.getElementById('hotTargetsContainer');
+  const html = `
+    <div class="hot-target">
+      <span class="hot-target-remove" onclick="this.parentElement.remove();">✕ Remove</span>
+      <div class="form-group">
+        <label>Target Name (ID):</label>
+        <input type="text" class="ht-name" placeholder="e.g., conflict, politics">
+      </div>
+      <div class="form-group">
+        <label>Description:</label>
+        <input type="text" class="ht-description" placeholder="What to look for...">
+      </div>
+      <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+        <div>
+          <label>Pattern Type:</label>
+          <select class="ht-pattern-type">
+            <option value="keyword">keyword</option>
+            <option value="regex">regex</option>
+            <option value="llm_tag">llm_tag</option>
+          </select>
+        </div>
+        <div>
+          <label>Category:</label>
+          <input type="text" class="ht-category" placeholder="e.g., conflict">
+        </div>
+      </div>
+    </div>
+  `;
+  container.insertAdjacentHTML('beforeend', html);
+}
+
+// Enforce subchunks dependency on per-speaker tracks
+function updateSubchunksDependency() {
+  const perSpeakerCheckbox = document.getElementById('per_speaker_tracks');
+  const subchunksCheckbox = document.getElementById('pass_subchunks');
+  const subchunksItem = document.querySelector('[id="pass_subchunks"]').closest('.pass-item');
+  const subchunksConfigBtn = subchunksItem.querySelector('a[href*="subchunks"]');
+
+  if (!perSpeakerCheckbox.checked) {
+    // Disable subchunks if per-speaker is not enabled
+    subchunksCheckbox.disabled = true;
+    subchunksCheckbox.checked = false;
+    subchunksItem.classList.add('disabled');
+    subchunksItem.title = 'Requires "Enable per-speaker subchunk tracking" in Chunk Analysis';
+    if (subchunksConfigBtn) {
+      subchunksConfigBtn.style.opacity = '0.5';
+      subchunksConfigBtn.style.pointerEvents = 'none';
+      subchunksConfigBtn.title = 'Requires per-speaker tracking enabled';
+    }
+  } else {
+    // Enable subchunks if per-speaker is enabled
+    subchunksCheckbox.disabled = false;
+    subchunksItem.classList.remove('disabled');
+    subchunksItem.title = '';
+    if (subchunksConfigBtn) {
+      subchunksConfigBtn.style.opacity = '1';
+      subchunksConfigBtn.style.pointerEvents = 'auto';
+      subchunksConfigBtn.title = '';
+    }
+  }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  updateSubchunksDependency();
+  // Also update when per-speaker checkbox changes
+  document.getElementById('per_speaker_tracks').addEventListener('change', updateSubchunksDependency);
+
+  // Form submission handler
+  document.getElementById('configForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    // Build config JSON from form
+    const config = {
+      id: '{{ config_id or "" }}' || generateUUID(),
+      name: document.getElementById('name').value,
+      version: parseInt(document.getElementById('version').value) || 1,
+      analysis_type: document.getElementById('analysis_type').value || 'normal',
+      description: document.getElementById('description').value,
+      chunk_params: {
+        max_words: parseInt(document.getElementById('max_words').value) || 1000,
+        overlap_words: parseInt(document.getElementById('overlap_words').value) || 150,
+        per_speaker_tracks: document.getElementById('per_speaker_tracks').checked
+      },
+      passes: getEnabledPasses(),
+      hot_targets: getHotTargets(),
+      strict_pass_validation: document.getElementById('strict_pass_validation').checked,
+      backend_params: {}
+    };
+
+    document.getElementById('config_json').value = JSON.stringify(config, null, 2);
+    this.submit();
+  });
+});
+
+function getEnabledPasses() {
+  const passes = [];
+  // Map of pass IDs to their phases
+  const passPhases = {
+    'chunk_analysis': 'chunk',
+    'subchunks': 'chunk',
+    'sentiment_pass': 'chunk',
+    'categories_pass': 'chunk',
+    'aggregate_results': 'aggregation',
+    'hot_targets': 'aggregation',
+    'drills': 'aggregation',
+    'db_store': 'aggregation',
+    'local_json': 'aggregation',
+    'markdown_report': 'aggregation'
+  };
+
+  Object.entries(passPhases).forEach(([passId, phase]) => {
+    const checkbox = document.getElementById(`pass_${passId}`);
+    if (checkbox && checkbox.checked) {
+      passes.push({
+        id: passId,
+        phase: phase,
+        enabled: true,
+        order: 0,
+        requires: [],
+        params: {}
+      });
+    }
+  });
+
+  return passes;
+}
+
+function getHotTargets() {
+  const targets = [];
+  document.querySelectorAll('.hot-target').forEach(el => {
+    const name = el.querySelector('.ht-name').value;
+    if (name) {
+      const patternType = el.querySelector('.ht-pattern-type').value || 'keyword';
+      // Use the name as the pattern for keyword matching
+      targets.push({
+        id: name,
+        description: el.querySelector('.ht-description').value,
+        pattern_type: patternType,
+        pattern: name,  // Use target name as the pattern
+        enabled: true
+      });
+    }
+  });
+  return targets;
+}
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+</script>
+{% endblock %}

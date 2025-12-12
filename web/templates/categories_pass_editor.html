@@ -1,0 +1,344 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+  <h1>Categories Pass Configuration</h1>
+  <p><a href="{{ url_for('edit_analysis_config', config_id=config_id) }}">← Back to Config</a></p>
+
+  <div style="background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+    <h3>About Categories Pass</h3>
+    <p>
+      The Categories Pass assigns topic/category tags to transcript chunks during analysis.
+      Configure the category system below to control how categories are suggested to the LLM and normalized.
+    </p>
+  </div>
+
+  <form method="POST" style="max-width: 1000px;">
+    <!-- Section 1: Category Map (Aliases) -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Category Map (Aliases → Canonical)</legend>
+
+      <p style="color: #666; margin-bottom: 15px;">
+        Define how to normalize category aliases to canonical names.
+        Example: "hiphop" → "Hip-Hop Music", "politics_us" → "US Politics"
+      </p>
+
+      <div id="categoryMapContainer" style="margin-bottom: 15px;">
+        <!-- Dynamically filled -->
+      </div>
+
+      <button type="button" onclick="addCategoryMapEntry()" style="background-color: #2196F3; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">
+        + Add Mapping
+      </button>
+
+      <textarea id="categoryMapJson" name="category_map_json" style="width: 100%; height: 150px; margin-top: 10px; font-family: monospace; border: 1px solid #ddd; padding: 8px; border-radius: 4px; display: none;">{{ category_map_json }}</textarea>
+    </fieldset>
+
+    <!-- Section 2: Category Cache (Suggestions) -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Category Cache (Suggestions to LLM)</legend>
+
+      <p style="color: #666; margin-bottom: 15px;">
+        List canonical category names that the LLM should prefer when tagging chunks.
+        Top 50 will be suggested to the LLM. One per line.
+      </p>
+
+      <textarea id="categoryCacheList" name="category_cache_list" style="width: 100%; height: 200px; font-family: monospace; border: 1px solid #ddd; padding: 8px; border-radius: 4px;" placeholder="Music&#10;Politics&#10;Sports&#10;Technology&#10;News&#10;Entertainment&#10;Science&#10;Business&#10;Education&#10;..."></textarea>
+
+      <div style="margin-top: 10px;">
+        <label style="display: inline-block; margin-right: 20px;">
+          <input type="checkbox" name="category_cache_writeback" {% if category_cache_writeback %}checked{% endif %} />
+          Auto-save new categories to cache during analysis
+        </label>
+      </div>
+    </fieldset>
+
+    <!-- Section 3: Category Pass Parameters -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Pass Parameters</legend>
+
+      <div style="margin-bottom: 15px;">
+        <label for="categoryPassEnabled">
+          <input type="checkbox" id="categoryPassEnabled" name="category_pass_enabled" {% if category_pass_enabled %}checked{% endif %} />
+          Enable Categories Pass
+        </label>
+        <p style="color: #666; margin-top: 5px; margin-left: 20px;">
+          Disable to skip category extraction during analysis
+        </p>
+      </div>
+
+      <div style="margin-bottom: 15px;">
+        <label for="categoryPassOrder">Category Pass Order (execution order):</label><br/>
+        <input type="number" id="categoryPassOrder" name="category_pass_order" value="{{ category_pass_order or 40 }}" min="0" max="1000" style="width: 80px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;" />
+        <p style="color: #666; margin-top: 5px;">
+          Earlier numbers run first. Default: 40 (after sentiment_pass which is 30)
+        </p>
+      </div>
+    </fieldset>
+
+    <!-- Section 4: Template Filters -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Auto-filtered Categories (Placeholders)</legend>
+
+      <p style="color: #666; margin-bottom: 15px;">
+        These categories are automatically filtered out during post-processing (common placeholder values).
+        You can modify or add to this list if needed.
+      </p>
+
+      <div id="filterListContainer" style="margin-bottom: 15px;">
+        <!-- Dynamically filled -->
+      </div>
+
+      <button type="button" onclick="addFilterEntry()" style="background-color: #FF9800; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer;">
+        + Add Filter
+      </button>
+
+      <textarea id="filterListJson" name="filter_list_json" style="width: 100%; height: 100px; margin-top: 10px; font-family: monospace; border: 1px solid #ddd; padding: 8px; border-radius: 4px; display: none;">{{ filter_list_json }}</textarea>
+    </fieldset>
+
+    <!-- Section 5: Info & Constraints -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #e3f2fd; padding: 15px; border-radius: 6px; background: #f3f8ff;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">ℹ️ System Constraints</legend>
+
+      <ul style="color: #555; line-height: 1.8;">
+        <li><strong>Case handling:</strong> All categories are normalized to lowercase during extraction</li>
+        <li><strong>Pipe-delimited:</strong> Categories like "music|rock" are split into separate tags</li>
+        <li><strong>LLM suggestions:</strong> Top 50 categories from cache are shown to the LLM</li>
+        <li><strong>Deduplication:</strong> Duplicate categories are removed at chunk and aggregation levels</li>
+        <li><strong>Storage:</strong> Categories stored in database as separate items with item_type='category'</li>
+        <li><strong>No special characters:</strong> Only alphanumeric, spaces, and hyphens recommended</li>
+      </ul>
+    </fieldset>
+
+    <!-- Save Button -->
+    <div style="margin-top: 30px;">
+      <button type="submit" style="background-color: #4CAF50; color: white; padding: 12px 24px; font-size: 1em; border: none; border-radius: 4px; cursor: pointer;">
+        Save Categories Configuration
+      </button>
+      <a href="{{ url_for('edit_analysis_config', config_id=config_id) }}" style="margin-left: 10px; padding: 12px 24px; display: inline-block; background-color: #ddd; color: #333; text-decoration: none; border-radius: 4px;">
+        Cancel
+      </a>
+    </div>
+  </form>
+
+  {% if error %}
+  <div style="background: #ffebee; border: 1px solid #ef5350; border-radius: 4px; padding: 12px; margin-top: 15px; color: #c62828;">
+    <strong>Error:</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  {% if success %}
+  <div style="background: #e8f5e9; border: 1px solid #66bb6a; border-radius: 4px; padding: 12px; margin-top: 15px; color: #2e7d32;">
+    ✓ Configuration saved successfully
+  </div>
+  {% endif %}
+</div>
+
+<style>
+  fieldset {
+    border: 1px solid #ddd !important;
+  }
+  legend {
+    color: #333;
+  }
+  .category-map-entry {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+  }
+  .category-map-entry input {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+  .category-map-entry .alias-input {
+    flex: 1;
+  }
+  .category-map-entry .arrow {
+    color: #999;
+    font-size: 1.2em;
+  }
+  .category-map-entry .canonical-input {
+    flex: 2;
+  }
+  .category-map-entry button {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .category-map-entry button:hover {
+    background-color: #d32f2f;
+  }
+
+  .filter-entry {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    align-items: center;
+  }
+  .filter-entry input {
+    flex: 1;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+  .filter-entry button {
+    background-color: #f44336;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .filter-entry button:hover {
+    background-color: #d32f2f;
+  }
+</style>
+
+<script>
+// Category Map Management
+let categoryMapData = {};
+
+function initializeCategoryMap() {
+  const jsonText = document.getElementById('categoryMapJson').value;
+  if (jsonText) {
+    try {
+      categoryMapData = JSON.parse(jsonText);
+    } catch (e) {
+      console.error('Failed to parse category map JSON:', e);
+      categoryMapData = {};
+    }
+  }
+  renderCategoryMap();
+}
+
+function renderCategoryMap() {
+  const container = document.getElementById('categoryMapContainer');
+  container.innerHTML = '';
+
+  Object.entries(categoryMapData).forEach(([alias, canonical]) => {
+    const div = document.createElement('div');
+    div.className = 'category-map-entry';
+    div.innerHTML = `
+      <input type="text" class="alias-input" value="${escapeHtml(alias)}" onchange="updateCategoryMapAlias(this, '${escapeHtml(alias)}')" />
+      <span class="arrow">→</span>
+      <input type="text" class="canonical-input" value="${escapeHtml(canonical)}" onchange="updateCategoryMapCanonical('${escapeHtml(alias)}', this)" />
+      <button type="button" onclick="removeCategoryMapEntry('${escapeHtml(alias)}')" style="padding: 6px 12px;">Remove</button>
+    `;
+    container.appendChild(div);
+  });
+
+  updateCategoryMapJson();
+}
+
+function addCategoryMapEntry() {
+  const newAlias = 'new_alias_' + Date.now();
+  categoryMapData[newAlias] = 'New Category';
+  renderCategoryMap();
+}
+
+function updateCategoryMapAlias(input, oldAlias) {
+  const newAlias = input.value.trim();
+  if (newAlias && newAlias !== oldAlias) {
+    const canonical = categoryMapData[oldAlias];
+    delete categoryMapData[oldAlias];
+    categoryMapData[newAlias] = canonical;
+    renderCategoryMap();
+  }
+}
+
+function updateCategoryMapCanonical(alias, input) {
+  const canonical = input.value.trim();
+  if (canonical) {
+    categoryMapData[alias] = canonical;
+    updateCategoryMapJson();
+  }
+}
+
+function removeCategoryMapEntry(alias) {
+  if (confirm(`Remove mapping for "${alias}"?`)) {
+    delete categoryMapData[alias];
+    renderCategoryMap();
+  }
+}
+
+function updateCategoryMapJson() {
+  document.getElementById('categoryMapJson').value = JSON.stringify(categoryMapData, null, 2);
+}
+
+// Filter List Management
+let filterListData = [];
+
+function initializeFilterList() {
+  const jsonText = document.getElementById('filterListJson').value;
+  if (jsonText) {
+    try {
+      filterListData = JSON.parse(jsonText);
+    } catch (e) {
+      console.error('Failed to parse filter list JSON:', e);
+      filterListData = [];
+    }
+  }
+  renderFilterList();
+}
+
+function renderFilterList() {
+  const container = document.getElementById('filterListContainer');
+  container.innerHTML = '';
+
+  filterListData.forEach((filter, index) => {
+    const div = document.createElement('div');
+    div.className = 'filter-entry';
+    div.innerHTML = `
+      <input type="text" value="${escapeHtml(filter)}" onchange="updateFilterEntry(${index}, this)" />
+      <button type="button" onclick="removeFilterEntry(${index})">Remove</button>
+    `;
+    container.appendChild(div);
+  });
+
+  updateFilterListJson();
+}
+
+function addFilterEntry() {
+  filterListData.push('new_filter');
+  renderFilterList();
+}
+
+function updateFilterEntry(index, input) {
+  filterListData[index] = input.value.trim();
+  updateFilterListJson();
+}
+
+function removeFilterEntry(index) {
+  if (confirm(`Remove filter "${filterListData[index]}"?`)) {
+    filterListData.splice(index, 1);
+    renderFilterList();
+  }
+}
+
+function updateFilterListJson() {
+  document.getElementById('filterListJson').value = JSON.stringify(filterListData, null, 2);
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  initializeCategoryMap();
+  initializeFilterList();
+});
+
+// Serialize data before form submission
+document.querySelector('form').addEventListener('submit', function() {
+  updateCategoryMapJson();
+  updateFilterListJson();
+});
+</script>
+{% endblock %}

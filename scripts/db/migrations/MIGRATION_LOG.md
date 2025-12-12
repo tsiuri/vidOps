@@ -68,3 +68,8 @@
 - Adds support for newer asset kinds emitted by bridged workers: `diarization`, `voice_match`, `stitched`, `analysis`, `dates_manifest`, `reference`.
 - Up: `004_update_assets_kind_constraint.up.sql`
 - Down: `004_update_assets_kind_constraint.down.sql`
+
+## [2025-12-10] Migration 005 — Analysis System Tables
+- Adds `analysis_configs`, `drills`, `drill_dependencies`, `analysis_tasks`, and `analysis_results`.
+- Ports distributed analysis queue schema from the legacy db-and-analysis repository.
+- File: `005_add_analysis_tables.sql`

@@ -1,0 +1,12 @@
+{
+  "db_host": "192.168.0.187",
+  "db_port": 5432,
+  "db_name": "transcripts",
+  "db_user": "billie",
+  "db_password": "z",
+  "ollama_url": "http://localhost:11434",
+  "_comment_analyze_section": "Runtime defaults for analyze_to_db.py. logmode: quiet|progress|verbose (progress prints per-chunk completions; verbose also prints raw LLM responses).",
+  "analyze_to_db.py vars": {
+    "logmode": "progress"
+  }
+}

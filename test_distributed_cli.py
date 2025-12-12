@@ -16,9 +16,9 @@ import signal
 import threading
 from pathlib import Path
 from click.testing import CliRunner
-from vidops.cli.worker import start_worker
-from vidops.dal.analysis_task_repository import AnalysisDatabase
-from scripts.analysis_system.config_loader import load_local_config
+from cli.worker import start_worker
+from dal.analysis_task_repository import AnalysisDatabase
+from scripts.analysis.config_loader import load_local_config
 
 def test_distributed_worker_cli():
     """Test that the distributed worker CLI can start and claim tasks."""

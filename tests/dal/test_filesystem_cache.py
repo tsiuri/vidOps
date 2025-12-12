@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from vidops.dal.cache import FilesystemCache
-from vidops.models import Video, Transcript
-from vidops import config as config_module
+from dal.cache import FilesystemCache
+from models import Video, Transcript
+import configuration as config_module
 
 
 @pytest.fixture

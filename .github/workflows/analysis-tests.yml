@@ -1,0 +1,100 @@
+name: Distributed Analysis Tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "workers/**"
+      - "scripts/analysis/**"
+      - "tests/analysis_system/**"
+      - "cli/analysis.py"
+      - "requirements.txt"
+      - ".github/workflows/analysis-tests.yml"
+  pull_request:
+    paths:
+      - "workers/**"
+      - "scripts/analysis/**"
+      - "tests/analysis_system/**"
+      - "cli/analysis.py"
+      - "requirements.txt"
+
+jobs:
+  analysis-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: transcripts
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: transcripts
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Configure database schema
+        run: |
+          cat <<'SQL' | psql "postgresql://postgres:postgres@localhost:5432/transcripts"
+          CREATE TABLE IF NOT EXISTS videos (
+            ytid TEXT PRIMARY KEY,
+            title TEXT,
+            title_date TIMESTAMPTZ,
+            url TEXT
+          );
+          INSERT INTO videos (ytid, title, title_date, url)
+          VALUES
+            ('AxtuJ-IVOGA', 'Test Video AxtuJ', NOW(), 'https://youtube.com/watch?v=AxtuJ-IVOGA')
+          ON CONFLICT (ytid) DO NOTHING;
+          SQL
+
+          psql "postgresql://postgres:postgres@localhost:5432/transcripts" -f scripts/db/migrations/005_add_analysis_tables.sql
+
+      - name: Write CI config
+        run: |
+          mkdir -p config
+          cat <<'EOF' > config/config.local.cfg
+[database]
+db_name=transcripts
+db_host=127.0.0.1
+db_port=5432
+db_user=postgres
+db_password=postgres
+EOF
+
+      - name: Run distributed analysis tests
+        run: python -m pytest tests/analysis_system -vv

@@ -58,13 +58,13 @@ Infinite loop:
 - Click CLI framework entry point
 - Routes to: `from vidops.cli.worker import worker`
 
-**CLI Handler:** `/home/billie/tools/vidops/vidops/cli/worker.py`
+**CLI Handler:** `/home/billie/tools/vidops/cli/worker.py`
 - Parses CLI arguments (machine-alias, model-url, capabilities, etc.)
 - Loads vidops config via `load_config()`
 - Instantiates `AnalysisWorker` class
 - Calls `worker.run_forever()`
 
-**Worker Implementation:** `/home/billie/tools/vidops/vidops/workers/analysis_distributed.py`
+**Worker Implementation:** `/home/billie/tools/vidops/workers/analysis_distributed.py`
 - `__init__()` - Initialize with configuration, connect to DB
 - `run_forever()` - Main event loop (lines 107-187)
   - Sets up signal handlers for graceful shutdown
@@ -86,7 +86,7 @@ Infinite loop:
   - Sets `should_exit` flag
   - Completes current task before exiting
 
-**Data Access:** `/home/billie/tools/vidops/vidops/dal/analysis_task_repository.py`
+**Data Access:** `/home/billie/tools/vidops/dal/analysis_task_repository.py`
 - `claim_next()` - Atomic task claiming via PostgreSQL SELECT FOR UPDATE
 - `mark_completed()` - Update task with results
 - `mark_failed()` - Mark task as failed
@@ -94,7 +94,7 @@ Infinite loop:
 - `get_job_progress()` - Get current progress counts
 - `get_job_tasks()` - Retrieve all tasks for aggregation
 
-**Configuration:** `/home/billie/tools/vidops/vidops/config.py`
+**Configuration:** `/home/billie/tools/vidops/configuration.py`
 - Loads from `vidops/config.yml` (YAML format)
 - Provides: database credentials, Ollama URL/model, analysis settings
 - Environment variable overrides supported
@@ -643,7 +643,7 @@ Detect and restart unhealthy workers.
 - Deployment Guide: `SYSTEMD_DEPLOYMENT_GUIDE.md`
 - Worker Code: `vidops/workers/analysis_distributed.py`
 - CLI Code: `vidops/cli/worker.py`
-- Configuration: `vidops/config.py`
+- Configuration: `configuration.py`
 
 **Systemd Documentation:**
 - `man systemd.service`

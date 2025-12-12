@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+  <h1>Speaker Filter Configuration</h1>
+  <p><a href="{{ url_for('edit_analysis_config', config_id=config_id) }}">← Back to Config</a></p>
+
+  <div style="background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+    <h3>About Speaker Filtering</h3>
+    <p>
+      Speaker filtering allows you to analyze only specific speakers' content. Useful for podcasts where you want
+      to focus on the host's perspective, or interviews where you want specific speakers' segments only.
+      Non-matching speakers' content is excluded from analysis entirely before chunking.
+    </p>
+  </div>
+
+  <form method="POST" style="max-width: 1000px;">
+    <!-- Section 1: Filter Mode -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Filter Mode</legend>
+
+      <div style="margin-bottom: 15px;">
+        <label style="display: flex; align-items: center; margin-bottom: 10px;">
+          <input type="radio" name="filter_mode" value="all" {% if filter_mode == 'all' %}checked{% endif %} style="margin-right: 10px;" />
+          <span>
+            <strong>No Filtering (all speakers)</strong><br/>
+            <span style="color: #666; font-size: 0.9em;">Analyze all speakers equally. Speaker filtering is disabled.</span>
+          </span>
+        </label>
+
+        <label style="display: flex; align-items: center; margin-bottom: 10px; margin-top: 15px;">
+          <input type="radio" name="filter_mode" value="include" {% if filter_mode == 'include' %}checked{% endif %} style="margin-right: 10px;" />
+          <span>
+            <strong>Include Only Selected Speakers</strong><br/>
+            <span style="color: #666; font-size: 0.9em;">Analyze ONLY the speakers you select below. All other speakers are excluded.</span>
+          </span>
+        </label>
+
+        <label style="display: flex; align-items: center; margin-top: 15px;">
+          <input type="radio" name="filter_mode" value="exclude" {% if filter_mode == 'exclude' %}checked{% endif %} style="margin-right: 10px;" />
+          <span>
+            <strong>Exclude Selected Speakers</strong><br/>
+            <span style="color: #666; font-size: 0.9em;">Analyze everyone EXCEPT the speakers you select below.</span>
+          </span>
+        </label>
+      </div>
+    </fieldset>
+
+    <!-- Section 2: Speaker Selection -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Select Speakers</legend>
+
+      {% if available_speakers %}
+      <p style="color: #666; margin-bottom: 15px;">
+        {% if filter_mode == 'include' %}
+          <strong>Check the speakers you WANT to analyze:</strong>
+        {% elif filter_mode == 'exclude' %}
+          <strong>Check the speakers you WANT TO EXCLUDE:</strong>
+        {% else %}
+          <strong>Speaker selection is disabled (all speakers selected)</strong>
+        {% endif %}
+      </p>
+
+      <input type="text" id="speakerSearch" placeholder="🔍 Filter speakers (e.g., 'hasan', 'guest')..." style="width: 100%; padding: 8px; margin-bottom: 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em;" />
+
+      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <button type="button" onclick="selectAllVisibleSpeakers()" style="flex: 1; background-color: #2196F3; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em;">
+          ✓ Select All
+        </button>
+        <button type="button" onclick="selectNoneVisibleSpeakers()" style="flex: 1; background-color: #f44336; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.9em;">
+          ✗ Select None
+        </button>
+      </div>
+
+      <div id="speakersContainer" style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 15px; max-height: 300px; overflow-y: auto;">
+        {% for speaker in available_speakers %}
+        <label style="display: block; margin-bottom: 10px; padding: 8px; border-radius: 3px; cursor: pointer; transition: 0.1s;" onmouseover="this.style.background='#f5f5f5'" onmouseout="this.style.background='transparent'">
+          <input type="checkbox" name="speakers" value="{{ speaker }}" {% if speaker in selected_speakers %}checked{% endif %} style="margin-right: 10px;" />
+          <span>{{ speaker }}</span>
+        </label>
+        {% endfor %}
+      </div>
+
+      {% else %}
+      <div style="background: #FFF3E0; border: 1px solid #FFB74D; border-radius: 4px; padding: 12px; color: #E65100;">
+        <strong>⚠️ No speakers found in diarization data</strong><br/>
+        <span style="font-size: 0.9em;">
+          This config doesn't have speaker information yet. Speaker filtering will be available once diarization data is imported.
+        </span>
+      </div>
+      {% endif %}
+    </fieldset>
+
+    <!-- Section 3: Options -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Options</legend>
+
+      <label style="display: flex; align-items: flex-start;">
+        <input type="checkbox" name="case_insensitive" {% if case_insensitive %}checked{% endif %} style="margin-right: 10px; margin-top: 3px;" />
+        <span>
+          <strong>Case-insensitive matching</strong><br/>
+          <span style="color: #666; font-size: 0.9em;">
+            When enabled, speaker names are matched case-insensitively. "Hasan" will match "HASAN", "hasan", etc.
+          </span>
+        </span>
+      </label>
+    </fieldset>
+
+    <!-- Section 4: Information -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #e3f2fd; padding: 15px; border-radius: 6px; background: #f3f8ff;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">ℹ️ How Speaker Filtering Works</legend>
+
+      <ol style="color: #555; line-height: 1.8; margin-left: 20px;">
+        <li><strong>Diarization Match:</strong> Your video must have speaker/diarization data (from timestamps or VTT)</li>
+        <li><strong>Filtering:</strong> When chunks are created, they're matched against speaker timestamps</li>
+        <li><strong>Exclusion:</strong> Non-matching speaker segments are completely excluded from analysis</li>
+        <li><strong>Subchunks:</strong> If per-speaker subchunks are enabled, only matching speakers get subchunks</li>
+        <li><strong>Impact:</strong> Reduces analysis scope, potentially faster analysis on subset of content</li>
+      </ol>
+
+      <p style="color: #555; margin-top: 15px; margin-bottom: 0;">
+        <strong>Example:</strong> Podcast with Host and 3 Guests. Select "Include" mode and check only "Host"
+        to analyze only the host's segments. Guest segments are completely excluded.
+      </p>
+    </fieldset>
+
+    <!-- Save Button -->
+    <div style="margin-top: 30px;">
+      <button type="submit" style="background-color: #4CAF50; color: white; padding: 12px 24px; font-size: 1em; border: none; border-radius: 4px; cursor: pointer;">
+        Save Speaker Filter Configuration
+      </button>
+      <a href="{{ url_for('edit_analysis_config', config_id=config_id) }}" style="margin-left: 10px; padding: 12px 24px; display: inline-block; background-color: #ddd; color: #333; text-decoration: none; border-radius: 4px;">
+        Cancel
+      </a>
+    </div>
+  </form>
+
+  {% if error %}
+  <div style="background: #ffebee; border: 1px solid #ef5350; border-radius: 4px; padding: 12px; margin-top: 15px; color: #c62828;">
+    <strong>Error:</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  {% if success %}
+  <div style="background: #e8f5e9; border: 1px solid #66bb6a; border-radius: 4px; padding: 12px; margin-top: 15px; color: #2e7d32;">
+    ✓ Speaker filter configuration saved successfully
+  </div>
+  {% endif %}
+</div>
+
+<script>
+// Speaker search/filter functionality
+function filterSpeakers() {
+  const searchInput = document.getElementById('speakerSearch');
+  if (!searchInput) return;
+
+  const searchTerm = searchInput.value.toLowerCase().trim();
+  const container = document.getElementById('speakersContainer');
+  const labels = container.querySelectorAll('label');
+  let visibleCount = 0;
+
+  labels.forEach(label => {
+    const speakerName = label.querySelector('span').textContent.toLowerCase();
+
+    if (searchTerm === '' || speakerName.includes(searchTerm)) {
+      label.style.display = 'block';
+      visibleCount++;
+    } else {
+      label.style.display = 'none';
+    }
+  });
+
+  // Show message if no speakers match
+  let noResultsMsg = container.querySelector('.no-results-msg');
+  if (visibleCount === 0 && searchTerm !== '') {
+    if (!noResultsMsg) {
+      noResultsMsg = document.createElement('div');
+      noResultsMsg.className = 'no-results-msg';
+      noResultsMsg.style.cssText = 'color: #999; text-align: center; padding: 20px; font-style: italic;';
+      container.appendChild(noResultsMsg);
+    }
+    noResultsMsg.textContent = `No speakers match "${searchTerm}"`;
+  } else if (noResultsMsg) {
+    noResultsMsg.remove();
+  }
+}
+
+// Select all visible (filtered) speakers
+function selectAllVisibleSpeakers() {
+  const container = document.getElementById('speakersContainer');
+  const labels = container.querySelectorAll('label');
+
+  labels.forEach(label => {
+    // Only check if the label is visible (not filtered out) - use computed style for accuracy
+    const isVisible = window.getComputedStyle(label).display !== 'none';
+    if (isVisible) {
+      const checkbox = label.querySelector('input[type="checkbox"]');
+      if (checkbox && !checkbox.disabled) {
+        checkbox.checked = true;
+      }
+    }
+  });
+}
+
+// Select none of the visible (filtered) speakers
+function selectNoneVisibleSpeakers() {
+  const container = document.getElementById('speakersContainer');
+  const labels = container.querySelectorAll('label');
+
+  labels.forEach(label => {
+    // Only uncheck if the label is visible (not filtered out) - use computed style for accuracy
+    const isVisible = window.getComputedStyle(label).display !== 'none';
+    if (isVisible) {
+      const checkbox = label.querySelector('input[type="checkbox"]');
+      if (checkbox && !checkbox.disabled) {
+        checkbox.checked = false;
+      }
+    }
+  });
+}
+
+// Enable/disable speaker selection based on filter mode
+document.querySelectorAll('input[name="filter_mode"]').forEach(radio => {
+  radio.addEventListener('change', function() {
+    const container = document.getElementById('speakersContainer');
+    const searchInput = document.getElementById('speakerSearch');
+    const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+
+    if (this.value === 'all') {
+      // Disable all checkboxes when mode is "all"
+      checkboxes.forEach(cb => {
+        cb.disabled = true;
+        cb.checked = false;
+      });
+      container.style.opacity = '0.5';
+      if (searchInput) searchInput.disabled = true;
+    } else {
+      // Enable all checkboxes
+      checkboxes.forEach(cb => {
+        cb.disabled = false;
+      });
+      container.style.opacity = '1';
+      if (searchInput) searchInput.disabled = false;
+    }
+  });
+});
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  // Set up search input listener if it exists
+  const searchInput = document.getElementById('speakerSearch');
+  if (searchInput) {
+    searchInput.addEventListener('input', filterSpeakers);
+    searchInput.addEventListener('change', filterSpeakers);
+  }
+
+  // Trigger change event to set initial state
+  const selectedMode = document.querySelector('input[name="filter_mode"]:checked');
+  if (selectedMode) {
+    selectedMode.dispatchEvent(new Event('change'));
+  }
+});
+</script>
+{% endblock %}

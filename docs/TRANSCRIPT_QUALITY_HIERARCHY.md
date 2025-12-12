@@ -87,7 +87,7 @@ When you specify `--transcript-kind best`:
 
 ### Code Location
 
-**Configuration**: `vidops/config.py`
+**Configuration**: `configuration.py`
 ```python
 TRANSCRIPT_QUALITY_HIERARCHY = [
     "words_whisper_large-v3",
@@ -177,7 +177,7 @@ Using `--transcript-kind best`:
 
 ## Customization
 
-To modify the quality hierarchy for your use case, edit `vidops/config.py`:
+To modify the quality hierarchy for your use case, edit `configuration.py`:
 
 ```python
 TRANSCRIPT_QUALITY_HIERARCHY = [

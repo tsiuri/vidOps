@@ -19,7 +19,7 @@ import psycopg2.extras
 import pytest
 
 from scripts.transcription.db_queue import TranscriptionQueue
-from vidops.db import get_connection
+from db import get_connection
 
 from tests.smoke.helpers import (
     generate_sample_audio,

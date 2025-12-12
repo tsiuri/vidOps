@@ -1,9 +1,9 @@
 import pytest
 from datetime import datetime, timedelta, timezone
 
-from vidops.dal import WorkerRepository
-from vidops.models import Worker, WorkerStatus
-from vidops.db import check_connection, get_connection
+from dal import WorkerRepository
+from models import Worker, WorkerStatus
+from db import check_connection, get_connection
 
 # Skip entire module if DB unavailable
 try:

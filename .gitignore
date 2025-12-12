@@ -16,7 +16,7 @@ analyzed/
 .venv_cli/
 config.yaml
 tmp/
-analysis/
+/analysis/
 clips/
 results/
 manual diarized/

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import yaml
 import logging # Import logging
-from vidops.config import load_config, Config, DatabaseConfig, TranscriptionConfig, PathsConfig, WorkerConfig, NvidiaConfig, CpuConfig
+from configuration import load_config, Config, DatabaseConfig, TranscriptionConfig, PathsConfig, WorkerConfig, NvidiaConfig, CpuConfig
 
 # Fixture to clean up environment variables and config files after each test
 @pytest.fixture(autouse=True)
@@ -16,7 +16,7 @@ def clean_config_env():
     dummy_config_path = Path("config.test.yaml")
     
     # Ensure no existing config instance interferes
-    from vidops import config as config_module
+    import configuration as config_module
     config_module._config_instance = None
 
     yield
@@ -145,7 +145,7 @@ def test_load_config_mixed_types_and_error_handling(tmp_path, caplog):
     os.environ["VIDOPS_DB_PORT"] = "not-an-int"
     
     # Ensure previous singleton is cleared
-    from vidops import config as config_module
+    import configuration as config_module
     config_module._config_instance = None
 
     config = load_config("nonexistent_config.yaml") # Ensure no YAML is loaded

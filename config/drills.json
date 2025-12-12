@@ -1,0 +1,23 @@
+{
+  "drills": [
+    {
+      "name": "keyword_politics_detect",
+      "description": "Detect whether political content is present in a subchunk.",
+      "prompt": "Return JSON { \"present\": true|false, \"label\": \"brief\" } indicating whether political content (government, policy, elections, conflicts, international relations) is present. Keep it conservative: only true if it clearly fits.",
+      "match": ["politics", "policy", "election", "government", "war", "conflict"],
+      "keywords": ["election", "policy", "government", "senate", "congress", "war", "gaza", "china", "russia"],
+      "always": false,
+      "min_hits": 0,
+      "cooldown": 0,
+      "detail_pass": {
+        "model": "qwen2.5:7b-instruct",
+        "endpoint": "http://localhost:11434",
+        "retries": 1
+      },
+      "output_shape": "span",
+      "pass_tier": "drill",
+      "depends_on": [],
+      "scope": "chunks"
+    }
+  ]
+}

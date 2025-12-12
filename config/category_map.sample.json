@@ -1,0 +1,16 @@
+{
+  "israel": "politics",
+  "gaza": "politics",
+  "west bank": "politics",
+  "hamas": "politics",
+  "idf": "politics",
+  "conflict": "conflict",
+  "war": "conflict",
+  "fight": "conflict",
+  "argument": "conflict",
+  "election": "politics",
+  "government": "politics",
+  "senate": "politics",
+  "congress": "politics",
+  "policy": "politics"
+}

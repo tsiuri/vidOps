@@ -1,0 +1,117 @@
+{% extends 'base.html' %}
+{% block title %}Video Detail{% endblock %}
+{% block head %}
+<style>
+  .grid { display:grid; grid-template-columns: 1fr 1.2fr; gap:16px; }
+  .muted { color:#7f8c8d; }
+  .badge { display:inline-block; padding:4px 10px; background:#eef5fd; color:#1976d2; border-radius:12px; font-size:.85rem; }
+  .pill { display:inline-block; padding:2px 8px; background:#f0f3f7; border-radius:999px; font-size:.85rem; margin:2px 6px 2px 0; }
+  .seg { background:#fff; padding:14px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,.08); border-left:4px solid #3498db; margin-bottom:10px; }
+  .controls { display:flex; gap:8px; margin-bottom:10px; }
+  input[type=number], input[type=text] { padding:10px; border:1px solid #ddd; border-radius:4px; }
+  button { padding:10px 14px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  button:hover { background:#2980b9; }
+  a.ext { color:#3498db; }
+  .k { background:#f0f3f7; padding:2px 6px; border-radius:4px; }
+</style>
+<script>
+  function escapeHtml(t){ const d=document.createElement('div'); d.textContent=t??''; return d.innerHTML; }
+  function truncate(s, n){ if (!s) return ''; const t = String(s); return t.length>n ? t.slice(0,n).trim()+"…" : t; }
+  async function loadAll(){
+    const ytid = '{{ ytid }}';
+    const [dres, sres] = await Promise.all([
+      fetch(`/api/video/${encodeURIComponent(ytid)}/detail`),
+      fetch(`/api/video/${encodeURIComponent(ytid)}/segments?limit=1000`)
+    ]);
+    const detail = await dres.json();
+    const segs = await sres.json();
+    renderDetail(detail);
+    renderSegments(segs);
+  }
+  function renderDetail(d){
+    const head = document.getElementById('v-head');
+    const you = `https://youtube.com/watch?v=${d.ytid}`;
+    const dsent = d.dominant_sentiment ? `<span class=\"badge\">${escapeHtml(d.dominant_sentiment)}</span>` : '';
+    head.innerHTML = `
+      <div style="display:flex; justify-content:space-between; gap:12px;">
+        <div>
+          <h2 style="margin:0 0 6px 0;">${escapeHtml(d.title || d.ytid)}</h2>
+          <div class="muted">${d.title_date || ''} • <a class="ext" href="${you}" target="_blank" rel="noopener">Open on YouTube</a></div>
+        </div>
+        <div>${dsent}</div>
+      </div>
+      ${d.tldr_one_sentence ? `<div style=\"margin-top:8px;\"><strong>TLDR:</strong> ${escapeHtml(d.tldr_one_sentence)}</div>` : ''}
+      ${d.summary_paragraph ? `<div style=\"margin-top:8px;\"><strong>Summary:</strong> ${escapeHtml(d.summary_paragraph)}</div>` : ''}
+      ${d.political_overview ? `<div style=\"margin-top:8px;\"><strong>Political:</strong> ${escapeHtml(d.political_overview)}</div>` : ''}
+      ${d.controversies ? `<div style=\"margin-top:8px;\"><strong>Controversies:</strong> ${escapeHtml(d.controversies)}</div>` : ''}
+      ${Array.isArray(d.issues) && d.issues.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Issues:</strong> ${escapeHtml(d.issues.join(', '))}</div>` : ''}
+      ${Array.isArray(d.noteworthy_statements) && d.noteworthy_statements.length ? `<div style=\"margin-top:8px;\"><strong>Noteworthy:</strong> ${escapeHtml(d.noteworthy_statements.join(' | '))}</div>` : ''}
+      ${Array.isArray(d.personal_conflicts) && d.personal_conflicts.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Conflicts:</strong> ${escapeHtml(d.personal_conflicts.join(', '))}</div>` : ''}
+      ${d.speaker_overview ? `<div style=\"margin-top:8px;\"><strong>Speaker:</strong> ${escapeHtml(d.speaker_overview)}</div>` : ''}
+      ${Array.isArray(d.personal_themes) && d.personal_themes.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Themes:</strong> ${escapeHtml(d.personal_themes.join(', '))}</div>` : ''}
+      <div class="muted" style="margin-top:8px;">Total chunks: ${d.total_chunks ?? '—'} • Batch ${d.batch_id ?? ''} • Type ${escapeHtml(d.analysis_type || 'normal')}</div>
+      ${d.request_text && d.request_text !== 'none' ? `<div class=\"muted\" style=\"margin-top:6px;\"><span class=\"k\">request</span> ${escapeHtml(d.request_text)}</div>` : ''}
+    `;
+
+    const ppl = document.getElementById('v-people');
+    ppl.innerHTML = '';
+    (d.people || []).forEach(p => {
+      const span = document.createElement('span');
+      span.className = 'pill';
+      span.textContent = `${p.person_name} • ${p.mention_count}`;
+      ppl.appendChild(span);
+    });
+    const tops = document.getElementById('v-topics');
+    tops.innerHTML='';
+    (d.topics || []).forEach(t => {
+      const span = document.createElement('span');
+      span.className='pill';
+      span.textContent = `${t.topic} • ${t.occurrence_count}`;
+      tops.appendChild(span);
+    });
+  }
+  function renderSegments(rows){
+    const wrap = document.getElementById('v-segments');
+    wrap.innerHTML = '';
+    rows.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'seg';
+      const sent = r.sentiment ? `<span class="badge">${escapeHtml(r.sentiment)}</span>` : '';
+      const model = r.model ? `<span class="pill" title="Model used">${escapeHtml(r.model)}</span>` : '';
+      div.innerHTML = `
+        <div class="muted">Chunk ${r.chunk_id} • ${r.word_count} words ${sent} ${model}</div>
+        <div style="margin-top:6px;">${escapeHtml(truncate(r.summary, 800))}</div>
+      `;
+      wrap.appendChild(div);
+    });
+    document.getElementById('seg-count').textContent = rows.length;
+  }
+  window.addEventListener('DOMContentLoaded', loadAll);
+</script>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="margin-bottom:16px;">
+    <div id="v-head"></div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3 style="margin-top:0;">People</h3>
+      <div id="v-people"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Topics</h3>
+      <div id="v-topics"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="controls">
+      <div class="muted">Segments: <span id="seg-count">0</span></div>
+      <div style="flex:1"></div>
+      <a class="ext" href="/">← Back</a>
+    </div>
+    <div id="v-segments"></div>
+  </div>
+{% endblock %}

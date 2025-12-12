@@ -9,8 +9,8 @@ from typing import Optional
 # ADDED import for pool
 from psycopg2 import pool
 
-from vidops.db.connection import init_pool, get_pool, close_pool, get_connection, check_connection
-from vidops.config import load_config, Config, DatabaseConfig
+from db.connection import init_pool, get_pool, close_pool, get_connection, check_connection
+from configuration import load_config, Config, DatabaseConfig
 
 # --- Module-level setup for database availability check ---
 # This needs to be outside a fixture if pytestmark consumes it directly.
@@ -21,8 +21,7 @@ try:
     # Ensure no existing pool interferes with this initial check
     close_pool() 
     # Patch load_config to return our _config_for_check during init_pool for this check
-    with patch('vidops.db.connection.load_config', return_value=_config_for_check):
-        init_pool() # Try to init with loaded config
+            with patch('db.connection.load_config', return_value=_config_for_check):        init_pool() # Try to init with loaded config
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
@@ -94,7 +93,7 @@ def test_init_pool_failure(mocker):
     mocker.patch('psycopg2.connect', side_effect=psycopg2.OperationalError("Mocked connection error"))
     
     # Patch load_config to return a dummy config, so init_pool doesn't try to load real one
-    mocker.patch('vidops.db.connection.load_config', return_value=Config(database=DatabaseConfig(host="invalid", port=1234)))
+    mocker.patch('db.connection.load_config', return_value=Config(database=DatabaseConfig(host="invalid", port=1234)))
 
     with pytest.raises(psycopg2.OperationalError):
         init_pool()
@@ -152,7 +151,7 @@ def test_check_connection_failure(mocker):
     mocker.patch('psycopg2.connect', side_effect=psycopg2.OperationalError("Mocked connection error"))
     
     # Patch load_config to return a dummy config for this test, as check_connection calls load_config
-    mocker.patch('vidops.db.connection.load_config', return_value=Config(database=DatabaseConfig(host="invalid", port=1234)))
+    mocker.patch('db.connection.load_config', return_value=Config(database=DatabaseConfig(host="invalid", port=1234)))
     
     # check_connection should try multiple times and eventually fail
     assert check_connection(max_retries=2, delay_sec=0.01) is False
@@ -164,7 +163,7 @@ def test_close_pool_functionality(mocker): # Added mocker to clear global mock f
     close_pool() # Ensure clean state
     
     # Patch load_config to return a valid config for this test
-    mocker.patch('vidops.db.connection.load_config', return_value=load_config())
+    mocker.patch('db.connection.load_config', return_value=load_config())
     
     init_pool()
     pool_instance = get_pool()
@@ -173,7 +172,7 @@ def test_close_pool_functionality(mocker): # Added mocker to clear global mock f
     close_pool()
     
     # The internal _connection_pool should be None after close_pool()
-    from vidops.db import connection as db_connection_module
+    from db import connection as db_connection_module
     assert db_connection_module._connection_pool is None
     
     # Now, if we call get_pool(), it should re-initialize a new pool without error

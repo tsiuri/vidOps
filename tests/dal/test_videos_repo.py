@@ -2,9 +2,9 @@
 
 import pytest
 from datetime import date
-from vidops.models import Video
-from vidops.dal import VideoRepository
-from vidops.db import check_connection
+from models import Video
+from dal import VideoRepository
+from db import check_connection
 
 # Mark all tests in this file as 'integration' and skip if DB is not available
 try:

@@ -1,0 +1,32 @@
+{
+  "_comment": "Sample GPU scheduling config. Not yet wired into the codebase.",
+  "endpoints": [
+    {
+      "name": "gpu0_local",
+      "url": "http://localhost:11434",
+      "max_concurrency": 1,
+      "priority": "high",
+      "delay_between_tasks": 0.0,
+      "models": ["qwen2.5:7b-instruct"]
+    }
+  ],
+  "priorities": {
+    "chunk": "critical",
+    "verification": "high",
+    "hot_target": "normal",
+    "drill": "normal",
+    "summary": "low"
+  },
+  "vrama_estimates": {
+    "qwen2.5:7b-instruct": 14
+  },
+  "rate_limit": {
+    "delay_between_targets": 0.5
+  },
+  "queue": {
+    "backend": "postgres", 
+    "dsn": "postgresql://billie:z@localhost/transcripts",
+    "table": "gpu_task_queue",
+    "use_shared_queue": false
+  }
+}

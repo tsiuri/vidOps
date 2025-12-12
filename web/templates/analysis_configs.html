@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+  <h1>Analysis Configurations</h1>
+  <p>Database: {{ db_name }}</p>
+  <div style="margin-bottom: 15px;">
+    <a href="{{ url_for('index') }}">Back to search</a>
+    <span style="margin: 0 10px; color: #ccc;">|</span>
+    <a href="{{ url_for('new_analysis_config') }}" style="background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; display: inline-block;">+ New Config</a>
+  </div>
+  <table border="1" cellpadding="4" cellspacing="0">
+    <tr>
+      <th>ID</th>
+      <th>Name</th>
+      <th>Analysis Type</th>
+      <th>Version</th>
+      <th>Default?</th>
+      <th>Drills</th>
+      <th>Updated</th>
+    </tr>
+    {% for cfg in configs %}
+    <tr>
+      <td><a href="{{ url_for('edit_analysis_config', config_id=cfg.id) }}">{{ cfg.id }}</a></td>
+      <td>{{ cfg.name }}</td>
+      <td>{{ cfg.analysis_type }}</td>
+      <td>{{ cfg.version }}</td>
+      <td>{{ "yes" if cfg.is_default else "no" }}</td>
+      <td>
+        {% if cfg.drill_summary %}
+        <a href="{{ url_for('edit_drills', config_id=cfg.id) }}">{{ cfg.drill_summary }}</a>
+        {% else %}
+        <span style="color: #999;">—</span>
+        {% endif %}
+      </td>
+      <td>{{ cfg.updated_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

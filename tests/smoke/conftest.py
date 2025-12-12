@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vidops import config as vidops_config
+import configuration as vidops_config
 from tests.smoke.helpers import db_available
 
 

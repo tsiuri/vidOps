@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from vidops.dal import JobRepository, TranscriptRepository, WordRepository
-from vidops.models import Transcript, Word
-from vidops.services import get_voice_service, get_analysis_service
+from dal import JobRepository, TranscriptRepository, WordRepository
+from models import Transcript, Word
+from services import get_voice_service, get_analysis_service
 
 from tests.smoke.helpers import (
     SMOKE_MEDIA_ROOT,
