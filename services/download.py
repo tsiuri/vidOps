@@ -28,7 +28,8 @@ class DownloadService:
         self,
         video_repo: VideoRepository,
         job_repo: JobRepository,
-        fs_cache: FilesystemCache
+        fs_cache: FilesystemCache,
+        ytdlp_overrides: dict[str, Any] | None = None,
     ):
         self.video_repo = video_repo
         self.job_repo = job_repo
@@ -50,6 +51,7 @@ class DownloadService:
             priority: Job priority
             cookies_browser: Browser name (or browser:profile) for cookies passthrough
             upload_type: Optional upload type/id to persist with the video record
+            ytdlp_overrides: Dict of yt-dlp config values that override defaults (format, audio_only, etc.)
 
         Returns:
             Created Job object
@@ -81,6 +83,8 @@ class DownloadService:
             "no_transcript_log": dl_cfg.no_transcript_log,
             "no_overwrites": dl_cfg.no_overwrites,
         }
+        if ytdlp_overrides:
+            ytdlp_cfg.update(ytdlp_overrides)
         job_config: dict[str, Any] = {
             "url": url,
             "ytdlp": ytdlp_cfg,
