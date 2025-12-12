@@ -2142,3 +2142,107 @@ def quickclip_stream_full_video(ytid: str):
     except FileNotFoundError:
         abort(404, "Full video missing from storage")
     return send_file(local_path)
+
+
+# ============================================================================
+# Jobs Browser
+# ============================================================================
+
+@app.route('/jobs')
+def jobs_browser():
+    """Browse and filter jobs from the jobs table."""
+    from db import get_connection
+
+    # Get query parameters for filtering
+    status_filter = request.args.get('status', 'all')
+    job_type_filter = request.args.get('job_type', 'all')
+    ytid_filter = request.args.get('ytid', '')
+    sort_by = request.args.get('sort', 'created_at')
+    sort_dir = request.args.get('dir', 'DESC')
+    limit = int(request.args.get('limit', 100))
+
+    jobs = []
+    total_count = 0
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Build WHERE clause
+                where_parts = []
+                params = []
+
+                if status_filter != 'all':
+                    where_parts.append("status = %s")
+                    params.append(status_filter)
+
+                if job_type_filter != 'all':
+                    where_parts.append("job_type = %s")
+                    params.append(job_type_filter)
+
+                if ytid_filter:
+                    where_parts.append("ytid ILIKE %s")
+                    params.append(f"%{ytid_filter}%")
+
+                where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""
+
+                # Get total count
+                cur.execute(f"SELECT COUNT(*) FROM jobs{where_clause}", tuple(params))
+                total_count = cur.fetchone()[0]
+
+                # Get jobs with sorting and limit
+                valid_sorts = ['job_id', 'job_type', 'status', 'priority', 'created_at', 'updated_at']
+                sort_col = sort_by if sort_by in valid_sorts else 'created_at'
+                sort_direction = 'DESC' if sort_dir.upper() == 'DESC' else 'ASC'
+
+                cur.execute(
+                    f"""
+                    SELECT
+                        job_id,
+                        job_type,
+                        status,
+                        ytid,
+                        priority,
+                        claimed_by,
+                        created_at,
+                        updated_at,
+                        started_at,
+                        completed_at,
+                        error_message
+                    FROM jobs
+                    {where_clause}
+                    ORDER BY {sort_col} {sort_direction}
+                    LIMIT %s
+                    """,
+                    tuple(params + [limit])
+                )
+
+                rows = cur.fetchall()
+                for row in rows:
+                    jobs.append({
+                        'job_id': row[0],
+                        'job_type': row[1],
+                        'status': row[2],
+                        'ytid': row[3],
+                        'priority': row[4],
+                        'claimed_by': row[5],
+                        'created_at': row[6],
+                        'updated_at': row[7],
+                        'started_at': row[8],
+                        'completed_at': row[9],
+                        'error_message': row[10],
+                    })
+    except Exception as e:
+        logger.error(f"Error fetching jobs: {e}")
+        jobs = []
+
+    return render_template(
+        'jobs_browser.html',
+        jobs=jobs,
+        total_count=total_count,
+        status_filter=status_filter,
+        job_type_filter=job_type_filter,
+        ytid_filter=ytid_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+        limit=limit,
+    )
