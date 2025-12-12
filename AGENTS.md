@@ -40,6 +40,7 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 - Bootstrap diarization env: `bash scripts/setup_diarization_venv.sh` (use `--cpu` if no CUDA). Activates `.venv`.
 - Run workers: `python vo_cli.py worker start <role> ...` (e.g., `analysis-distributed`, `worker start diarization`).
 - Workspace wrapper (from a project dir): `./workspace.sh download|transcribe|hits|diarize ...`.
+- Launch web UIs: `python scripts/run_webui.py` or `python vo_cli.py webui` (starts the combined analysis/QuickClip UI on :5000 and, if configured, the monitoring UI on :8000; use `--skip`/`--only` or `--monitoring-cmd` to customize)
 - Tests: `pytest` (with `.venv` active). Smoke: `bash docs/SMOKE_TESTS.md` commands as written.
 
 ## Coding Style & Naming
@@ -62,6 +63,25 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 - Secrets: set tokens via env (`HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`, DB creds); never commit them. Check `db.cfg` for DB defaults.
 - GPU/CPU: diarization pins `torch/torchaudio` 2.8.0+cu128; rerun the setup script if the venv drifts. For CPU runs, use `--cpu` flag.
 - Paths: honor `TOOL_ROOT` (repo) vs `PROJECT_ROOT` (data). Don’t write under repo except `tmp/` and generated logs/tests.***
+
+## Active Pipeline CLI Updates (2025-12-11)
+- New `vo pipeline enqueue` command creates a full processing pipeline (download → transcription → diarization → analysis) with automatic dependency management
+- Usage: `vo pipeline enqueue <YTID_or_URL> [--skip-diarization] [--transcription-model large-v3]`
+- All jobs created immediately in PENDING status; GenericWorker claims them in dependency order
+- Each job stores `pipeline_id` and `depends_on` in config for traceability and orchestration
+- Dependency enforcement at database level: `JobRepository.claim_next()` uses `FOR UPDATE OF j SKIP LOCKED` with LEFT JOIN to check `config->>'depends_on'`
+- Jobs only become claimable when their dependency is COMPLETED, enforced via SQL WHERE clause (no worker-side logic needed)
+- `vo pipeline status <pipeline_id>` shows all jobs, their dependencies, and completion status
+- Configuration integration: Pipeline reads defaults from `config.yaml` (diarization device, transcription model, etc.); CLI options override
+- Skip flags disable stages: `--skip-download`, `--skip-transcription`, `--skip-diarization`, `--skip-analysis` allow partial pipelines
+- Works seamlessly with existing GenericWorker - dependency checking moved entirely into database queries, not application code
+
+## Active Diarization Updates (2025-12-11)
+- `DiarizationService` now loads diarization configuration from `config.yaml` (`diarization.*` block) and applies these defaults to all enqueued jobs.
+- Parameters that were required in `enqueue_diarization_job()` are now Optional, falling back to config defaults: diarization_model, device, chunk_seconds, overlap_seconds, similarity_threshold, gap_threshold, match_threshold, match_margin, and match_force_best.
+- CLI commands (`vo diarize enqueue`, `enqueue-file`) continue to work unchanged; they explicitly pass parameters to override config defaults.
+- Configuration precedence: `config.yaml` defaults → environment variables (`DIARIZATION_*`) → CLI arguments → hardcoded fallbacks.
+- This pattern should be applied to other services (transcription, analysis) to centralize configuration management.
 
 ## Active Analysis Updates (2025-12-11)
 - GenericWorker now claims distributed analysis work through `services/distributed_analysis.py`, so `vo worker start general` covers download, transcription, clips, diarization, stitching, and `analysis-distributed` in one process. See `tests/workers/test_generic_worker_distributed_analysis.py` for the handoff coverage.

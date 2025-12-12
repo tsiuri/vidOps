@@ -14,12 +14,14 @@ This is the canonical status and working instructions for the refactor to the da
 - **Storage/Cache Manager:** ✅ IMPLEMENTED. FilesystemCache provides two-tier storage (central + local cache), pull_to_cache(), asset registration, path resolution. Documented in `docs/STORAGE_INTERFACE.md`. Integrated into DownloadService. Ready for other services to use.
 - **Transcription:** ✅ REAL. `vidops/services/transcription.py` now runs faster-whisper, streams media via `FilesystemCache`, writes real VTT + `.words.tsv`, bulk-ingests `words` rows, upserts model-specific transcripts, and registers transcript assets under `transcripts/`.
 - **Voice filtering:** ✅ QUEUED VIA LEGACY BRIDGE. `VoiceFilterService` + `VoiceFilterWorker` stage clips/reference audio via `FilesystemCache` into the legacy workspace, invoke `workspace.sh voice filter-*`, register `voice_match` assets under `results/voice_filter/<ytid>/` with `rel_path`, and write job.result summaries; fake mode available via `VIDOPS_FAKE_VOICE` for smoke.
-- **Diarization:** ✅ QUEUED VIA LEGACY BRIDGE. `DiarizationService` + `DiarizeWorker` stage media in `pull/`, words in `generated/diarization_inputs/`, reference clips under `generated/diary_reference/<ytid>/`, run `workspace.sh diarize`, and register `diarization` assets (`diarized_timestamps.tsv`, `speaker_words.tsv`, `diarization.json`) under `generated/diarization_resemblyzer/<ytid>/`; fake mode via `VIDOPS_FAKE_DIARIZATION`.
+- **Diarization:** ✅ QUEUED VIA LEGACY BRIDGE + CONFIG-DRIVEN DEFAULTS. `DiarizationService` + `GenericWorker` stage media in `pull/`, words in `generated/diarization_inputs/`, reference clips under `generated/diary_reference/<ytid>/`, run `workspace.sh diarize`, and register `diarization` assets (`diarized_timestamps.tsv`, `speaker_words.tsv`, `diarization.json`) under `generated/diarization_resemblyzer/<ytid>/`; fake mode via `VIDOPS_FAKE_DIARIZATION`. Diarization parameters (device, chunk_seconds, thresholds, etc.) now default to `config.yaml` (`diarization.*` block) with CLI options providing overrides.
 - **Assets:** ✅ REGISTRATION WORKING. DownloadService registers media assets (assets table includes `rel_path`); Clipping/Stitching/Analysis services now persist outputs under storage and auto-register the resulting files.
 - **Subtitles:** ✅ BRIDGED. `vo dl-subs enqueue` and `vo convert-captions enqueue` now create DB jobs that reconstruct legacy `pull/` URL lists, run `workspace.sh dl-subs`/`convert-captions`, ingest VTT/SRT + `.words.yt.tsv` into DB (transcripts + words), register `subtitle`/`transcript_words` assets with `rel_path`, and push artifacts via `FilesystemCache` (central `/mnt/mainroot/mnt/13tb_sas/vidops/storage`, cache `~/vidops_cache` or `tmp/`).
 - **Legacy stitch/analyze/dates/extra-utils:** ✅ BRIDGED. Stitch, analyze, dates, and extra-utils queue jobs now rebuild manifests/lists under legacy `media/` + `generated/`, run `workspace.sh` subcommands, register `stitched`/`analysis`/`dates_manifest`/`utility_output` assets with `rel_path`, and capture stdout/stderr tails + empty-output failures in `job.result`.
 - **Storage Broker HTTPS:** ✅ DEPLOYED. Broker binds to localhost while nginx terminates TLS on the internal LAN IP with 192.168.0.0/24 allowlist and Authorization: Bearer tokens. `/healthz` is available for checks. See `docs/REFACTOR_ARCHITECTURE/STORAGE_BROKER_HTTPS_HOWTO.md`.
-- **Orchestration:** ✅ AUTOMATED. Overlord polls the generic queue to chain completed transcription jobs into analysis jobs, releases stale leases after ~2h, and marks heartbeat-missing workers as STALE.
+- **Orchestration:** ✅ AUTOMATED. Two approaches available:
+  1. **Overlord-driven chaining**: Polls for completed transcription jobs and auto-enqueues analysis (legacy flow)
+  2. **Pipeline CLI orchestration**: `vo pipeline enqueue` creates all stages upfront with dependency tracking; GenericWorker respects dependencies via database filtering (new default approach)
 - **Monitoring CLI:** ✅ UPDATED. `vo_cli.py status workers` and `status jobs` hit the unified tables, expose heartbeat ages/stale counts, and support per-`job_type` breakdowns.
 - **Clips/Stitch CLI:** ✅ UPDATED. `vo_cli.py clips hits/cut` replaces the legacy workspace flow (DAL-backed phrase search + manifest-driven enqueue). `clips cut` is manifest-level (one job per TSV), defaults to `--mode net` (legacy cut-net), supports `--mode local`, and outputs under `generated/hits/<run_name>/`. `vo_cli.py stitch enqueue` handles manifest-based concatenation jobs.
 - **Distributed analysis + UI:** ✅ REFRESHED. `vo analyze enqueue-distributed` now produces an `analysis_tasks` entry plus a `jobs` row that `DistributedAnalysisService` claims, so `vo worker start general` handles download, transcription, analysis-distributed, diarization, stitching, etc. `workers/analysis_distributed.py` hydrates drills from the `drills` table, runs them via `DrillExecutor`, and stores spans through `store_target_spans` while running hot targets as their own pass. The analysis web UI (`/video/<ytid>`, `/analysis-configs`, `/analysis-configs/<id>` and the drill/hot-target editors) now surfaces TLDR + summary blocks, quotes, spans with jump links, chunk tables with filters/“Show full” modals, and “See config” links, and it counts drills from the DB. `web/web_app.py` exposes `/api/video/<ytid>/words` alongside enriched `/detail` + `/segments` payloads (start/end seconds + word indices) that back those pages.
@@ -98,7 +100,140 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - Overlord monitoring guide: `docs/OVERLORD_MONITORING.md` covers responsibilities, thresholds, CLI commands, and troubleshooting flows.
 - Use this file as the single reference for priorities and status. If you need historical context, consult files under `archived/`; do not treat them as requirements.
 
+## Recent Changes (2025-12-11 — Continued)
+
+**Pipeline CLI - Full Video Processing Pipeline (Claude):**
+- Created new `vo pipeline enqueue` CLI command for enqueuing complete processing pipelines
+- Enqueues all stages upfront (download → transcription → diarization → analysis) with dependency tracking
+- Jobs wait in PENDING until prerequisites complete; GenericWorker automatically respects dependencies
+- Supports skip flags: `--skip-download`, `--skip-transcription`, `--skip-diarization`, `--skip-analysis`
+- Uses config.yaml defaults for all stages; CLI options provide overrides
+- Modified `JobRepository.claim_next()` to respect job dependencies via database-level filtering
+- Maintains pipeline traceability with unique pipeline_id stored in job config
+- Added `vo pipeline status` command to monitor all jobs in a pipeline
+
+**Files Created:**
+- `cli/pipeline.py` - New pipeline CLI module
+
+**Files Modified:**
+- `dal/jobs.py` - Updated `claim_next()` to check dependencies using `FOR UPDATE OF j SKIP LOCKED`
+- `vo_cli.py` - Registered pipeline command
+
+## Pipeline CLI Architecture
+
+### Overview
+The Pipeline CLI provides a user-friendly way to enqueue complete video processing pipelines. Instead of manually enqueuing each stage separately, users can enqueue all stages at once with automatic dependency management.
+
+### Usage Examples
+```bash
+# Full pipeline from YouTube URL
+vo pipeline enqueue https://youtube.com/watch?v=XYZ
+
+# Already have video, skip download
+vo pipeline enqueue XYZ --skip-download
+
+# Use larger Whisper model and skip analysis
+vo pipeline enqueue XYZ --transcription-model large-v3 --skip-analysis
+
+# Check pipeline status
+vo pipeline status pipe_abc12345
+```
+
+### Dependency-Based Job Orchestration
+**Key Insight**: All jobs are created immediately with dependency tracking encoded in `job.config`. No background orchestration service is needed - dependencies are enforced at the database level when workers claim jobs.
+
+**Implementation Details**:
+1. **Job Config Storage**: Each job stores:
+   - `pipeline_id`: Unique identifier grouping all pipeline stages (e.g., `pipe_abc12345`)
+   - `depends_on`: Optional job_id of prerequisite job (e.g., `job_111`)
+   - `pipeline_stage`: Current stage name (download, transcription, diarization, analysis-distributed)
+
+2. **Dependency Filtering**: `JobRepository.claim_next()` uses SQL to enforce dependencies:
+   ```sql
+   WHERE (j.config->>'depends_on' IS NULL OR dep.status = 'completed')
+   ```
+   This filters the claimable job set **at query time**, before workers even see jobs.
+
+3. **Row-Level Locking**: Uses `FOR UPDATE OF j SKIP LOCKED` to:
+   - Lock only the main jobs table (not the LEFT JOINed dependency table)
+   - Prevent race conditions between concurrent workers
+   - Skip jobs already claimed by other workers
+
+4. **Worker Behavior** (unchanged):
+   - Worker calls `claim_next()` periodically
+   - Database returns only jobs with satisfied dependencies
+   - Worker processes returned job (or gets None if none available)
+   - No application-level logic needed
+
+### Database State Example
+**After pipeline enqueue (all jobs created immediately)**:
+```
+job_id    job_type              status   depends_on   pipeline_id
+job_111   download              PENDING  NULL         pipe_abc123
+job_222   transcription         PENDING  job_111      pipe_abc123
+job_333   diarization           PENDING  job_222      pipe_abc123
+job_444   analysis-distributed  PENDING  job_333      pipe_abc123
+```
+
+**Worker polls claim_next()**: Only job_111 is claimable (no dependency)
+
+**After job_111 completes**:
+```
+job_id    job_type              status     depends_on
+job_111   download              COMPLETED  NULL
+job_222   transcription         PENDING    job_111      ← NOW claimable
+job_333   diarization           PENDING    job_222
+job_444   analysis-distributed  PENDING    job_333
+```
+
+**Worker polls claim_next()**: Only job_222 is claimable (dependency satisfied)
+
+### Configuration Integration
+Pipeline stages respect `config.yaml` defaults for all job types:
+- Download: Uses `download.*` section defaults
+- Transcription: Uses `transcription.*` section (model, language)
+- Diarization: Uses `diarization.*` section (device, chunk_seconds, thresholds)
+- Analysis: Uses `analysis.*` section (config_id, model overrides)
+
+CLI options override config defaults: `--transcription-model large-v3` overrides config default.
+
+### Skip Flags
+Users can disable stages without creating their jobs:
+- `--skip-download`: Start from transcription (video already present)
+- `--skip-transcription`: Skip transcription, jump to diarization
+- `--skip-diarization`: Skip diarization, go straight to analysis
+- `--skip-analysis`: Stop after diarization
+
+First claimable job becomes the pipeline entry point.
+
+### Monitoring
+`vo pipeline status <pipeline_id>` displays all jobs in a pipeline with:
+- Job ID and stage name
+- Current status (PENDING, CLAIMED, RUNNING, COMPLETED, FAILED)
+- Dependency reference (which job it's waiting for)
+- Creation and completion timestamps
+
+### Advantages Over Overlord-Driven Chaining
+1. **Immediate Visibility**: All jobs visible in queue immediately (no polling delay)
+2. **Simple**: No background service needed (Overlord handles other tasks)
+3. **Atomic**: Database-level dependency enforcement (no race conditions)
+4. **Flexible**: Can skip stages, adjust priorities, or manually retry without special logic
+5. **Debuggable**: Clear dependency chain visible in database for troubleshooting
+
+### Implementation Files
+- **`cli/pipeline.py`**: CLI commands (`enqueue`, `status`)
+- **`dal/jobs.py`**: `claim_next()` with dependency filtering
+- **`vo_cli.py`**: Command registration
+- **`config.yaml`**: Stage-specific defaults (diarization, transcription, etc.)
+
 ## Recent Changes (2025-12-11)
+
+**Diarization Configuration Integration (Claude):**
+- Extended `configuration.py` with `DiarizationConfig` dataclass containing all diarization parameters: model, device, chunk_seconds, overlap_seconds, similarity_threshold, gap_threshold, match_threshold, match_margin, and match_force_best.
+- Updated `config.yaml` with comprehensive diarization section containing sensible defaults (device: "auto", chunk_seconds: 15.0, etc.).
+- Modified `DiarizationService` to load config defaults and updated `enqueue_diarization_job()` signature to accept Optional parameters, using config values as fallbacks. CLI commands (`vo diarize enqueue`, `enqueue-file`) continue to work unchanged, passing explicit values to override defaults.
+- Configuration precedence: config.yaml defaults → environment variables (DIARIZATION_*) → CLI options → hardcoded fallbacks.
+- Benefit: All diarization jobs now use consistent settings from `config.yaml` unless explicitly overridden; configuration changes apply to all future jobs without code modifications.
 
 **GenericWorker + DistributedAnalysisService Integration (Claude):**
 - Created `DistributedAnalysisService` that bridges GenericWorker (jobs table) to the distributed analysis system (analysis_tasks table).

@@ -69,6 +69,9 @@ class JobRepository:
         This uses 'SELECT FOR UPDATE SKIP LOCKED' to prevent race conditions
         between multiple workers.
 
+        Respects job dependencies: only claims jobs where the depends_on job
+        (if present) has been completed.
+
         Args:
             worker: The worker attempting to claim the job.
             lease_duration: How long the job should be "leased" before it's
@@ -93,17 +96,23 @@ class JobRepository:
                         claimed_at = NOW(),
                         updated_at = NOW()
                     WHERE job_id = (
-                        SELECT job_id
-                        FROM {self.table_name}
+                        SELECT j.job_id
+                        FROM {self.table_name} j
+                        LEFT JOIN {self.table_name} dep ON j.config->>'depends_on' = dep.job_id
                         WHERE
                             (
-                                status = %s OR
-                                (status = %s AND updated_at < %s)
+                                j.status = %s OR
+                                (j.status = %s AND j.updated_at < %s)
                             )
-                            { "AND job_type = ANY(%s)" if job_types else "" }
-                        ORDER BY priority DESC, created_at ASC
+                            { "AND j.job_type = ANY(%s)" if job_types else "" }
+                            -- Either no dependency, or dependency is completed
+                            AND (
+                                j.config->>'depends_on' IS NULL
+                                OR dep.status = %s
+                            )
+                        ORDER BY j.priority DESC, j.created_at ASC
+                        FOR UPDATE OF j SKIP LOCKED
                         LIMIT 1
-                        FOR UPDATE SKIP LOCKED
                     )
                     RETURNING *;
                     """,
@@ -116,6 +125,9 @@ class JobRepository:
                             stale_threshold,
                         ]
                         + ([job_types] if job_types else [])
+                        + [
+                            JobStatus.COMPLETED.value,
+                        ]
                     ),
                 )
                 claimed_row = cur.fetchone()

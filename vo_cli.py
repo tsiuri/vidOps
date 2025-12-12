@@ -19,6 +19,8 @@ from cli.convert_captions import convert_captions
 from cli.dates import dates
 from cli.extra_utils import extra_utils
 from cli.quickclip import quickclip
+from cli.pipeline import pipeline
+from cli.webui import webui
 from __init__ import __version__  # Import the version from the package
 
 @click.group(
@@ -55,6 +57,8 @@ cli.add_command(dates)
 cli.add_command(extra_utils)
 cli.add_command(convert_captions)
 cli.add_command(quickclip)
+cli.add_command(pipeline)
+cli.add_command(webui)
 
 if __name__ == '__main__':
     try:
