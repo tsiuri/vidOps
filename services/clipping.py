@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 import json
 from datetime import datetime
+from psycopg2.extras import Json
 
 from dal import VideoRepository, JobRepository, FilesystemCache
 from models import Job, JobStatus
@@ -497,10 +498,10 @@ class ClippingService:
                                 "created_at": datetime.utcnow().isoformat(),
                             }
 
-                            # Update quickclip_clips
+                            # Update quickclip_clips with JSONB data
                             cur.execute(
                                 "UPDATE quickclip_clips SET transcripts = %s WHERE clip_id = %s",
-                                (json.dumps(transcripts), clip_id)
+                                (Json(transcripts), clip_id)
                             )
 
                     logger.info(f"Enqueued transcription for clip {clip_id} (job={trans_job.job_id}, media={clip_rel_path})")
