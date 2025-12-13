@@ -134,6 +134,22 @@
 
                         <strong style="color: #0969da;">Created:</strong>
                         <span>{{ trans_data.created_at }}</span>
+
+                        {% if trans_data.status == 'completed' %}
+                        <strong style="color: #0969da;">Transcript:</strong>
+                        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                          {% if trans_data.vtt_path %}
+                          <a href="{{ url_for('quickclip_play_clip', clip_path=trans_data.vtt_path) }}" class="btn btn-xs btn-sm btn-outline-secondary" target="_blank" style="padding: 4px 8px; font-size: 0.85em;">
+                            📄 View VTT
+                          </a>
+                          {% endif %}
+                          {% if trans_data.words_path %}
+                          <a href="{{ url_for('quickclip_play_clip', clip_path=trans_data.words_path) }}" class="btn btn-xs btn-sm btn-outline-secondary" download style="padding: 4px 8px; font-size: 0.85em;">
+                            📊 Download Words
+                          </a>
+                          {% endif %}
+                        </div>
+                        {% endif %}
                       </div>
                     </div>
                     {% endfor %}
