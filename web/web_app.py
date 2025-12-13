@@ -2006,8 +2006,14 @@ def quickclip_session_detail(session_id: str):
         clip['file'] = None
         clip['file_exists'] = False
         for clip_file in clip_files:
-            marker = f"{float(clip['start_sec']):.2f}-{float(clip['end_sec']):.2f}"
-            if marker in clip_file.name:
+            # Try both 3-digit and minimal digit formats (e.g., "031.00-035.00" and "31.00-35.00")
+            start_sec = float(clip['start_sec'])
+            end_sec = float(clip['end_sec'])
+
+            marker_3digit = f"{start_sec:06.2f}-{end_sec:06.2f}"  # e.g., "031.00-035.00"
+            marker_minimal = f"{start_sec:.2f}-{end_sec:.2f}"     # e.g., "31.00-35.00"
+
+            if marker_3digit in clip_file.name or marker_minimal in clip_file.name:
                 clip['file'] = str(clip_file.relative_to(project_root))
                 clip['file_exists'] = True
                 break
