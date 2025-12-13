@@ -40,7 +40,7 @@ def quickclip():
 
 @quickclip.command("create")
 @click.argument("url")
-@click.argument("spans", nargs=-1, required=True)
+@click.argument("spans", nargs=-1, required=False)
 @click.option("-d", "--description", help="Session description (what this collection is about)")
 @click.option("--tags", help="Comma-separated tags for searchability")
 @click.option("--clips-only", is_flag=True, help="Skip downloading full video, only extract clips")
@@ -48,7 +48,10 @@ def quickclip():
 @click.option("--name", help="Custom session name (auto-generated if not provided)")
 @click.option("--output", help="Custom output directory (default: generated/quickclips/<ytid>)")
 @click.option("--force", is_flag=True, help="Force re-download even if video exists")
-@click.option("--priority", type=int, default=50, help="Job priority (default: 50)")
+@click.option("--priority", type=int, default=90, help="Job priority (default: 90)")
+@click.option("--transcribe-clips", is_flag=True, help="Enqueue transcription jobs for extracted clips")
+@click.option("--transcription-model", help="Whisper model for clip transcription (default: from config.yaml)")
+@click.option("--transcription-language", help="Language for clip transcription (default: from config.yaml)")
 def create_quickclip(
     url: str,
     spans: tuple,
@@ -60,13 +63,19 @@ def create_quickclip(
     output: Optional[str],
     force: bool,
     priority: int,
+    transcribe_clips: bool,
+    transcription_model: Optional[str],
+    transcription_language: Optional[str],
 ):
     """
-    Create a QuickClip session with video clips.
+    Create a QuickClip session with video clips (or full video if no clips specified).
 
     \b
     Examples:
-        # Basic usage
+        # Download full video only
+        vo quickclip create "https://youtube.com/watch?v=ABC123" -d "Full video"
+
+        # Basic usage with clips
         vo quickclip create "https://youtube.com/watch?v=ABC123" "120-145" "300-320" -d "Highlights"
 
         # With labels
@@ -79,7 +88,10 @@ def create_quickclip(
         vo quickclip create "URL" "(start)-60" "300-(end)" -d "Beginning and end"
     """
     click.echo(f"Creating QuickClip session for: {url}")
-    click.echo(f"Clips: {len(spans)}")
+    if spans:
+        click.echo(f"Clips: {len(spans)}")
+    else:
+        click.echo("Clips: (none - will download full video)")
 
     try:
         service = get_quickclip_service()
@@ -96,6 +108,9 @@ def create_quickclip(
             output_dir=output,
             force=force,
             priority=priority,
+            transcribe_clips=transcribe_clips,
+            transcription_model=transcription_model,
+            transcription_language=transcription_language,
         )
 
         click.echo(click.style(f"\n✓ QuickClip session created: {result['session_id']}", fg="green"))
@@ -104,17 +119,22 @@ def create_quickclip(
 
         if result.get('download_job_id'):
             click.echo(f"  Download job: {result['download_job_id']}")
-        click.echo(f"  Clipping job: {result['clip_job_id']}")
 
-        click.echo(click.style("\n✓ Jobs enqueued. Clips will be created by worker.", fg="green"))
-        click.echo(f"\nClips will be saved to: {result['session_dir']}/")
+        if result.get('clip_job_id'):
+            click.echo(f"  Clipping job: {result['clip_job_id']}")
+            click.echo(click.style("\n✓ Jobs enqueued. Clips will be created by worker.", fg="green"))
+        else:
+            click.echo(click.style("\n✓ Job enqueued. Full video will be downloaded.", fg="green"))
 
-        # Show individual clip info
-        click.echo("\nClips:")
-        for clip in result['clips']:
-            label_str = f" ({clip.get('label')})" if clip.get('label') else ""
-            duration = clip['end'] - clip['start']
-            click.echo(f"  {clip['index']}. {clip['start']:.1f}s - {clip['end']:.1f}s ({duration:.1f}s){label_str}")
+        click.echo(f"\nFiles will be saved to: {result['session_dir']}/")
+
+        # Show individual clip info if any
+        if result['clips']:
+            click.echo("\nClips:")
+            for clip in result['clips']:
+                label_str = f" ({clip.get('label')})" if clip.get('label') else ""
+                duration = clip['end'] - clip['start']
+                click.echo(f"  {clip['index']}. {clip['start']:.1f}s - {clip['end']:.1f}s ({duration:.1f}s){label_str}")
 
     except Exception as e:
         logger.error(f"Failed to create QuickClip session: {e}", exc_info=True)
@@ -252,9 +272,11 @@ def browse_web(host: str, port: int, debug: bool):
     try:
         from web.app import app
 
-        url = f"http://{host}:{port}"
-        click.echo(click.style(f"\n🎬 Starting QuickClip Browser...", fg="green", bold=True))
-        click.echo(f"   Open your browser to: {click.style(url, fg='cyan', underline=True)}\n")
+        base_url = f"http://{host}:{port}"
+        quickclip_url = f"{base_url}/quickclip"
+        click.echo(click.style(f"\n🎬 Starting VidOps web UI (includes QuickClip + Analysis)...", fg="green", bold=True))
+        click.echo(f"   QuickClip home: {click.style(quickclip_url, fg='cyan', underline=True)}")
+        click.echo(f"   Analysis home: {click.style(base_url + '/', fg='cyan')}\n")
         click.echo("   Press Ctrl+C to stop the server\n")
 
         app.run(host=host, port=port, debug=debug)

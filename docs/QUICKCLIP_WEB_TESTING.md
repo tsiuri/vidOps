@@ -6,8 +6,8 @@
 
 ### Components
 
-1. **Flask Web Application** - `vidops/web/app.py`
-   - ✅ All routes registered correctly
+1. **Flask Web Application** - QuickClip routes now live inside `vidops/web/web_app.py` (the unified VidOps web server; `web/app.py` re-exports the same Flask app for CLI compatibility)
+   - ✅ All QuickClip routes registered under the `/quickclip` prefix
    - ✅ Database integration via repositories
    - ✅ File streaming for clip playback
    - ✅ Search functionality
@@ -28,13 +28,14 @@
 
 ## Routes
 
-The following routes are available:
+The following QuickClip routes are available (all mounted under `/quickclip` on the unified server):
 
-- `GET /` - Main page listing all videos with QuickClip sessions
-- `GET /video/<ytid>` - Show all sessions for a specific video
-- `GET /session/<session_id>` - Show session details with playable clips
-- `GET /search?q=<query>` - Search sessions by description, tags, or title
-- `GET /play/<path:clip_path>` - Stream clip file for playback
+- `GET /quickclip` - Main page listing all videos with QuickClip sessions
+- `GET /quickclip/video/<ytid>` - Show all sessions for a specific video
+- `GET /quickclip/session/<session_id>` - Show session details with playable clips
+- `GET /quickclip/search?q=<query>` - Search sessions by description, tags, or title
+- `GET /quickclip/play/<path:clip_path>` - Stream clip file for playback
+- `GET|POST /quickclip/create` - Launch the creation form to enqueue new QuickClip sessions
 
 ## Testing Results
 
@@ -53,8 +54,9 @@ All templates render without errors using test data.
 
 ```bash
 $ python vo_cli.py quickclip browse
-🎬 Starting QuickClip Browser...
-   Open your browser to: http://127.0.0.1:5000
+🎬 Starting VidOps web UI (includes QuickClip + Analysis)...
+   QuickClip home: http://127.0.0.1:5000/quickclip
+   Analysis home: http://127.0.0.1:5000/
 
    Press Ctrl+C to stop the server
 
@@ -90,7 +92,7 @@ Server starts successfully and binds to configured host/port.
    python /home/billie/tools/vidops/vo_cli.py quickclip browse
    ```
 
-4. **Open browser** to `http://127.0.0.1:5000`
+4. **Open browser** to `http://127.0.0.1:5000/quickclip`
 
 5. **Test features**:
    - ✅ View video listing on main page
@@ -100,28 +102,29 @@ Server starts successfully and binds to configured host/port.
    - ✅ Download clips
    - ✅ Search for sessions
    - ✅ Navigate using breadcrumbs
+   - ✅ Use “New QuickClip” button to create sessions (fills all CLI options)
 
 ### Expected Behavior
 
-**Index Page** (`/`):
+**Index Page** (`/quickclip`):
 - Shows grid of videos with QuickClip sessions
 - Displays session count and total clips per video
 - Links to video detail page
 
-**Video Page** (`/video/<ytid>`):
+**Video Page** (`/quickclip/video/<ytid>`):
 - Shows video title and metadata
 - Lists all QuickClip sessions for this video
 - Preview of first 3 clips per session
 - Links to session detail page
 
-**Session Page** (`/session/<session_id>`):
+**Session Page** (`/quickclip/session/<session_id>`):
 - Shows session metadata (description, tags, timestamps)
 - Lists all clips with labels
 - Embedded HTML5 video players for each clip
 - Download button for each clip
 - Breadcrumb navigation
 
-**Search Page** (`/search`):
+**Search Page** (`/quickclip/search`):
 - Search box for queries
 - Results show matching sessions
 - Highlights matching content
@@ -193,7 +196,7 @@ Potential improvements:
 ## Files
 
 **Application**:
-- `vidops/web/app.py` - Flask application and routes
+- `vidops/web/web_app.py` - Unified Flask application with QuickClip + analysis routes (`web/app.py` re-exports this module for compatibility)
 - `vidops/web/__init__.py` - Package marker
 - `vidops/cli/quickclip.py` - CLI command (lines 246-268)
 
@@ -203,6 +206,7 @@ Potential improvements:
 - `vidops/web/templates/video.html` - Session listing
 - `vidops/web/templates/session.html` - Session details with players
 - `vidops/web/templates/search.html` - Search interface
+- `vidops/web/templates/quickclip_create.html` - Web form for creating sessions
 
 **Tests**:
 - `test_web_templates.py` - Template rendering verification
@@ -229,3 +233,8 @@ cd /home/billie/projects/overlord_test
 python /home/billie/tools/vidops/vo_cli.py quickclip browse
 # Open http://127.0.0.1:5000 in browser
 ```
+**Creation Page** (`/quickclip/create`):
+- Provides form fields for URL/ID, spans, description, tags, quality, priority, session/output overrides, and flag toggles (clips-only, force download).
+- Includes an “Add full video clip” checkbox so a full-length clip entry (0 → end) can be enqueued alongside or instead of manual spans.
+- Submits to the same route (POST) and redirects to the new session when successful; reports validation errors inline.
+- Accessible via the “New QuickClip” button on the main listing.

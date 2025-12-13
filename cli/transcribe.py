@@ -25,7 +25,7 @@ def _looks_like_video_id(ytid: str | None) -> bool:
 
 @transcribe.command("enqueue")
 @click.argument("ytid")
-@click.option("--model", default="small", help="Whisper model to use (e.g., 'medium', 'large-v2').")
+@click.option("--model", default="large-v3-turbo", help="Whisper model to use (e.g., 'large-v3-turbo', 'large-v3', 'medium').")
 @click.option("--lang", default="en", help="Language of the video (e.g., 'en').")
 @click.option("--priority", type=int, default=50, help="Job priority.")
 @click.option("--force", is_flag=True, help="Force enqueue even if transcript exists.")
@@ -45,7 +45,7 @@ def enqueue_transcription(ytid: str, model: str, lang: str, priority: int, force
         click.echo(click.style(f"✗ Failed to enqueue transcription job: {e}", fg="red"), err=True)
 
 @transcribe.command("enqueue-pending")
-@click.option("--model", default="small", help="Whisper model to check for.")
+@click.option("--model", default="large-v3-turbo", help="Whisper model to check for.")
 @click.option("--limit", type=int, default=100, help="Maximum number of videos to enqueue.")
 @click.option("--lang", default="en", help="Default language for new jobs.")
 @click.option("--priority", type=int, default=50, help="Job priority.")
@@ -70,7 +70,7 @@ def enqueue_pending(model: str, limit: int, lang: str, priority: int):
 @transcribe.command("from-download")
 @click.option("--job-id", help="Download job_id to source media from.")
 @click.option("--url", help="Download URL/playlist/channel used when enqueuing the download job (media_path match).")
-@click.option("--model", default="small", show_default=True, help="Transcription model.")
+@click.option("--model", default="large-v3-turbo", show_default=True, help="Transcription model.")
 @click.option("--lang", default="en", show_default=True, help="Language.")
 @click.option("--priority", type=int, default=50, show_default=True, help="Job priority.")
 @click.option("--force", is_flag=True, help="Force enqueue even if transcript exists.")

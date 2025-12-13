@@ -6,9 +6,12 @@ Simple Flask app for querying the analysis database.
 
 import os
 import sys
+import logging
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Ensure local imports work when running as a script
 ROOT = Path(__file__).resolve().parent
@@ -143,7 +146,7 @@ def _get_job_statuses_for_ytid(ytid: str, session_created_at=None):
                 params = [ytid, 'COMPLETED']
                 where_clause = """
                     WHERE ytid = %s
-                    AND job_type IN ('download', 'transcription', 'diarization', 'clips', 'analysis-distributed')
+                    AND job_type IN ('download', 'transcription', 'diarization', 'clipping', 'analysis-distributed')
                     AND status != %s
                 """
 
@@ -2063,8 +2066,10 @@ def quickclip_create():
         'priority': '90',
         'clips_only': False,
         'force': False,
-        'full_video_clip': False,
-        'full_video_label': 'full_video',
+        'full_video': False,
+        'transcribe_clips': False,
+        'transcription_model': '',
+        'transcription_language': '',
     }
     quality_options = ['best', '1080p', '720p', 'audio-only']
 
@@ -2079,18 +2084,18 @@ def quickclip_create():
         form_values['priority'] = request.form.get('priority', '90').strip()
         form_values['clips_only'] = request.form.get('clips_only') == 'on'
         form_values['force'] = request.form.get('force') == 'on'
-        form_values['full_video_clip'] = request.form.get('full_video_clip') == 'on'
-        form_values['full_video_label'] = request.form.get('full_video_label', 'full_video').strip() or 'full_video'
+        form_values['full_video'] = request.form.get('full_video') == 'on'
+        form_values['transcribe_clips'] = request.form.get('transcribe_clips') == 'on'
+        form_values['transcription_model'] = request.form.get('transcription_model', '').strip()
+        form_values['transcription_language'] = request.form.get('transcription_language', '').strip()
 
         spans_list = [line.strip() for line in form_values['spans'].splitlines() if line.strip()]
         tags_list = [t.strip() for t in form_values['tags'].split(',') if t.strip()]
-        if form_values['full_video_clip']:
-            spans_list.append(f"(start)-(end):{form_values['full_video_label']}")
 
         if not form_values['url']:
             error = "Video URL or ID is required."
-        elif not spans_list:
-            error = "Provide at least one clip span or enable the full video clip option."
+        elif not spans_list and not form_values['full_video']:
+            error = "Provide at least one clip span or enable the full video download option."
         else:
             try:
                 priority_val = int(form_values['priority'] or 90)
@@ -2098,6 +2103,7 @@ def quickclip_create():
                 error = "Priority must be an integer."
             if error is None:
                 try:
+                    logger.info(f"Creating quickclip session with transcribe_clips={form_values['transcribe_clips']} (type: {type(form_values['transcribe_clips'])})")
                     result = _create_quickclip_session(
                         url=form_values['url'],
                         spans=spans_list,
@@ -2109,6 +2115,9 @@ def quickclip_create():
                         output_dir=form_values['output_dir'] or None,
                         force=form_values['force'],
                         priority=priority_val,
+                        transcribe_clips=form_values['transcribe_clips'],
+                        transcription_model=form_values['transcription_model'] or None,
+                        transcription_language=form_values['transcription_language'] or None,
                     )
                     return redirect(url_for('quickclip_session_detail', session_id=result['session_id']))
                 except Exception as exc:
@@ -2159,7 +2168,12 @@ def jobs_browser():
     ytid_filter = request.args.get('ytid', '')
     sort_by = request.args.get('sort', 'created_at')
     sort_dir = request.args.get('dir', 'DESC')
-    limit = int(request.args.get('limit', 100))
+    try:
+        limit = int(request.args.get('limit', 100))
+        if limit < 1 or limit > 1000:
+            limit = 100
+    except (ValueError, TypeError):
+        limit = 100
 
     jobs = []
     total_count = 0
@@ -2232,8 +2246,9 @@ def jobs_browser():
                         'error_message': row[10],
                     })
     except Exception as e:
-        logger.error(f"Error fetching jobs: {e}")
+        logger.error(f"Error fetching jobs: {type(e).__name__}: {e}", exc_info=True)
         jobs = []
+        total_count = 0
 
     return render_template(
         'jobs_browser.html',

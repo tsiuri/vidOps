@@ -75,52 +75,50 @@
 
     <!-- Jobs Table -->
     <div class="table-responsive">
-        <table class="table table-striped table-hover small">
+        <table class="table table-striped table-hover align-middle">
             <thead class="table-dark">
                 <tr>
-                    <th>Job ID</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Video ID</th>
-                    <th>Priority</th>
-                    <th>Worker</th>
-                    <th>Created</th>
-                    <th>Updated</th>
-                    <th>Error</th>
+                    <th style="font-size: 0.95rem;">Job ID</th>
+                    <th style="font-size: 0.95rem;">Type</th>
+                    <th style="font-size: 0.95rem;">Status</th>
+                    <th style="font-size: 0.95rem;">Video ID</th>
+                    <th style="font-size: 0.95rem;">Priority</th>
+                    <th style="font-size: 0.95rem;">Worker</th>
+                    <th style="font-size: 0.95rem;">Created</th>
+                    <th style="font-size: 0.95rem;">Updated</th>
+                    <th style="font-size: 0.95rem;">Error</th>
                 </tr>
             </thead>
             <tbody>
                 {% if jobs %}
                     {% for job in jobs %}
-                    <tr>
+                    <tr style="border-bottom: 1px solid #dee2e6; padding: 0.75rem 0;">
                         <td>
-                            <code class="text-monospace" style="font-size: 0.85em;">
-                                {{ job.job_id[:12] }}...
+                            <code style="font-size: 0.9em; cursor: help;" title="{{ job.job_id }}">
+                                {{ job.job_id[:16] }}
                             </code>
-                            <br>
-                            <small class="text-muted">{{ job.job_id }}</small>
                         </td>
                         <td>
-                            <span class="badge bg-secondary">{{ job.job_type }}</span>
+                            <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ job.job_type }}</span>
                         </td>
                         <td>
                             {% if job.status == 'COMPLETED' %}
-                                <span class="badge bg-success">{{ job.status }}</span>
+                                <span class="badge bg-success" style="font-size: 0.85rem;">{{ job.status }}</span>
                             {% elif job.status == 'RUNNING' %}
-                                <span class="badge bg-primary">{{ job.status }}</span>
+                                <span class="badge bg-primary" style="font-size: 0.85rem;">{{ job.status }}</span>
                             {% elif job.status == 'CLAIMED' %}
-                                <span class="badge bg-info">{{ job.status }}</span>
+                                <span class="badge bg-info" style="font-size: 0.85rem;">{{ job.status }}</span>
                             {% elif job.status == 'FAILED' %}
-                                <span class="badge bg-danger">{{ job.status }}</span>
+                                <span class="badge bg-danger" style="font-size: 0.85rem;">{{ job.status }}</span>
                             {% elif job.status == 'PENDING' %}
-                                <span class="badge bg-warning text-dark">{{ job.status }}</span>
+                                <span class="badge bg-warning text-dark" style="font-size: 0.85rem;">{{ job.status }}</span>
                             {% else %}
-                                <span class="badge bg-secondary">{{ job.status }}</span>
+                                <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ job.status }}</span>
                             {% endif %}
                         </td>
                         <td>
                             {% if job.ytid %}
-                                <a href="{{ url_for('video', ytid=job.ytid) }}" class="text-decoration-none">
+                                <a href="{{ url_for('video_detail_page', ytid=job.ytid) }}" class="text-decoration-none" style="font-weight: 500;">
                                     {{ job.ytid }}
                                 </a>
                             {% else %}
@@ -128,28 +126,28 @@
                             {% endif %}
                         </td>
                         <td>
-                            <span class="badge {% if job.priority >= 100 %}bg-danger{% elif job.priority >= 75 %}bg-warning text-dark{% elif job.priority >= 50 %}bg-info{% else %}bg-secondary{% endif %}">
+                            <span class="badge {% if job.priority >= 100 %}bg-danger{% elif job.priority >= 75 %}bg-warning text-dark{% elif job.priority >= 50 %}bg-info{% else %}bg-secondary{% endif %}" style="font-size: 0.85rem;">
                                 {{ job.priority }}
                             </span>
                         </td>
                         <td>
                             {% if job.claimed_by %}
-                                <small>{{ job.claimed_by }}</small>
+                                <span style="font-size: 0.9rem;">{{ job.claimed_by }}</span>
                             {% else %}
                                 <span class="text-muted">-</span>
                             {% endif %}
                         </td>
-                        <td>
-                            <small>{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '-' }}</small>
+                        <td style="font-size: 0.9rem;">
+                            {{ job.created_at.strftime('%m-%d %H:%M:%S') if job.created_at else '-' }}
                         </td>
-                        <td>
-                            <small>{{ job.updated_at.strftime('%Y-%m-%d %H:%M:%S') if job.updated_at else '-' }}</small>
+                        <td style="font-size: 0.9rem;">
+                            {{ job.updated_at.strftime('%m-%d %H:%M:%S') if job.updated_at else '-' }}
                         </td>
                         <td>
                             {% if job.error_message %}
-                                <small class="text-danger" title="{{ job.error_message }}">
-                                    {{ job.error_message[:50] }}{% if job.error_message|length > 50 %}...{% endif %}
-                                </small>
+                                <span class="text-danger" style="font-size: 0.85rem; cursor: help;" title="{{ job.error_message }}">
+                                    {{ job.error_message[:40] }}{% if job.error_message|length > 40 %}...{% endif %}
+                                </span>
                             {% else %}
                                 <span class="text-muted">-</span>
                             {% endif %}
@@ -179,8 +177,35 @@
         font-family: 'Courier New', monospace;
     }
 
+    .table {
+        font-size: 0.95rem;
+        margin-bottom: 0;
+    }
+
+    .table thead th {
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        vertical-align: middle;
+    }
+
+    .table tbody td {
+        padding: 0.75rem 0.5rem;
+        vertical-align: middle;
+    }
+
     .table-hover tbody tr:hover {
-        background-color: #f8f9fa;
+        background-color: #f0f7ff;
+    }
+
+    .table-striped > tbody > tr:nth-of-type(odd) {
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    code {
+        background-color: #f5f5f5;
+        padding: 2px 6px;
+        border-radius: 3px;
+        color: #d63384;
     }
 </style>
 {% endblock %}

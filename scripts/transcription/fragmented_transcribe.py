@@ -208,7 +208,7 @@ def determine_model_tag(raw_model_name: str) -> str:
 
 def parse_args():
     # Match legacy defaults (dual_gpu_transcribe.sh uses MODEL=small)
-    default_model = os.environ.get("MODEL", "small")
+    default_model = os.environ.get("MODEL", "large-v3-turbo")
     default_lang = os.environ.get("LANGUAGE", "en")
     default_outfmt = os.environ.get("OUTFMT", "vtt")
     default_chunk_len = float(os.environ.get("CHUNK_LEN", "3600"))

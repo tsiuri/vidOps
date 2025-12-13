@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 
 {% block title %}Search QuickClips{% endblock %}
+{% block nav_quickclip %}active{% endblock %}
 
 {% block content %}
 <h1 class="mb-4">Search QuickClips</h1>
 
 <div class="card mb-4">
     <div class="card-body">
-        <form action="/search" method="get">
+        <form action="{{ url_for('quickclip_search') }}" method="get">
             <div class="input-group input-group-lg">
                 <input type="text" class="form-control" name="q" value="{{ query }}" placeholder="Search by description, tags, or video title..." autofocus>
                 <button class="btn btn-primary" type="submit">Search</button>
@@ -26,12 +27,12 @@
             <div class="card">
                 <div class="card-body">
                     <div class="row">
-                        <div class="col-md-8">
-                            <h5 class="card-title">
-                                <a href="/session/{{ session.session_id }}">
-                                    {{ session.title or session.ytid }}
-                                </a>
-                            </h5>
+                <div class="col-md-8">
+                    <h5 class="card-title">
+                        <a href="{{ url_for('quickclip_session_detail', session_id=session.session_id) }}">
+                            {{ session.title or session.ytid }}
+                        </a>
+                    </h5>
                             {% if session.description %}
                             <p class="card-text">{{ session.description }}</p>
                             {% endif %}
@@ -46,20 +47,20 @@
                             </div>
                             {% endif %}
                         </div>
-                        <div class="col-md-4 text-end">
-                            <div class="mb-2">
-                                <span class="badge bg-info">{{ session.clips|length }} clips</span>
-                            </div>
-                            <p class="text-muted small mb-2">
-                                {{ session.created_at.strftime('%Y-%m-%d %H:%M') }}
-                            </p>
-                            <a href="/session/{{ session.session_id }}" class="btn btn-sm btn-primary">
-                                View Session →
-                            </a>
-                            <a href="/video/{{ session.ytid }}" class="btn btn-sm btn-outline-secondary">
-                                All Sessions
-                            </a>
+                    <div class="col-md-4 text-end">
+                        <div class="mb-2">
+                            <span class="badge bg-info">{{ session.clips|length }} clips</span>
                         </div>
+                        <p class="text-muted small mb-2">
+                            {{ session.created_at.strftime('%Y-%m-%d %H:%M') }}
+                        </p>
+                        <a href="{{ url_for('quickclip_session_detail', session_id=session.session_id) }}" class="btn btn-sm btn-primary">
+                            View Session →
+                        </a>
+                        <a href="{{ url_for('quickclip_video_detail', ytid=session.ytid) }}" class="btn btn-sm btn-outline-secondary">
+                            All Sessions
+                        </a>
+                    </div>
                     </div>
 
                     <!-- Show clips -->
@@ -87,7 +88,7 @@
     <div class="alert alert-warning">
         <h4 class="alert-heading">No results found</h4>
         <p>No QuickClip sessions match "{{ query }}"</p>
-        <p class="mb-0">Try different keywords or browse <a href="/">all videos</a>.</p>
+        <p class="mb-0">Try different keywords or browse <a href="{{ url_for('quickclip_index') }}">all videos</a>.</p>
     </div>
     {% endif %}
 {% else %}

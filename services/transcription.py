@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
@@ -168,6 +169,7 @@ class TranscriptionService:
         Processes a single transcription job claimed by a worker.
 
         This method encapsulates the worker's logic for executing the transcription.
+        Handles both full-video and clip transcriptions.
         """
         if not job.ytid or not job.media_path:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job has no ytid or media_path.")
@@ -175,15 +177,28 @@ class TranscriptionService:
 
         try:
             # 1. Resolve media file path
-            video_obj = self.video_repo.get(job.ytid)
-            if not video_obj:
-                raise ValueError(f"Video object not found for ytid: {job.ytid}")
+            # Check if this is a clip transcription (has clip_context in config)
+            is_clip_transcription = "clip_context" in job.config
 
-            media_local_path = self.fs_cache.get_media_path(video_obj, pull_to_local=True)
-            if not media_local_path or not Path(media_local_path).exists():
-                raise FileNotFoundError(
-                    f"Media file not found for ytid '{job.ytid}' (expected at {job.media_path})."
-                )
+            if is_clip_transcription:
+                # For clip transcription, use the media_path directly (it's the clip file path)
+                clip_media_path = job.config.get("clip_context", {}).get("clip_media_path", job.media_path)
+                media_local_path = self.fs_cache.pull_to_cache(clip_media_path)
+                if not media_local_path or not Path(media_local_path).exists():
+                    raise FileNotFoundError(
+                        f"Clip media file not found for path '{clip_media_path}' (resolved to {media_local_path})."
+                    )
+            else:
+                # For full-video transcription, look up the video and get its media
+                video_obj = self.video_repo.get(job.ytid)
+                if not video_obj:
+                    raise ValueError(f"Video object not found for ytid: {job.ytid}")
+
+                media_local_path = self.fs_cache.get_media_path(video_obj, pull_to_local=True)
+                if not media_local_path or not Path(media_local_path).exists():
+                    raise FileNotFoundError(
+                        f"Media file not found for ytid '{job.ytid}' (expected at {job.media_path})."
+                    )
 
             # 2. Update job status to RUNNING
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING)
@@ -279,6 +294,18 @@ class TranscriptionService:
                 "processing_seconds": round(processing_time, 3),
             }
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
+
+            # 7. Handle clip transcription completion if this is a clip context job
+            if "clip_context" in job.config:
+                logger.info(f"Clip transcription completed for job {job.job_id}, handling clip completion")
+                self._handle_clip_transcription_completion(
+                    job=job,
+                    model_name=model_name,
+                    language=language,
+                    job_result=job_result,
+                    words=words,
+                )
+
             logger.info(
                 "Successfully transcribed %s with model %s in %.2fs via legacy runner",
                 job.ytid,
@@ -290,6 +317,124 @@ class TranscriptionService:
             error_msg = f"Transcription failed for job {job.job_id} ({job.ytid}): {e}"
             logger.error(error_msg, exc_info=True)
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_msg)
+
+    def _handle_clip_transcription_completion(
+        self,
+        job: Job,
+        model_name: str,
+        language: Optional[str],
+        job_result: Dict[str, Any],
+        words: List[Word],
+    ) -> None:
+        """
+        Handle completion of a clip transcription job.
+        Updates clip transcript metadata and registers transcript artifacts.
+
+        Since we transcribe the clip file directly (not the full video),
+        all words returned are already for the clip.
+
+        Args:
+            job: The transcription job with clip_context in config
+            model_name: The Whisper model used
+            language: The language transcribed
+            job_result: Result dict with transcript file paths
+            words: List of Word objects for this clip transcription
+        """
+        try:
+            from db import get_connection
+            import json
+
+            clip_context = job.config.get("clip_context", {})
+            clip_id = clip_context.get("clip_id")
+            session_id = clip_context.get("session_id")
+
+            if not clip_id:
+                logger.warning("Clip transcription job has no clip_id in context, skipping update")
+                return
+
+            # All words are already for the clip (we transcribed the clip file directly)
+            clip_word_count = len(words)
+
+            # Build transcript text from clip words
+            clip_text = " ".join([getattr(w, 'word', '') for w in words if getattr(w, 'word', '')])
+
+            # Update clip transcript metadata in quickclip_clips
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get current transcripts JSONB
+                    cur.execute(
+                        "SELECT transcripts FROM quickclip_clips WHERE clip_id = %s",
+                        (clip_id,)
+                    )
+                    row = cur.fetchone()
+                    transcripts = row[0] if row and row[0] else {}
+
+                    # Update transcript entry with completed data
+                    if model_name in transcripts:
+                        transcripts[model_name].update({
+                            "status": "completed",
+                            "completed_at": datetime.utcnow().isoformat(),
+                            "word_count": clip_word_count,
+                            "text_preview": clip_text[:200] if clip_text else "(no speech detected)",
+                            "vtt_path": job_result.get("vtt_path"),
+                            "words_path": job_result.get("words_path"),
+                        })
+
+                    # Write back to database
+                    cur.execute(
+                        "UPDATE quickclip_clips SET transcripts = %s WHERE clip_id = %s",
+                        (json.dumps(transcripts), clip_id)
+                    )
+
+            # Register transcript artifacts in assets table with clip_id
+            if job_result.get("vtt_path"):
+                with get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO assets (ytid, kind, path, rel_path, clip_id, bytes, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                            ON CONFLICT (ytid, kind, rel_path) DO UPDATE SET clip_id = EXCLUDED.clip_id
+                            """,
+                            (
+                                job.ytid,
+                                "transcript_vtt",
+                                job_result.get("vtt_path"),
+                                job_result.get("vtt_path"),
+                                clip_id,
+                                0,  # Will be updated when file is actually stored
+                            )
+                        )
+
+            if job_result.get("words_path"):
+                with get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO assets (ytid, kind, path, rel_path, clip_id, bytes, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                            ON CONFLICT (ytid, kind, rel_path) DO UPDATE SET clip_id = EXCLUDED.clip_id
+                            """,
+                            (
+                                job.ytid,
+                                "transcript_words",
+                                job_result.get("words_path"),
+                                job_result.get("words_path"),
+                                clip_id,
+                                0,  # Will be updated when file is actually stored
+                            )
+                        )
+
+            logger.info(
+                f"Clip transcription completed for {clip_id}: {clip_word_count} words extracted, "
+                f"metadata updated, assets registered"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to handle clip transcription completion for job {job.job_id}: {e}",
+                exc_info=True
+            )
 
     def update_job_status(self, job_id: str, status: JobStatus, message: Optional[str] = None, result: Optional[Dict[str, Any]] = None):
         """

@@ -332,7 +332,7 @@ class FilesystemCache:
         Returns:
             Registered Asset object
         """
-        from vidops.dal.videos import VideoRepository
+        from .videos import VideoRepository
 
         full_path = self.get_central_path(relative_path)
 

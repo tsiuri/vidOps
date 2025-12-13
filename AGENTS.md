@@ -85,6 +85,16 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 
 ## Active Analysis Updates (2025-12-11)
 - GenericWorker now claims distributed analysis work through `services/distributed_analysis.py`, so `vo worker start general` covers download, transcription, clips, diarization, stitching, and `analysis-distributed` in one process. See `tests/workers/test_generic_worker_distributed_analysis.py` for the handoff coverage.
-- The analysis web UI (`web/templates/video_detail.html`, `/analysis-configs*` templates, `web/web_app.py`) was rebuilt: nav includes an Analysis Configs link, the video detail page shows TLDR/summary, quotes, spans, per-chunk tables with filters, “Show full” modals, jump links, and a “See config ↗” action. Drill counts on `/analysis-configs` now come from the `drills` table, and the config/detail editors expose all drill + hot target settings (model/endpoint overrides, options JSON, prompt text, dependencies).
+- The analysis web UI (`web/templates/video_detail.html`, `/analysis-configs*` templates, `web/web_app.py`) was rebuilt: nav includes an Analysis Configs link, the video detail page shows TLDR/summary, quotes, spans, per-chunk tables with filters, "Show full" modals, jump links, and a "See config ↗" action. Drill counts on `/analysis-configs` now come from the `drills` table, and the config/detail editors expose all drill + hot target settings (model/endpoint overrides, options JSON, prompt text, dependencies).
 - Distributed analysis workers now hydrate drills from the DB (`workers/analysis_distributed.py`), run them through `DrillExecutor`, and persist emitted spans via `store_target_spans`, independent of hot targets. Hot targets remain a separate pass driven by their pattern rules but share the refreshed configurability UI.
 - `/api/video/<ytid>/detail`, `/segments`, and the new `/words` endpoint power the UI. Chunk detail uses DB start/end offsets and word indices to highlight whether text was truncated; future edits should keep these endpoints in sync with the templates and update this note if contract changes.
+
+## Active QuickClip Updates (2025-12-12)
+- Clip transcription is now optional and configurable: `--transcribe-clips` flag enqueues transcription jobs for extracted clips
+- Transcription model and language are configurable per session: `--transcription-model` and `--transcription-language` CLI options (defaults from `config.yaml`)
+- Web UI includes checkbox for "Transcribe clips" and text inputs for model and language overrides
+- Architecture: After `ClippingService.process_job()` extracts clips, if `transcribe_clips=true`, it enqueues transcription jobs via `TranscriptionService.enqueue_video()`
+- Clip-level transcript metadata is stored in `quickclip_clips.transcripts` JSONB field with structure: `{model: {model, language, job_id, status, created_at}}`
+- Database migrations added: `db/migrations/006_clip_transcription.sql` adds `transcripts` JSONB to `quickclip_clips` and `clip_id` nullable column to `assets` table
+- ClippingService flow: QuickClipService passes `session_id`, `transcribe_clips`, and transcription params → ClippingService.enqueue_manifest_job() stores them in job config → process_job() calls `_enqueue_clip_transcriptions()` after clip extraction
+- Transcription jobs inherit video's ytid and clip metadata for proper isolation (clip transcripts stored separately from full-video transcripts, preventing housekeeping confusion)

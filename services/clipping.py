@@ -6,10 +6,13 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional
+import json
+from datetime import datetime
 
 from dal import VideoRepository, JobRepository, FilesystemCache
 from models import Job, JobStatus
 from configuration import load_config
+from db import get_connection
 import os
 import csv
 import subprocess
@@ -46,6 +49,9 @@ class ClippingService:
         run_name: Optional[str] = None,
         output_dir: Optional[str] = None,
         manifest_path: Optional[str] = None,
+        transcribe_clips: bool = False,
+        transcription_model: Optional[str] = None,
+        transcription_language: Optional[str] = None,
     ) -> Job:
         """
         Enqueues a single video clipping job.
@@ -89,7 +95,10 @@ class ClippingService:
                 end_sec,
                 output_dir=output_dir,
                 run_name=run_name,
-            )
+            ),
+            "transcribe_clips": transcribe_clips,
+            "transcription_model": transcription_model or self.config.transcription.model,
+            "transcription_language": transcription_language or self.config.transcription.language,
         }
 
         # Create the job in the database
@@ -111,6 +120,10 @@ class ClippingService:
         ytid: str,
         priority: int = 50,
         mode: str = "net",
+        session_id: Optional[str] = None,
+        transcribe_clips: bool = False,
+        transcription_model: Optional[str] = None,
+        transcription_language: Optional[str] = None,
     ) -> Job:
         """
         Enqueue a clipping job for a full manifest (legacy cut-local will process all rows).
@@ -120,6 +133,10 @@ class ClippingService:
             "output_dir": output_dir,
             "manifest_path": manifest_path,
             "mode": mode,
+            "session_id": session_id,
+            "transcribe_clips": transcribe_clips,
+            "transcription_model": transcription_model or self.config.transcription.model,
+            "transcription_language": transcription_language or self.config.transcription.language,
         }
         job = Job(
             job_type="clipping",
@@ -208,6 +225,17 @@ class ClippingService:
 
             if not registered:
                 raise FileNotFoundError(f"No clip output found in {output_dir}")
+
+            # Handle transcription if enabled
+            transcribe_clips_value = job.config.get("transcribe_clips")
+            logger.info(f"Clipping job config transcribe_clips value: {transcribe_clips_value} (type: {type(transcribe_clips_value)})")
+            logger.info(f"Full job config: {job.config}")
+
+            if transcribe_clips_value:
+                logger.info(f"Enqueuing clip transcriptions for session {run_name}")
+                self._enqueue_clip_transcriptions(job, registered, run_name)
+            else:
+                logger.debug(f"Skipping clip transcriptions: transcribe_clips={transcribe_clips_value}")
 
             job_result = {
                 "clip_paths": registered,
@@ -361,3 +389,127 @@ class ClippingService:
         except subprocess.CalledProcessError as exc:
             logger.warning("ffmpeg clipping failed (%s). Falling back to file copy.", exc)
             shutil.copy2(source_path, output_path)
+
+    def _enqueue_clip_transcriptions(self, job: Job, registered_clips: List[str], run_name: str) -> None:
+        """
+        Enqueue transcription jobs for extracted clips.
+
+        Transcribes the clip media file directly (not the full video),
+        allowing clips to be transcribed even if the full video wasn't downloaded.
+
+        Args:
+            job: The clipping job
+            registered_clips: List of registered clip relative paths
+            run_name: The run name (typically session_id for quickclips)
+        """
+        from models import Job as JobModel, JobStatus
+
+        logger.info(f"_enqueue_clip_transcriptions called with {len(registered_clips)} clips, job_config keys: {list(job.config.keys())}")
+
+        session_id = job.config.get("session_id")
+        if not session_id:
+            logger.warning("Cannot enqueue clip transcriptions: session_id not in job config")
+            return
+
+        model = job.config.get("transcription_model", self.config.transcription.model)
+        language = job.config.get("transcription_language", self.config.transcription.language)
+        ytid = job.ytid
+        # Inherit priority from the clipping job so clip transcriptions are processed with same importance
+        priority = job.priority
+
+        logger.info(f"Enqueuing transcription jobs for {len(registered_clips)} clips from session {session_id} (model={model}, language={language}, priority={priority})")
+
+        try:
+            # Find quickclip_clips records for this session
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT clip_id, start_sec, end_sec, label
+                        FROM quickclip_clips
+                        WHERE session_id = %s
+                        ORDER BY clip_index ASC
+                        """,
+                        (session_id,)
+                    )
+                    clip_records = cur.fetchall()
+
+            if not clip_records:
+                logger.warning(f"No quickclip_clips records found for session {session_id}")
+                return
+
+            # Enqueue transcription job for each clip
+            for clip_idx, (clip_id, start_sec, end_sec, label) in enumerate(clip_records):
+                try:
+                    # Get the corresponding registered clip path
+                    if clip_idx >= len(registered_clips):
+                        logger.warning(f"No registered clip path for clip_id {clip_id}")
+                        continue
+
+                    clip_rel_path = registered_clips[clip_idx]
+
+                    # Enqueue transcription job for the CLIP FILE, not the full video
+                    # This allows transcription of clips even without the full video
+                    clip_config = {
+                        "model": model,
+                        "language": language,
+                        "ytid": ytid,  # Keep ytid for reference, but transcribe the clip file
+                        "media_path_hint": clip_rel_path,
+                        "clip_context": {
+                            "clip_id": clip_id,
+                            "session_id": session_id,
+                            "clipping_job_id": job.job_id,
+                            "start_sec": float(start_sec),
+                            "end_sec": float(end_sec),
+                            "label": label,
+                            "clip_media_path": clip_rel_path,  # Full clip media to transcribe
+                        }
+                    }
+
+                    # Create transcription job for the clip media file
+                    trans_job = JobModel(
+                        job_type="transcription",
+                        ytid=ytid,  # Reference to original video
+                        media_path=clip_rel_path,  # Clip file path for transcription
+                        config=clip_config,
+                        priority=priority,
+                        status=JobStatus.PENDING,
+                    )
+                    trans_job = self.job_repo.create(trans_job)
+
+                    # Store clip metadata in quickclip_clips.transcripts JSONB
+                    with get_connection() as conn:
+                        with conn.cursor() as cur:
+                            # Get or initialize the transcripts JSONB
+                            cur.execute(
+                                "SELECT transcripts FROM quickclip_clips WHERE clip_id = %s",
+                                (clip_id,)
+                            )
+                            row = cur.fetchone()
+                            transcripts = row[0] if row and row[0] else {}
+
+                            # Add transcription job reference
+                            transcripts[model] = {
+                                "model": model,
+                                "language": language,
+                                "job_id": trans_job.job_id,
+                                "status": "pending",
+                                "created_at": datetime.utcnow().isoformat(),
+                            }
+
+                            # Update quickclip_clips
+                            cur.execute(
+                                "UPDATE quickclip_clips SET transcripts = %s WHERE clip_id = %s",
+                                (json.dumps(transcripts), clip_id)
+                            )
+
+                    logger.info(f"Enqueued transcription for clip {clip_id} (job={trans_job.job_id}, media={clip_rel_path})")
+
+                except Exception as exc:
+                    if "unique" in str(exc).lower():
+                        logger.debug(f"Transcription job already exists for {ytid} model {model}, skipping")
+                    else:
+                        logger.warning(f"Failed to enqueue transcription for clip {clip_id}: {exc}")
+
+        except Exception as e:
+            logger.error(f"Error enqueueing clip transcriptions: {e}", exc_info=True)

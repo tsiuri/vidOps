@@ -204,6 +204,25 @@ class AnalysisConfig:
 
 
 @dataclass
+class HousekeepingConfig:
+    """Housekeeping (idle worker maintenance) configuration."""
+    # Enable housekeeping jobs when workers are idle
+    enabled: bool = True
+    # Number of consecutive failed job claims before triggering housekeeping
+    trigger_idle_attempts: int = 10
+    # Maximum housekeeping jobs to enqueue per idle cycle
+    max_per_cycle: int = 5
+    # Minimum age (in seconds) for videos before they're eligible for housekeeping
+    min_video_age_seconds: int = 3600
+    # Priority for housekeeping jobs (very low so real work always wins)
+    priority: int = 10
+    # Priority offset for transcription upgrades (priority - upgrade_priority_offset)
+    upgrade_priority_offset: int = 5
+    # Which tasks to run during idle (e.g., 'transcribe_default')
+    tasks: List[str] = field(default_factory=lambda: ["transcribe_default"])
+
+
+@dataclass
 class Config:
     """Root configuration object for the VidOps application."""
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
@@ -215,6 +234,7 @@ class Config:
     storage_broker: StorageBrokerConfig = field(default_factory=StorageBrokerConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    housekeeping: HousekeepingConfig = field(default_factory=HousekeepingConfig)
 
 
 # --- Loading Logic ---

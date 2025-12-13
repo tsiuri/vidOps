@@ -2,7 +2,8 @@
 
 import click
 import os
-import threading
+import subprocess
+import sys
 from pathlib import Path
 from workers import (
     GenericWorker,
@@ -20,35 +21,34 @@ from workers import (
 from workers.analysis_distributed import AnalysisWorker as DistributedAnalysisWorker
 from configuration import load_config
 import logging
-import socket
+
+RUN_WEBUI_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_webui.py"
 
 logger = logging.getLogger(__name__)
 
-def start_web_server(host: str = "127.0.0.1", port: int = 5000):
-    """Start Flask web server in a background thread if the port is free."""
-    import sys
-    from pathlib import Path
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind((host, port))
-            except OSError:
-                logger.warning("Web UI already running on http://%s:%s; skipping embedded server.", host, port)
-                return
-        # Add project paths so the web app can find scripts/analysis modules
-        web_dir = Path(__file__).parent.parent / 'web'
-        project_root = web_dir.parent
-        sys.path.insert(0, str(project_root / 'scripts' / 'analysis'))
-        sys.path.insert(0, str(project_root / 'scripts'))
-        sys.path.insert(0, str(web_dir / 'scripts'))
-        sys.path.insert(0, str(web_dir))  # This will be searched first
 
-        from web_app import app
-        # Run Flask in a daemon thread so it doesn't block worker shutdown
-        app.run(host=host, port=port, debug=False, use_reloader=False)
-    except Exception as e:
-        logger.error(f"Failed to start web server: {e}", exc_info=True)
+def ensure_webui_running(host: str = "127.0.0.1", port: int = 5000) -> None:
+    """Ensure the unified web UI is running via scripts/run_webui.py (detached)."""
+    if port <= 0:
+        return
+    if not RUN_WEBUI_SCRIPT.exists():
+        logger.warning("Web UI script missing at %s; skipping auto-launch.", RUN_WEBUI_SCRIPT)
+        return
+    cmd = [
+        sys.executable or "python3",
+        str(RUN_WEBUI_SCRIPT),
+        "--only",
+        "analysis",
+        "--analysis-port",
+        str(port),
+        "--host",
+        host,
+        "--detach",
+    ]
+    try:
+        subprocess.run(cmd, check=False, cwd=str(Path(__file__).resolve().parents[1]))
+    except Exception as exc:
+        logger.warning("Failed to auto-start web UI: %s", exc)
 
 @click.group()
 def worker():
@@ -136,14 +136,23 @@ def start_worker(
     os.environ.setdefault("VIDOPS_PROJECT_ROOT", str(Path.cwd()))
     click.echo(f"Using project root: {os.environ['VIDOPS_PROJECT_ROOT']}")
 
+    if web_port > 0:
+        ensure_webui_running(port=web_port)
+
     # This is a basic way to start. In a production system,
     # you might want to use process management tools like systemd or supervisor
     # which would call the worker script directly.
 
+    web_status_msg = (
+        f"http://127.0.0.1:{web_port}/ (managed by run_webui.py)"
+        if web_port > 0
+        else "disabled"
+    )
+
     if worker_type == "general":
         click.echo(f"  Metrics: {'enabled on port ' + str(metrics_port) if metrics_port > 0 else 'disabled'}")
-        click.echo(f"  Web UI: {'enabled on http://127.0.0.1:' + str(web_port) if web_port > 0 else 'disabled'}")
-        worker_instance = GenericWorker(web_port=web_port, metrics_port=metrics_port)
+        click.echo(f"  Web UI: {web_status_msg}")
+        worker_instance = GenericWorker(web_port=0, metrics_port=metrics_port)
         worker_instance.run()
     elif worker_type == "download":
         worker_instance = DownloadWorker()
@@ -182,11 +191,7 @@ def start_worker(
                 click.echo(f"  Metrics: http://0.0.0.0:{metrics_port}/metrics")
             else:
                 click.echo(f"  Metrics: disabled")
-
-            # Start web server in background thread (skip silently if already running)
-            web_thread = threading.Thread(target=start_web_server, kwargs={"host": "127.0.0.1", "port": 5000}, daemon=True)
-            web_thread.start()
-            click.echo(f"  Web UI: http://127.0.0.1:5000/analysis-configs")
+            click.echo(f"  Web UI: {web_status_msg}")
 
             worker_instance = DistributedAnalysisWorker(
                 machine_alias=_machine_alias,

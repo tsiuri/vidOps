@@ -60,8 +60,8 @@
             Size: {{ (full_video.bytes / (1024*1024))|round(1) }} MB
             {% endif %}
         </p>
-        <div class="mb-3">
-            <video controls preload="metadata" class="w-100">
+        <div class="mb-3" style="max-height: 70vh; overflow: hidden;">
+            <video controls preload="metadata" style="width: 100%; height: 100%; object-fit: contain;">
                 <source src="{{ full_video.url }}" type="video/mp4">
                 Your browser does not support video playback.
             </video>
@@ -96,8 +96,8 @@
                 </p>
 
                 {% if clip.file_exists and clip.file %}
-                <div class="mb-3">
-                    <video controls preload="metadata" class="w-100">
+                <div class="mb-3" style="width: 100%; height: 50vh; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                    <video controls preload="metadata" style="max-width: 100%; max-height: 100%; object-fit: contain;">
                         <source src="{{ url_for('quickclip_play_clip', clip_path=clip.file) }}" type="video/mp4">
                         Your browser does not support video playback.
                     </video>
@@ -105,6 +105,42 @@
                 <a href="{{ url_for('quickclip_play_clip', clip_path=clip.file) }}" class="btn btn-sm btn-outline-primary" download>
                     Download Clip
                 </a>
+
+                <!-- Clip Transcripts Section -->
+                <div class="mt-4">
+                  <h5 style="margin-bottom: 12px;">Transcripts</h5>
+                  {% if clip.transcripts and clip.transcripts|length > 0 %}
+                    {% for model, trans_data in clip.transcripts.items() %}
+                    <div style="background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; margin-bottom: 8px;">
+                      <div style="display: grid; grid-template-columns: auto 1fr; gap: 12px; font-size: 0.95em;">
+                        <strong style="color: #0969da;">Model:</strong>
+                        <span>{{ model }}</span>
+
+                        <strong style="color: #0969da;">Language:</strong>
+                        <span>{{ trans_data.language }}</span>
+
+                        <strong style="color: #0969da;">Status:</strong>
+                        <span style="padding: 2px 6px; border-radius: 4px;
+                          {% if trans_data.status == 'completed' %}background: #d1f4d1; color: #238636;
+                          {% elif trans_data.status == 'pending' %}background: #fff8c5; color: #9e6a03;
+                          {% elif trans_data.status == 'running' %}background: #ddf4ff; color: #0969da;
+                          {% else %}background: #f0f0f0; color: #666;
+                          {% endif %}">
+                          {{ trans_data.status|capitalize }}
+                        </span>
+
+                        <strong style="color: #0969da;">Job ID:</strong>
+                        <span style="font-family: monospace; font-size: 0.9em;">{{ trans_data.job_id[:12] }}...</span>
+
+                        <strong style="color: #0969da;">Created:</strong>
+                        <span>{{ trans_data.created_at }}</span>
+                      </div>
+                    </div>
+                    {% endfor %}
+                  {% else %}
+                    <p class="text-muted small mb-0">No transcripts available yet. Transcription jobs will appear here as they progress.</p>
+                  {% endif %}
+                </div>
                 {% else %}
                 <div class="alert {% if job_statuses %}alert-info{% else %}alert-danger{% endif %} small mb-0">
                     <strong>Clip file not found.</strong>

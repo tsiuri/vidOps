@@ -80,6 +80,9 @@ class GenericWorker:
         self.workspace_root = Path(os.environ.get("TOOL_ROOT", Path(__file__).parent.parent.parent))
         self.tmp_dir = self.workspace_root / "tmp"
 
+        # Housekeeping (idle maintenance tasks)
+        self.idle_claim_failures = 0
+
         # Web and metrics servers
         self.web_port = web_port
         self.metrics_port = metrics_port
@@ -112,6 +115,7 @@ class GenericWorker:
                 processed = self._process_single_job()
                 if processed:
                     jobs_processed += 1
+                    self.idle_claim_failures = 0  # Reset idle counter on successful claim
                     if 0 < self.max_jobs <= jobs_processed:
                         logger.info(
                             "Processed %s jobs (max_jobs=%s); shutting down",
@@ -121,7 +125,19 @@ class GenericWorker:
                         break
                     continue
 
-                # No job claimed; heartbeat + sleep
+                # No job claimed; increment idle counter
+                self.idle_claim_failures += 1
+
+                # Trigger housekeeping if idle threshold reached
+                if self.idle_claim_failures >= self.config.housekeeping.trigger_idle_attempts:
+                    logger.info(
+                        "Idle for %d consecutive claim attempts; triggering housekeeping",
+                        self.idle_claim_failures,
+                    )
+                    self._run_housekeeping()
+                    self.idle_claim_failures = 0  # Reset after housekeeping
+
+                # Heartbeat + sleep
                 self._heartbeat()
 
                 # Check workspace size (only checks every N heartbeats)
@@ -148,6 +164,26 @@ class GenericWorker:
     def _heartbeat(self):
         self.worker_repo.heartbeat(self.worker_id)
         logger.info("Heartbeat for worker %s", self.worker_id)
+
+    def _run_housekeeping(self):
+        """Run housekeeping tasks (maintenance while idle)."""
+        try:
+            from services.housekeeping import HousekeepingService
+            from dal import VideoRepository
+
+            video_repo = VideoRepository()
+            housekeeping_service = HousekeepingService(video_repo, self.job_repo)
+            jobs_enqueued = housekeeping_service.run_housekeeping()
+
+            if jobs_enqueued > 0:
+                logger.info(
+                    "Housekeeping cycle complete: enqueued %d maintenance jobs",
+                    jobs_enqueued,
+                )
+            else:
+                logger.debug("Housekeeping cycle: no jobs to enqueue")
+        except Exception as exc:
+            logger.error("Housekeeping error: %s", exc, exc_info=True)
 
     def _start_background_servers(self):
         """Start web UI and metrics servers in background daemon threads."""

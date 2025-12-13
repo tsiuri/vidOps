@@ -20,6 +20,7 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - `extra_utils` — `cli/extra_utils.py`
 - `overlord` — `cli/overlord.py`
 - `quickclip` — `cli/quickclip.py`
+- `webui` — `cli/webui.py`
 - Monitoring/ops scripts (non-Click)
   - `scripts/management/watch_jobs.py` — curses TUI to watch `jobs` table (q to quit)
   - Prometheus/Grafana: `docker-compose.monitoring.yml`; metrics emitted from workers via `monitoring/metrics.py` and exposed by `monitoring/exporter.py` (see `docs/MONITORING_QUICK_REFERENCE.md`)
@@ -83,17 +84,23 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - `overlord` (`cli/overlord.py`)
   - `start-overlord` (start orchestrator)
 - `quickclip` (`cli/quickclip.py`)
-  - `create`
+  - `create` — Create QuickClip session with optional clip transcription
+    - `--transcribe-clips` — Enqueue transcription jobs for extracted clips
+    - `--transcription-model` — Whisper model override (default: config.yaml)
+    - `--transcription-language` — Language override (default: config.yaml)
   - `list`
   - `show`
   - `search`
   - `browse-web`
+- `webui` (`cli/webui.py`)
+  - Wraps `scripts/run_webui.py` to launch or inspect the combined Analysis/QuickClip UI (port 5000) and optional monitoring UI (default port 8000). Supports `--skip`, `--only`, `--status-only`, custom commands, and host/port overrides.
 
 ## Monitoring & Utilities (manual)
 - `scripts/management/watch_jobs.py` — Live DB queue TUI; run with `PYTHONPATH=. python scripts/management/watch_jobs.py`
 - Metrics: start Prometheus/Grafana via `docker-compose -f docker-compose.monitoring.yml up -d`; workers expose metrics on `--metrics-port` (default 8888) using `monitoring/exporter.py` + `monitoring/metrics.py`.
 - Deploy/ops: storage broker & worker trust scripts under `scripts/deploy/` (nginx TLS, cert reissue, broker diagnostics).
 - Analysis/UI: `scripts/analysis/analysis_tui.py`, `scripts/web_app/` (drill APIs/views)
+- Unified web UI launcher: `python scripts/run_webui.py` (starts analysis/QuickClip UI on :5000 plus optional monitoring UI on :8000; supports `--skip/--only` and custom commands via `--monitoring-cmd`)
 - Job maintenance: `scripts/utilities/reset_stuck_jobs.py`
 - Smoke harness: `scripts/smoke/run_smoke_suite.sh`
 - Broker test tool: `scripts/test_broker.py`

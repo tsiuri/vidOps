@@ -206,6 +206,7 @@ class DownloadService:
             use_archive = bool(ytdlp_cfg.get("use_archive", False))
             archive_path = ytdlp_cfg.get("archive_path") or ""
             no_overwrites = bool(ytdlp_cfg.get("no_overwrites", False))
+            force_download = bool(ytdlp_cfg.get("force_download", False))
             merge_output_format = ytdlp_cfg.get("merge_output_format")
             cookies_browser = ytdlp_cfg.get("cookies_browser") or None
             sleep_requests = int(ytdlp_cfg.get("sleep_requests", 0) or 0)
@@ -228,6 +229,11 @@ class DownloadService:
             }
             if use_archive and archive_path:
                 ydl_opts["download_archive"] = str(project_root / archive_path)
+            elif force_download:
+                # Force download: skip archive checking by NOT setting download_archive
+                # This prevents yt-dlp from checking its cache
+                logger.info("Force download enabled: will skip archive checks and overwrite existing files")
+
             if cookies_browser:
                 # Parse cookies_browser: "browser" or "browser:profile"
                 parts = cookies_browser.split(":", 1)
@@ -235,7 +241,12 @@ class DownloadService:
                     ydl_opts["cookiesfrombrowser"] = (parts[0], parts[1])
                 else:
                     ydl_opts["cookiesfrombrowser"] = (parts[0],)
-            if no_overwrites:
+
+            # Set overwrite behavior
+            if force_download:
+                ydl_opts["overwrites"] = True
+                ydl_opts["no_check_certificate"] = False  # Ensure we actually fetch
+            elif no_overwrites:
                 ydl_opts["overwrites"] = False
             # Pacing/retry mappings
             ydl_opts["retries"] = retries

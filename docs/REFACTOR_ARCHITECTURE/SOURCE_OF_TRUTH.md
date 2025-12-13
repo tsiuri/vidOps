@@ -364,6 +364,16 @@ First claimable job becomes the pipeline entry point.
 - Output filenames are sanitized to ASCII before upload/registration; broker uploads now register assets with `rel_path` set (assets table now has `rel_path`, backfilled). If you need mp4 clips, set `CLIP_CONTAINER=mp4` in the legacy env when invoking `workspace.sh clips cut-local`.
 - Current gap: `--force` overwrite behavior for clips/transcripts/downloads is not yet implemented; add CLI flags and worker handling to allow deliberate overwrites in DB/storage.
 
+**QuickClip Transcription (2025-12-12):**
+- Optional clip-level transcription via `--transcribe-clips` flag in `vo quickclip create` command
+- Transcription model and language configurable per session: `--transcription-model`, `--transcription-language` (defaults from `config.yaml`)
+- Web UI supports transcription options: checkbox for "Transcribe clips" + text inputs for model/language
+- Architecture: `ClippingService.process_job()` enqueues transcription jobs after clip extraction if enabled
+- Metadata storage: `quickclip_clips.transcripts` JSONB stores `{model: {model, language, job_id, status, created_at}}`
+- Database migration: `006_clip_transcription.sql` adds `transcripts` JSONB column to `quickclip_clips` and `clip_id` nullable column to `assets`
+- Flow: QuickClipService passes `session_id`, `transcribe_clips`, model/language params → ClippingService.enqueue_manifest_job() stores in job config → process_job() calls `_enqueue_clip_transcriptions()` after clip extraction
+- Isolation: Clip transcripts are separate jobs with full-video ytid; `quickclip_clips.transcripts` tracks per-model metadata; prevents housekeeping confusion between clip and full-video transcripts
+
 ## TODO (minor follow-ups)
 - Decide whether to auto-enqueue transcription after download (DownloadService hook or Overlord rule) to restore the old download→transcribe convenience.
 - Align all workers (clipping/stitching/analysis/diarization/voice/subtitle/transcription) to the new 2s heartbeat/poll intervals and consistent lease durations.
