@@ -1,84 +1,47 @@
 {% extends "base.html" %}
-
-{% block title %}Analysis Configurations - QuickClip Browser{% endblock %}
 {% block nav_configs %}active{% endblock %}
-
 {% block content %}
-<nav aria-label="breadcrumb">
-    <ol class="breadcrumb">
-        <li class="breadcrumb-item"><a href="{{ url_for('quickclip_index') }}">Home</a></li>
-        <li class="breadcrumb-item active">Analysis Configurations</li>
-    </ol>
-</nav>
-
-{% if error %}
-<div class="alert alert-danger alert-dismissible fade show" role="alert">
-    <strong>Error:</strong> {{ error }}
-    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-</div>
-{% endif %}
-
-<div class="card mb-4">
-    <div class="card-header bg-light">
-        <h2 class="card-title mb-0">Analysis Configurations</h2>
-    </div>
-    <div class="card-body">
-        {% if all_configs %}
-        <p class="text-muted">Select a configuration below to view details and create analysis jobs.</p>
-
-        {% for analysis_type, configs in configs_by_type.items() %}
-        <div class="mb-5">
-            <h3 class="mb-3">{{ analysis_type }}</h3>
-            <div class="row">
-                {% for config in configs %}
-                <div class="col-md-6 mb-3">
-                    <div class="card h-100 border-light">
-                        <div class="card-body">
-                            <h5 class="card-title">
-                                <a href="{{ url_for('analysis_config_detail', config_id=config.id) }}">
-                                    {{ config.name }}
-                                </a>
-                            </h5>
-                            <div class="mb-2">
-                                {% if config.is_default %}
-                                <span class="badge bg-success">Default</span>
-                                {% endif %}
-                                <span class="badge bg-info">v{{ config.version }}</span>
-                            </div>
-                            <p class="card-text text-muted small mb-2">
-                                <strong>Type:</strong> {{ config.analysis_type }}
-                            </p>
-                            <p class="card-text text-muted small mb-2">
-                                <strong>Created:</strong> {{ config.created_at.strftime('%Y-%m-%d %H:%M:%S') if config.created_at else 'Unknown' }}
-                            </p>
-                            {% if config.parsed_config %}
-                            <div class="card-text small text-muted mb-3">
-                                <strong>Config details:</strong>
-                                <ul class="list-unstyled ms-2 mt-1">
-                                    {% if config.parsed_config.get('passes') %}
-                                    <li>Passes: {{ config.parsed_config.passes|length }}</li>
-                                    {% endif %}
-                                    {% if config.parsed_config.get('chunk_params') %}
-                                    <li>Chunk size: {{ config.parsed_config.chunk_params.get('chunk_size', 'N/A') }}</li>
-                                    {% endif %}
-                                </ul>
-                            </div>
-                            {% endif %}
-                            <a href="{{ url_for('analysis_config_detail', config_id=config.id) }}" class="btn btn-sm btn-primary">
-                                View &amp; Create Job
-                            </a>
-                        </div>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-        {% endfor %}
+<div class="container">
+  <h1>Analysis Configurations</h1>
+  <p>Database: {{ db_name }}</p>
+  <div style="margin-bottom: 15px;">
+    <a href="{{ url_for('index') }}">Back to search</a>
+    <span style="margin: 0 10px; color: #ccc;">|</span>
+    <a href="{{ url_for('new_analysis_config') }}" style="background-color: #4CAF50; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; display: inline-block;">+ New Config</a>
+  </div>
+  {% if all_configs %}
+  <table border="1" cellpadding="4" cellspacing="0">
+    <tr>
+      <th>ID</th>
+      <th>Name</th>
+      <th>Analysis Type</th>
+      <th>Version</th>
+      <th>Default?</th>
+      <th>Drills</th>
+      <th>Updated</th>
+    </tr>
+    {% for cfg in all_configs %}
+    <tr>
+      <td><a href="{{ url_for('edit_analysis_config', config_id=cfg.id) }}">{{ cfg.id }}</a></td>
+      <td>{{ cfg.name }}</td>
+      <td>{{ cfg.analysis_type }}</td>
+      <td>{{ cfg.version }}</td>
+      <td>{{ "yes" if cfg.is_default else "no" }}</td>
+      <td>
+        {% if cfg.drill_summary %}
+        <a href="{{ url_for('edit_drills', config_id=cfg.id) }}">{{ cfg.drill_summary }}</a>
         {% else %}
-        <div class="alert alert-info">
-            <strong>No analysis configurations found.</strong> Analysis configurations need to be created in the system before you can create analysis jobs.
-        </div>
+        <span style="color: #999;">—</span>
         {% endif %}
-    </div>
+      </td>
+      <td>{{ cfg.updated_at }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div style="background-color: #e3f2fd; padding: 15px; border-radius: 4px; border-left: 4px solid #2196F3;">
+    <strong>No analysis configurations found.</strong> Analysis configurations need to be created in the system before you can manage them.
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
