@@ -318,6 +318,7 @@ class QuickClipService:
         # Force re-download if requested (skip archive checks, overwrite existing)
         if force:
             overrides["force_download"] = True
+            overrides["no_overwrites"] = False  # Allow overwriting existing files
 
         return overrides
 
