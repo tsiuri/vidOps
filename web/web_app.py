@@ -52,7 +52,7 @@ flask_request = request
 # Database configuration from environment or defaults
 DB_CONFIG = {
     'dbname': cfg('db_name', 'DB_NAME', 'transcripts'),
-    'host': cfg('db_host', 'DB_HOST', 'localhost'),
+    'host': cfg('db_host', 'DB_HOST', '192.168.0.187'),
     'port': int(cfg('db_port', 'DB_PORT', 5432)),
     'user': cfg('db_user', 'DB_USER', None),
     'password': cfg('db_password', 'DB_PASSWORD', None)
