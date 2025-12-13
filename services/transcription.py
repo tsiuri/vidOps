@@ -380,12 +380,17 @@ class TranscriptionService:
                             "vtt_path": job_result.get("vtt_path"),
                             "words_path": job_result.get("words_path"),
                         })
+                        logger.info(f"Updated transcript for clip {clip_id} model {model_name} with vtt_path={job_result.get('vtt_path')} and words_path={job_result.get('words_path')}")
+                    else:
+                        logger.warning(f"Model {model_name} not found in transcripts for clip {clip_id}; transcripts keys: {list(transcripts.keys())}")
 
                     # Write back to database with Json wrapper for JSONB
                     cur.execute(
                         "UPDATE quickclip_clips SET transcripts = %s WHERE clip_id = %s",
                         (Json(transcripts), clip_id)
                     )
+                    conn.commit()  # Explicitly commit the transaction
+                    logger.debug(f"Committed transcript update for clip {clip_id}: {transcripts}")
 
             # Register transcript artifacts in assets table with clip_id
             if job_result.get("vtt_path"):
