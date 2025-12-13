@@ -52,6 +52,17 @@ class AnalysisDatabase:
         if self.conn:
             self.conn.close()
 
+    def has_diarization(self, ytid: str) -> bool:
+        """Check if a video has diarization data."""
+        try:
+            self.cursor.execute(
+                "SELECT 1 FROM diarized_timestamps WHERE ytid=%s LIMIT 1",
+                (ytid,),
+            )
+            return self.cursor.fetchone() is not None
+        except Exception:
+            return False
+
     def __enter__(self):
         """Context manager entry"""
         self.connect()

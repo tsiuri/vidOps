@@ -28,6 +28,7 @@ from scripts.analysis.analysis_config import AnalysisConfig
 from scripts.web_app.analyses_view import register_analyses_routes
 from scripts.web_app.drill_api import create_drill_blueprint
 from dal import QuickClipRepository, VideoRepository, FilesystemCache, JobRepository
+from models import Job, JobStatus
 from configuration import get_project_root
 from services.download import DownloadService
 from services.clipping import ClippingService
@@ -1416,6 +1417,303 @@ def list_analysis_configs():
         configs_by_type=configs_by_type,
         all_configs=configs_obj,
         db_name=DB_CONFIG['dbname'],
+    )
+
+
+@app.route('/api/available-videos')
+def api_available_videos():
+    """API endpoint for paginated list of videos with transcripts."""
+    from db import get_connection
+
+    try:
+        offset = int(request.args.get('offset', 0))
+        limit = int(request.args.get('limit', 200))
+        if limit > 500:
+            limit = 500  # Cap at 500 per request
+    except ValueError:
+        offset = 0
+        limit = 200
+
+    db_videos = []
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Query videos that have transcripts/words
+                # Get word_count from transcripts table (stored during transcription)
+                # Sort by created_at (when video was imported), newest first
+                cur.execute(
+                    """
+                    SELECT v.ytid, v.title, v.duration_sec, MAX(t.word_count) as word_count, v.created_at, v.channel
+                    FROM videos v
+                    LEFT JOIN transcripts t ON v.ytid = t.ytid
+                    WHERE EXISTS (SELECT 1 FROM words w WHERE w.ytid = v.ytid)
+                    GROUP BY v.ytid, v.title, v.duration_sec, v.created_at, v.channel
+                    ORDER BY v.created_at DESC NULLS LAST, v.ytid
+                    OFFSET %s
+                    LIMIT %s
+                    """,
+                    (offset, limit)
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    duration_sec = row[2] or 0
+                    word_count = row[3] or 0
+                    channel_name = row[5] or ''
+                    # Format duration as HH:MM:SS or MM:SS or just SS
+                    if duration_sec:
+                        hours = int(duration_sec // 3600)
+                        minutes = int((duration_sec % 3600) // 60)
+                        seconds = int(duration_sec % 60)
+                        if hours > 0:
+                            duration_str = f"{hours}h {minutes}m {seconds}s"
+                        elif minutes > 0:
+                            duration_str = f"{minutes}m {seconds}s"
+                        else:
+                            duration_str = f"{seconds}s"
+                    else:
+                        duration_str = "Unknown"
+
+                    db_videos.append({
+                        'ytid': row[0],
+                        'title': row[1],
+                        'duration': duration_str,
+                        'word_count': word_count,
+                        'channel_name': channel_name,
+                    })
+    except Exception as e:
+        logger.warning(f"Failed to query available videos: {e}")
+        return jsonify({'error': str(e), 'videos': []}), 500
+
+    return jsonify({'videos': db_videos, 'offset': offset, 'limit': limit})
+
+
+@app.route('/analysis-configs/new-job', methods=['GET', 'POST'])
+def new_analysis_job():
+    """Create analysis jobs for videos using a configuration."""
+    import json as _json
+    import uuid
+    import re
+    from db import get_connection
+
+    db = get_db()
+    error = None
+    form_values = {
+        'ytid_list': '',
+        'config_id': '',
+        'priority': '50',
+    }
+
+    # Get available configs for dropdown
+    try:
+        configs = db.list_analysis_configs()
+    except Exception:
+        configs = []
+
+    # Don't load videos on page render - let JavaScript fetch them asynchronously
+    # This keeps the page load fast
+    db_available_videos = []
+
+    if flask_request.method == 'POST':
+        ytid_list_text = flask_request.form.get('ytid_list', '').strip()
+        ytid_file = flask_request.files.get('ytid_file')
+        db_videos = flask_request.form.getlist('db_videos')
+        config_id = flask_request.form.get('config_id', '').strip()
+        priority_str = flask_request.form.get('priority', '50').strip()
+
+        form_values['ytid_list'] = ytid_list_text
+        form_values['config_id'] = config_id
+        form_values['priority'] = priority_str
+
+        # Collect ytids from textarea, file, and database selection
+        ytids = []
+
+        # From database selection
+        if db_videos:
+            ytids.extend(db_videos)
+
+        if ytid_file and ytid_file.filename:
+            try:
+                file_content = ytid_file.read().decode('utf-8')
+                ytids.extend([line.strip() for line in file_content.split('\n') if line.strip()])
+            except Exception as e:
+                error = f"Failed to read file: {e}"
+
+        if ytid_list_text:
+            ytids.extend([line.strip() for line in ytid_list_text.split('\n') if line.strip()])
+
+        # Extract YouTube IDs from URLs if needed
+        extracted_ids = []
+        for item in ytids:
+            # Try to extract ID from full URL
+            match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]+)', item)
+            if match:
+                extracted_ids.append(match.group(1))
+            elif re.match(r'^[a-zA-Z0-9_-]{11}$', item):
+                # Valid YouTube ID format
+                extracted_ids.append(item)
+            elif item:
+                # Unknown format, try as-is
+                extracted_ids.append(item)
+
+        # Deduplicate while preserving order
+        ytids = list(dict.fromkeys(extracted_ids))
+
+        # Validate inputs
+        if not ytids:
+            error = "Please provide at least one video ID or URL."
+        elif not config_id:
+            error = "Analysis configuration is required."
+        else:
+            try:
+                priority = int(priority_str or 50)
+                if priority < 0 or priority > 100:
+                    raise ValueError("Priority must be between 0 and 100")
+            except ValueError as e:
+                error = f"Invalid priority: {e}"
+
+            if error is None:
+                try:
+                    from dal import TranscriptRepository
+                    from dal.analysis_task_repository import AnalysisDatabase
+                    from scripts.analysis.analyze_transcript import TranscriptChunker, VTTParser
+                    from scripts.analysis.analyze_to_db import create_analysis_job
+                    from scripts.analysis.analysis_config import AnalysisConfig
+                    from configuration import load_config
+                    from pathlib import Path
+
+                    created_jobs = []
+                    failed_videos = []
+                    cfg = load_config()
+
+                    # Get the analysis config
+                    analysis_db = AnalysisDatabase(
+                        host=os.environ.get('DB_HOST', '192.168.0.187'),
+                        dbname=os.environ.get('DB_NAME', 'transcripts'),
+                        user=os.environ.get('DB_USER'),
+                        password=os.environ.get('DB_PASSWORD'),
+                    )
+                    analysis_db.connect()
+
+                    try:
+                        config_row = analysis_db.get_analysis_config(config_id)
+                        if not config_row:
+                            error = f"Config '{config_id}' not found"
+                        else:
+                            config_obj = AnalysisConfig.model_validate(config_row.get('config_json', {}))
+                            transcript_repo = TranscriptRepository()
+
+                            # Validate diarization requirement if config requires it
+                            if config_obj.diarized:
+                                for ytid in ytids:
+                                    if not analysis_db.has_diarization(ytid):
+                                        failed_videos.append((ytid, f"Diarization required but not found. Run: vo diarize enqueue {ytid}"))
+
+                                # Filter out videos without diarization
+                                ytids = [y for y in ytids if analysis_db.has_diarization(y)]
+
+                                if not ytids:
+                                    error = "All videos require diarization but none have it. Please run diarization first."
+
+                            # Process each video
+                            for ytid in ytids:
+                                try:
+                                    # Get the best available transcript
+                                    transcript = transcript_repo.get_best_available(ytid)
+                                    if not transcript or not transcript.path:
+                                        raise ValueError(f"No transcript found for {ytid}")
+
+                                    # Load transcript text using VTTParser (handles both VTT and TSV formats)
+                                    transcript_path = Path(transcript.path)
+                                    if not transcript_path.exists():
+                                        # Try with prefix
+                                        full_path = Path(cfg.paths.central_storage_root or '') / transcript.path
+                                        if full_path.exists():
+                                            transcript_path = full_path
+                                        else:
+                                            raise FileNotFoundError(f"Transcript not found at {transcript_path}")
+
+                                    # Use VTTParser which handles both VTT and TSV formats
+                                    text = VTTParser.parse(transcript_path)
+
+                                    if not text.strip():
+                                        raise ValueError(f"Transcript for {ytid} is empty")
+
+                                    # Chunk the transcript
+                                    chunker = TranscriptChunker(
+                                        chunk_size=config_obj.chunk_params.max_words if config_obj.chunk_params else 1000,
+                                        overlap=config_obj.chunk_params.overlap_words if config_obj.chunk_params else 150,
+                                    )
+                                    raw_chunks = chunker.chunk(text)
+
+                                    # Prepare chunk payload
+                                    chunk_payload = []
+                                    for idx, chunk in enumerate(raw_chunks):
+                                        payload = {
+                                            'chunk_id': idx,
+                                            'text': chunk.get('text', ''),
+                                            'word_count': chunk.get('word_count'),
+                                            'start_sec': chunk.get('start_sec'),
+                                            'end_sec': chunk.get('end_sec'),
+                                            'speaker': chunk.get('speaker'),
+                                        }
+                                        chunk_payload.append(payload)
+
+                                    # Create analysis job (this enqueues all tasks)
+                                    analysis_job_id = create_analysis_job(
+                                        ytid=ytid,
+                                        config_id=config_id,
+                                        config=config_obj,
+                                        chunks=chunk_payload,
+                                        db=analysis_db,
+                                    )
+
+                                    # Create generic job entry for GenericWorker
+                                    job_repo = JobRepository()
+                                    job_config = {
+                                        'analysis_job_id': analysis_job_id,
+                                        'ytid': ytid,
+                                        'config_id': config_id,
+                                        'transcript_kind': transcript.kind or 'unknown',
+                                        'model_url': cfg.analysis.ollama.url if cfg.analysis else 'http://localhost:11434',
+                                        'model_name': cfg.analysis.ollama.model if cfg.analysis else 'llama3',
+                                    }
+                                    generic_job = Job(
+                                        job_type='analysis-distributed',
+                                        ytid=ytid,
+                                        config=job_config,
+                                        priority=priority,
+                                        status=JobStatus.PENDING,
+                                    )
+                                    created_job = job_repo.create(generic_job)
+
+                                    created_jobs.append((ytid, created_job.job_id))
+                                    logger.info(f"Created analysis job {created_job.job_id} (analysis_job_id={analysis_job_id}) for {ytid} with config {config_id}")
+
+                                except Exception as e:
+                                    failed_videos.append((ytid, str(e)))
+                                    logger.error(f"Failed to create job for {ytid}: {e}", exc_info=True)
+
+                    finally:
+                        analysis_db.disconnect()
+
+                    # Return success page
+                    return render_template(
+                        'analysis_jobs_created.html',
+                        created_jobs=created_jobs,
+                        failed_videos=failed_videos,
+                        config_id=config_id,
+                        total_requested=len(ytids),
+                    )
+                except Exception as exc:
+                    error = f"Failed to create analysis jobs: {str(exc)}"
+                    logger.error(f"Error creating analysis jobs: {exc}", exc_info=True)
+
+    return render_template(
+        'analysis_job_create.html',
+        error=error,
+        form=form_values,
+        configs=configs,
+        db_available_videos=db_available_videos,
     )
 
 

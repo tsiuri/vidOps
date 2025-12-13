@@ -21,37 +21,55 @@ except ImportError:
 
 
 class VTTParser:
-    """Parse WebVTT transcript files"""
+    """Parse WebVTT or TSV transcript files"""
 
     @staticmethod
     def parse(vtt_path: Path) -> str:
-        """Parse VTT file and return clean text"""
+        """Parse VTT or TSV file and return clean text"""
         with open(vtt_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Remove WEBVTT header
-        content = re.sub(r'^WEBVTT.*?\n\n', '', content, flags=re.MULTILINE)
+        # Detect format: TSV (words.tsv files) vs VTT
+        is_tsv = '\t' in content and ('word' in content or 'confidence' in content)
 
-        # Extract text (skip timestamps and cue identifiers)
-        lines = []
-        for line in content.split('\n'):
-            # Skip timestamp lines (contain -->)
-            if '-->' in line:
-                continue
-            # Skip NOTE blocks or confidence annotations often present in auto captions
-            if line.strip().startswith('NOTE') or 'NOTE Confidence' in line:
-                continue
-            # Skip cue identifiers (just numbers)
-            if line.strip().isdigit():
-                continue
-            # Skip empty lines
-            if not line.strip():
-                continue
-            # Clean HTML tags if present
-            line = re.sub(r'<[^>]+>', '', line)
-            lines.append(line.strip())
+        if is_tsv:
+            # Parse TSV format (from words_whisper and similar)
+            lines = content.split('\n')
+            words = []
+            for i, line in enumerate(lines):
+                if i == 0:  # Skip header row
+                    continue
+                if not line.strip():
+                    continue
+                parts = line.split('\t')
+                if len(parts) >= 3:  # start, end, word, ...
+                    words.append(parts[2].strip())
+            return ' '.join(words)
+        else:
+            # Parse VTT format (standard WebVTT)
+            # Remove WEBVTT header
+            content = re.sub(r'^WEBVTT.*?\n\n', '', content, flags=re.MULTILINE)
 
-        return ' '.join(lines)
+            # Extract text (skip timestamps and cue identifiers)
+            lines = []
+            for line in content.split('\n'):
+                # Skip timestamp lines (contain -->)
+                if '-->' in line:
+                    continue
+                # Skip NOTE blocks or confidence annotations often present in auto captions
+                if line.strip().startswith('NOTE') or 'NOTE Confidence' in line:
+                    continue
+                # Skip cue identifiers (just numbers)
+                if line.strip().isdigit():
+                    continue
+                # Skip empty lines
+                if not line.strip():
+                    continue
+                # Clean HTML tags if present
+                line = re.sub(r'<[^>]+>', '', line)
+                lines.append(line.strip())
+
+            return ' '.join(lines)
 
 
 class TranscriptChunker:

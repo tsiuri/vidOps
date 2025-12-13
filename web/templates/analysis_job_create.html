@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block nav_configs %}active{% endblock %}
+{% block content %}
+
+<div class="container">
+  <h1>Create Analysis Job</h1>
+
+  {% if error %}
+  <div style="background-color: #ffebee; padding: 15px; border-radius: 4px; border-left: 4px solid #f44336; margin-bottom: 20px;">
+    <strong>Error:</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  <form method="POST" enctype="multipart/form-data" style="max-width: 600px;">
+    <div style="margin-bottom: 20px;">
+      <label style="display: block; margin-bottom: 10px; font-weight: bold;">Videos to Analyze</label>
+
+      <div style="margin-bottom: 15px;">
+        <label for="ytid_list" style="display: block; margin-bottom: 5px;">Enter Video IDs or URLs (one per line)</label>
+        <textarea id="ytid_list" name="ytid_list" placeholder="dQw4w9WgXcQ&#10;https://www.youtube.com/watch?v=jNQXAC9IVRw&#10;another_video_id" style="width: 100%; height: 120px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; font-family: monospace;">{{ form.ytid_list }}</textarea>
+        <small style="color: #666;">Paste YouTube IDs or full URLs. One per line.</small>
+      </div>
+
+      <div style="text-align: center; color: #999; margin: 15px 0;">— OR —</div>
+
+      <div style="margin-bottom: 15px;">
+        <label for="ytid_file" style="display: block; margin-bottom: 5px;">Upload File (.txt)</label>
+        <input type="file" id="ytid_file" name="ytid_file" accept=".txt" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+        <small style="color: #666;">Upload a .txt file with YouTube IDs or URLs, one per line.</small>
+      </div>
+
+      <div style="text-align: center; color: #999; margin: 15px 0;">— OR —</div>
+
+      <div style="margin-bottom: 15px;">
+        <label for="db_videos" style="display: block; margin-bottom: 5px;">Select from Database (videos with transcripts)</label>
+        <div id="db_videos_container" style="width: 100%; height: 200px; border: 1px solid #ddd; border-radius: 4px; overflow: auto; resize: both; background: white; position: relative;">
+          <div id="db_videos_list" style="padding: 8px;">
+            <div style="padding: 8px; text-align: center; color: #999;">Loading videos from database...</div>
+          </div>
+          <div id="db_videos_loading" style="display: none; padding: 8px; text-align: center; color: #999; font-size: 12px;">Loading more videos...</div>
+          <div style="position: absolute; bottom: 0; right: 0; width: 16px; height: 16px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 0%, transparent 50%, #999 50%, #999 100%); opacity: 0.3;"></div>
+        </div>
+        <small style="color: #666;">Check boxes to select multiple videos. Drag corner to resize. Scroll to load more.</small>
+      </div>
+    </div>
+
+    <div style="margin-bottom: 20px;">
+      <label for="config_id" style="display: block; margin-bottom: 5px; font-weight: bold;">Analysis Configuration</label>
+      <select id="config_id" name="config_id" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+        <option value="">-- Select a configuration --</option>
+        {% for config in configs %}
+        <option value="{{ config.id }}" {% if form.config_id == config.id %}selected{% endif %}>
+          {{ config.name }} ({{ config.analysis_type }}, v{{ config.version }})
+        </option>
+        {% endfor %}
+      </select>
+      {% if not configs %}
+      <small style="color: #f44336;"><strong>No configurations available.</strong> <a href="{{ url_for('new_analysis_config') }}">Create one first</a></small>
+      {% endif %}
+    </div>
+
+    <div style="margin-bottom: 20px;">
+      <label for="priority" style="display: block; margin-bottom: 5px; font-weight: bold;">Priority (0-100)</label>
+      <input type="number" id="priority" name="priority" value="{{ form.priority }}" min="0" max="100" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+      <small style="color: #666;">Higher priority jobs are processed first (default: 50)</small>
+    </div>
+
+    <div style="display: flex; gap: 10px;">
+      <button type="submit" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">
+        Create Analysis Job
+      </button>
+      <a href="{{ url_for('list_analysis_configs') }}" style="background-color: #ccc; color: #333; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; font-size: 14px;">
+        Cancel
+      </a>
+    </div>
+  </form>
+</div>
+
+<script>
+// Infinite scroll for database video list with auto-load on page load
+(function() {
+  const container = document.getElementById('db_videos_container');
+  const listDiv = document.getElementById('db_videos_list');
+  const loadingDiv = document.getElementById('db_videos_loading');
+  let currentOffset = 0;
+  let isLoading = false;
+  let hasMore = true;
+  let isInitialLoad = true;
+
+  function loadMoreVideos() {
+    if (isLoading || !hasMore) return;
+
+    isLoading = true;
+    if (!isInitialLoad) {
+      loadingDiv.style.display = 'block';
+    }
+
+    fetch(`/api/available-videos?offset=${currentOffset}&limit=200`)
+      .then(r => r.json())
+      .then(data => {
+        // Clear loading message on first load
+        if (isInitialLoad && listDiv.children.length === 1) {
+          listDiv.innerHTML = '';
+        }
+        isInitialLoad = false;
+
+        if (data.videos && data.videos.length > 0) {
+          // Add new videos to the list
+          data.videos.forEach(video => {
+            const label = document.createElement('label');
+            label.style.cssText = 'display: block; padding: 6px 4px; cursor: pointer;';
+            const wordCountStr = video.word_count ? `${video.word_count} words` : '';
+            const channelStr = video.channel_name ? video.channel_name : '';
+            const metadata = [video.duration, wordCountStr, channelStr].filter(Boolean).join(' | ');
+            label.innerHTML = `
+              <input type="checkbox" name="db_videos" value="${video.ytid}" style="margin-right: 8px;">
+              <span style="font-size: 14px;"><code style="background: #f0f0f0; padding: 2px 4px; border-radius: 2px; font-size: 12px;">${video.ytid}</code> ${video.title} <small style="color: #999;">(${metadata})</small></span>
+            `;
+            listDiv.appendChild(label);
+          });
+
+          currentOffset += data.videos.length;
+
+          // If we got fewer videos than requested, there's no more
+          if (data.videos.length < 200) {
+            hasMore = false;
+          }
+        } else {
+          hasMore = false;
+          if (listDiv.children.length === 0) {
+            listDiv.innerHTML = '<div style="padding: 8px; color: #999;">No videos with transcripts found</div>';
+          }
+        }
+
+        isLoading = false;
+        loadingDiv.style.display = 'none';
+      })
+      .catch(err => {
+        console.error('Error loading videos:', err);
+        isLoading = false;
+        loadingDiv.style.display = 'none';
+        if (isInitialLoad) {
+          listDiv.innerHTML = '<div style="padding: 8px; color: #f44336;">Error loading videos</div>';
+        } else {
+          loadingDiv.textContent = 'Error loading videos';
+        }
+      });
+  }
+
+  // Load first batch immediately on page load
+  loadMoreVideos();
+
+  // Detect scroll near bottom for infinite scroll
+  container.addEventListener('scroll', function() {
+    // If scrolled to within 100px of bottom, load more
+    if (container.scrollHeight - container.scrollTop - container.clientHeight < 100) {
+      loadMoreVideos();
+    }
+  });
+})();
+</script>
+
+{% endblock %}

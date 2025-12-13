@@ -650,6 +650,16 @@ def main():
     if db_ytids:
         out_dir = Path("generated/from-db")
         for ytid in db_ytids:
+            # Validate diarization requirement before attempting analysis
+            if (args.restrict_to_diarized or args.speaker_name) and not db.has_diarization(ytid):
+                reason = "speaker filtering" if args.speaker_name else "diarized analysis"
+                print(
+                    f"Error: Cannot run {reason} on {ytid} - no diarization data found.\n"
+                    f"       Run diarization first with: vo diarize enqueue {ytid}",
+                    file=sys.stderr
+                )
+                sys.exit(1)
+
             vtt_path = export_vtt_from_db(
                 db.conn,
                 ytid,
