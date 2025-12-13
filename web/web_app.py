@@ -6,6 +6,7 @@ Simple Flask app for querying the analysis database.
 
 import os
 import sys
+import json
 import logging
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort
@@ -2267,3 +2268,250 @@ def jobs_browser():
         sort_dir=sort_dir,
         limit=limit,
     )
+
+
+# ============================================================================
+# Analysis Configuration UI Routes
+# ============================================================================
+
+@app.route('/analysis/configs')
+def analysis_configs_list():
+    """List all available analysis configurations."""
+    try:
+        db = get_db()
+        configs = db.list_analysis_configs()
+
+        # Parse config_json for each config
+        for config in configs:
+            if isinstance(config.get('config_json'), str):
+                try:
+                    config['parsed_config'] = json.loads(config['config_json'])
+                except (json.JSONDecodeError, TypeError):
+                    config['parsed_config'] = {}
+            else:
+                config['parsed_config'] = config.get('config_json', {})
+
+        # Group configs by analysis_type
+        configs_by_type = {}
+        for config in configs:
+            analysis_type = config.get('analysis_type', 'unknown')
+            if analysis_type not in configs_by_type:
+                configs_by_type[analysis_type] = []
+            configs_by_type[analysis_type].append(config)
+
+        return render_template(
+            'analysis_configs.html',
+            configs_by_type=configs_by_type,
+            all_configs=configs,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching analysis configs: {type(e).__name__}: {e}", exc_info=True)
+        return render_template(
+            'analysis_configs.html',
+            configs_by_type={},
+            all_configs=[],
+            error=f"Failed to load analysis configs: {e}",
+        )
+
+
+@app.route('/analysis/config/<config_id>')
+def analysis_config_detail(config_id):
+    """View details of a specific analysis configuration and create jobs from it."""
+    try:
+        db = get_db()
+        config = db.get_analysis_config(config_id)
+
+        if not config:
+            abort(404)
+
+        # Parse config_json
+        if isinstance(config.get('config_json'), str):
+            try:
+                config['parsed_config'] = json.loads(config['config_json'])
+            except (json.JSONDecodeError, TypeError):
+                config['parsed_config'] = {}
+        else:
+            config['parsed_config'] = config.get('config_json', {})
+
+        # Get available videos for job creation
+        quickclip_repo, video_repo = _get_quickclip_repos()
+        all_sessions = quickclip_repo.list_recent_sessions(limit=100)
+        videos = _collect_quickclip_videos(all_sessions)
+
+        return render_template(
+            'analysis_config_detail.html',
+            config=config,
+            videos=videos,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching analysis config: {type(e).__name__}: {e}", exc_info=True)
+        abort(500)
+
+
+@app.route('/analysis/job/create', methods=['POST'])
+def create_analysis_job():
+    """Create an analysis job from a configuration."""
+    try:
+        config_id = request.form.get('config_id')
+        ytid = request.form.get('ytid')
+        session_id = request.form.get('session_id')  # Optional: for clip-based analysis
+
+        if not config_id or not ytid:
+            return jsonify({'success': False, 'error': 'Missing required fields'}), 400
+
+        db = get_db()
+        config = db.get_analysis_config(config_id)
+
+        if not config:
+            return jsonify({'success': False, 'error': 'Config not found'}), 404
+
+        # Enqueue the analysis job
+        job = _enqueue_analysis_job(config_id, ytid, session_id)
+
+        if job:
+            return jsonify({
+                'success': True,
+                'job_id': job.job_id,
+                'message': f"Analysis job {job.job_id} created successfully"
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to enqueue analysis job'
+            }), 500
+    except Exception as e:
+        logger.error(f"Error creating analysis job: {type(e).__name__}: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': f'Server error: {e}'
+        }), 500
+
+
+def _enqueue_analysis_job(config_id: str, ytid: str, session_id: str | None = None):
+    """
+    Enqueue an analysis job for a video or clip.
+
+    Args:
+        config_id: ID of the analysis configuration
+        ytid: YouTube video ID
+        session_id: Optional QuickClip session ID (if analyzing clips)
+
+    Returns:
+        Job object if successful, None otherwise
+    """
+    try:
+        from models import Job, JobStatus
+
+        job_repo = JobRepository()
+        db = get_db()
+        config = db.get_analysis_config(config_id)
+
+        if not config:
+            logger.error(f"Config {config_id} not found")
+            return None
+
+        # Determine transcript kind based on transcription model from config
+        parsed_config = config.get('parsed_config', {})
+        transcript_kind = parsed_config.get('transcript_kind', 'words_whisper_base')
+
+        # Create job config for the analysis-distributed job
+        job_config = {
+            'ytid': ytid,
+            'config_id': config_id,
+            'transcript_kind': transcript_kind,
+        }
+
+        # Add session_id if this is a clip-based analysis
+        if session_id:
+            job_config['session_id'] = session_id
+
+        # Enqueue the job
+        job = Job(
+            job_type='analysis-distributed',
+            status=JobStatus.PENDING,
+            ytid=ytid,
+            priority=50,  # Default priority
+            config=job_config,
+        )
+        job = job_repo.create(job)
+
+        logger.info(f"Enqueued analysis job {job.job_id} for {ytid} with config {config_id}")
+        return job
+    except Exception as e:
+        logger.error(f"Error enqueuing analysis job: {type(e).__name__}: {e}", exc_info=True)
+        return None
+
+
+@app.route('/analysis/job/<job_id>')
+def analysis_job_detail(job_id):
+    """View details and status of an analysis job."""
+    try:
+        job_repo = JobRepository()
+        job = job_repo.get(job_id)
+
+        if not job:
+            abort(404)
+
+        # Get the video info
+        if job.ytid:
+            quickclip_repo, video_repo = _get_quickclip_repos()
+            video = video_repo.get(job.ytid)
+        else:
+            video = None
+
+        # Get analysis config info if available
+        db = get_db()
+        config_id = job.config.get('config_id')
+        config = None
+        if config_id:
+            config = db.get_analysis_config(config_id)
+            if config and isinstance(config.get('config_json'), str):
+                try:
+                    config['parsed_config'] = json.loads(config['config_json'])
+                except (json.JSONDecodeError, TypeError):
+                    config['parsed_config'] = {}
+
+        return render_template(
+            'analysis_job_detail.html',
+            job=job,
+            video=video,
+            config=config,
+        )
+    except Exception as e:
+        logger.error(f"Error fetching analysis job: {type(e).__name__}: {e}", exc_info=True)
+        abort(500)
+
+
+@app.route('/analysis/job/<job_id>/results')
+def analysis_job_results(job_id):
+    """Get analysis results for a job (JSON endpoint)."""
+    try:
+        job_repo = JobRepository()
+        job = job_repo.get(job_id)
+
+        if not job:
+            return jsonify({'error': 'Job not found'}), 404
+
+        if job.job_type != 'analysis-distributed':
+            return jsonify({'error': 'Job is not an analysis job'}), 400
+
+        # Get analysis results from database
+        db = get_db()
+        results = {
+            'job_id': job.job_id,
+            'status': job.status.value,
+            'created_at': job.created_at.isoformat() if job.created_at else None,
+            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
+            'ytid': job.ytid,
+            'config': job.config,
+            'result': job.result,
+        }
+
+        # If job has analysis results stored
+        if job.result and job.result.get('analysis_data'):
+            results['analysis_data'] = job.result['analysis_data']
+
+        return jsonify(results)
+    except Exception as e:
+        logger.error(f"Error fetching analysis results: {type(e).__name__}: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
