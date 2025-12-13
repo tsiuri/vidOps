@@ -359,6 +359,7 @@ class TranscriptionService:
             clip_text = " ".join([getattr(w, 'word', '') for w in words if getattr(w, 'word', '')])
 
             # Update clip transcript metadata in quickclip_clips
+            from psycopg2.extras import Json
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     # Get current transcripts JSONB
@@ -380,50 +381,56 @@ class TranscriptionService:
                             "words_path": job_result.get("words_path"),
                         })
 
-                    # Write back to database
+                    # Write back to database with Json wrapper for JSONB
                     cur.execute(
                         "UPDATE quickclip_clips SET transcripts = %s WHERE clip_id = %s",
-                        (json.dumps(transcripts), clip_id)
+                        (Json(transcripts), clip_id)
                     )
 
             # Register transcript artifacts in assets table with clip_id
             if job_result.get("vtt_path"):
                 with get_connection() as conn:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO assets (ytid, kind, path, rel_path, clip_id, bytes, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT (ytid, kind, rel_path) DO UPDATE SET clip_id = EXCLUDED.clip_id
-                            """,
-                            (
-                                job.ytid,
-                                "transcript_vtt",
-                                job_result.get("vtt_path"),
-                                job_result.get("vtt_path"),
-                                clip_id,
-                                0,  # Will be updated when file is actually stored
+                        try:
+                            cur.execute(
+                                """
+                                INSERT INTO assets (ytid, kind, path, rel_path, clip_id, bytes, created_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                ON CONFLICT (path) DO UPDATE SET clip_id = EXCLUDED.clip_id
+                                """,
+                                (
+                                    job.ytid,
+                                    "transcript_vtt",
+                                    job_result.get("vtt_path"),
+                                    job_result.get("vtt_path"),
+                                    clip_id,
+                                    0,  # Will be updated when file is actually stored
+                                )
                             )
-                        )
+                        except Exception as e:
+                            logger.debug(f"Failed to register VTT asset for clip {clip_id}: {e}")
 
             if job_result.get("words_path"):
                 with get_connection() as conn:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            INSERT INTO assets (ytid, kind, path, rel_path, clip_id, bytes, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT (ytid, kind, rel_path) DO UPDATE SET clip_id = EXCLUDED.clip_id
-                            """,
-                            (
-                                job.ytid,
-                                "transcript_words",
-                                job_result.get("words_path"),
-                                job_result.get("words_path"),
-                                clip_id,
-                                0,  # Will be updated when file is actually stored
+                        try:
+                            cur.execute(
+                                """
+                                INSERT INTO assets (ytid, kind, path, rel_path, clip_id, bytes, created_at)
+                                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                                ON CONFLICT (path) DO UPDATE SET clip_id = EXCLUDED.clip_id
+                                """,
+                                (
+                                    job.ytid,
+                                    "transcript_words",
+                                    job_result.get("words_path"),
+                                    job_result.get("words_path"),
+                                    clip_id,
+                                    0,  # Will be updated when file is actually stored
+                                )
                             )
-                        )
+                        except Exception as e:
+                            logger.debug(f"Failed to register words asset for clip {clip_id}: {e}")
 
             logger.info(
                 f"Clip transcription completed for {clip_id}: {clip_word_count} words extracted, "
