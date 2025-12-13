@@ -442,12 +442,21 @@ class ClippingService:
             # Enqueue transcription job for each clip
             for clip_idx, (clip_id, start_sec, end_sec, label) in enumerate(clip_records):
                 try:
-                    # Get the corresponding registered clip path
-                    if clip_idx >= len(registered_clips):
-                        logger.warning(f"No registered clip path for clip_id {clip_id}")
-                        continue
+                    # Find the registered clip path by matching timestamps in the filename
+                    # e.g., "030.00-060.00" from start_sec=30.0, end_sec=60.0
+                    clip_rel_path = None
+                    start_str = f"{float(start_sec):06.2f}"
+                    end_str = f"{float(end_sec):06.2f}"
+                    timestamp_marker = f"{start_str}-{end_str}"
 
-                    clip_rel_path = registered_clips[clip_idx]
+                    for reg_path in registered_clips:
+                        if timestamp_marker in reg_path:
+                            clip_rel_path = reg_path
+                            break
+
+                    if not clip_rel_path:
+                        logger.warning(f"No registered clip path found for clip_id {clip_id} with timestamps {timestamp_marker}")
+                        continue
 
                     # Enqueue transcription job for the CLIP FILE, not the full video
                     # This allows transcription of clips even without the full video
