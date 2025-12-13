@@ -227,6 +227,11 @@ class ClippingService:
             if not registered:
                 raise FileNotFoundError(f"No clip output found in {output_dir}")
 
+            # Sort registered clips by filename to ensure consistent order matching with clip_index
+            # Clips come from glob() which has arbitrary order, but we need them sorted alphabetically
+            # This ensures clip 030.00-060 comes before clip 031.00-035, matching database order
+            registered = sorted(registered)
+
             # Handle transcription if enabled
             transcribe_clips_value = job.config.get("transcribe_clips")
             logger.info(f"Clipping job config transcribe_clips value: {transcribe_clips_value} (type: {type(transcribe_clips_value)})")
