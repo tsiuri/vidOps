@@ -171,6 +171,7 @@ class OllamaConfig:
     request_timeout: int = 60
 
 @dataclass
+@dataclass
 class DiarizationConfig:
     """Default settings for diarization workers and jobs."""
     # Diarization model to use (e.g., 'pyannote', 'resemblyzer')
@@ -187,6 +188,16 @@ class DiarizationConfig:
     match_threshold: float = 0.75
     match_margin: float = 0.01
     match_force_best: bool = True
+    # Reference builder defaults
+    refs_clips_count: int = 50
+    refs_clips_per_video: int = 1
+    refs_max_clips: int = 50
+    refs_min_words: int = 3
+    refs_max_words: int = 6
+    refs_min_clip_seconds: float = 1.0
+    refs_max_clip_seconds: float = 6.0
+    refs_audio_channels: int = 1
+    refs_audio_rate: int = 16000
 
 
 @dataclass

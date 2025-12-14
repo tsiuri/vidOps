@@ -91,7 +91,7 @@ class WordRepository:
     Data Access Layer for the 'words' table.
     """
 
-    def bulk_insert(self, words: List[Word], page_size: int = 500) -> int:
+    def bulk_insert(self, words: List[Word], page_size: int = 500, job_id: Optional[str] = None) -> int:
         """
         Efficiently inserts a large number of words into the database.
         Uses psycopg2's execute_values for high performance.
@@ -99,6 +99,7 @@ class WordRepository:
         Args:
             words: A list of Word objects to insert.
             page_size: The number of rows to insert per batch.
+            job_id: Optional job identifier for provenance.
             
         Returns:
             The total number of rows inserted.
@@ -122,12 +123,12 @@ class WordRepository:
                 # Now, insert the new words
                 sql = """
                     INSERT INTO words (
-                        ytid, source, idx, word, start_sec, end_sec, confidence, segment_id
+                        ytid, source, idx, word, start_sec, end_sec, confidence, segment_id, job_id
                     ) VALUES %s;
                 """
                 
                 # Convert list of objects to list of tuples
-                data_tuples = [w.to_tuple() for w in words]
+                data_tuples = [w.to_tuple(job_id=job_id) for w in words]
                 
                 execute_values(
                     cur,

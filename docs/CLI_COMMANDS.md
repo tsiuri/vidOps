@@ -49,7 +49,7 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
     - `dates` — DatesWorker: dates helper jobs only
     - `extra_utils` — ExtraUtilsWorker: extra utility jobs only
 - `download` (`cli/download.py`)
-  - `enqueue` (enqueue download job)
+  - `enqueue` (enqueue download job; `--force` to re-download even if media/archive exists)
 - `transcribe` (`cli/transcribe.py`)
   - `enqueue` (enqueue transcription job)
   - `enqueue-pending` (enqueue missing transcripts)
@@ -71,8 +71,11 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
   - `enqueue` (legacy single analysis job; creates job_type="analysis")
   - `enqueue-distributed` (distributed analysis; creates two job entries: one in analysis_tasks table + one in jobs table with job_type="analysis-distributed" for GenericWorker to claim and execute)
 - `diarize` (`cli/diarization.py`)
-  - `enqueue` (ytid-based diarization)
+  - `enqueue` (ytid-based diarization; prompts to reuse/build a reference by default)
   - `enqueue-file` (ad-hoc file diarization)
+- `pipeline` (`cli/pipeline.py`)
+  - `enqueue` (full pipeline: download → transcribe → diarize → analysis; skip flags; `--force-from <stage>` to start at a later stage; prompts to build/use a diarization reference by default, `--reference-name` to preselect)
+  - `status` (show jobs for a pipeline)
 - `voice` (`cli/voice.py`)
   - `enqueue` (voice filter job)
 - `query_ids` (`cli/query_ids.py`)

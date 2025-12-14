@@ -4,7 +4,12 @@
 
 The Pipeline CLI (`vo pipeline`) enables users to enqueue complete video processing pipelines with a single command. Instead of manually managing multiple stages (download → transcription → diarization → analysis), users can start an entire pipeline with automatic dependency management.
 
-**Key Feature**: All jobs are created immediately with dependencies encoded in the database. GenericWorker automatically respects dependencies without any special application logic.
+**Key Feature**: All jobs are created immediately with dependencies encoded in the database (download → transcription → diarization → analysis-distributed by default). GenericWorker automatically respects dependencies without any special application logic.
+
+### Interactive preflight (no DB writes until configured)
+- When diarization is included and no `--reference-name` is provided, a curses/text menu prompts you to pick or build a reference (or skip diarization). Cancelling the prompt aborts enqueue entirely.
+- When analysis is included and no `--analysis-config-id` is provided, a curses/text menu lets you pick a config or explicitly skip analysis. Cancelling aborts before any jobs are written.
+- Configuration prompts run before any DB changes so a failed or cancelled selection leaves the database untouched.
 
 ## Usage
 
@@ -52,6 +57,9 @@ vo pipeline enqueue XYZ --skip-download
 
 # Download and transcribe only (skip diarization and analysis)
 vo pipeline enqueue XYZ --skip-diarization --skip-analysis
+
+# Start from a later stage (force skipping earlier ones)
+vo pipeline enqueue XYZ --force-from diarization
 ```
 
 #### Custom Configuration
@@ -76,6 +84,11 @@ vo pipeline enqueue XYZ \
   --transcription-model large-v3 \
   --diarization-device cpu \
   --skip-analysis
+
+# Build/use a diarization reference before enqueueing (aborts enqueue on failure/cancel; defaults to prompting for one)
+vo pipeline enqueue XYZ --reference-name myref
+# Skip analysis via TUI (press “s” when selecting analysis config) or CLI flag
+vo pipeline enqueue XYZ --skip-analysis
 ```
 
 ### Monitoring Pipeline Progress
@@ -95,6 +108,8 @@ vo pipeline status pipe_a1b2c3d4
 # job_333     diarization             pending     job_222     23:05:47   -
 # job_444     analysis-distributed    pending     job_333     23:05:48   -
 ```
+
+- `vo pipeline status <pipeline_id>` now returns non-zero and prints error snippets when any job in the pipeline has failed, so your shell scripts/terminals surface failures immediately.
 
 ## Configuration
 

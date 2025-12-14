@@ -247,7 +247,7 @@ class TranscriptionService:
             segment_count = self._estimate_segments(words)
 
             if words_count:
-                self.word_repo.bulk_insert(words)
+                self.word_repo.bulk_insert(words, job_id=job.job_id)
             else:
                 logger.warning("Legacy transcription produced no per-word entries for %s", job.ytid)
 
@@ -317,6 +317,9 @@ class TranscriptionService:
             error_msg = f"Transcription failed for job {job.job_id} ({job.ytid}): {e}"
             logger.error(error_msg, exc_info=True)
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_msg)
+        finally:
+            # Free GPU/CPU model memory between jobs so downstream stages (e.g., diarization) have headroom
+            self._release_model()
 
     def _handle_clip_transcription_completion(
         self,
@@ -566,6 +569,26 @@ class TranscriptionService:
             raise
 
         return self._model
+
+    def _release_model(self) -> None:
+        """Drop cached whisper model and clear CUDA cache to free memory for subsequent jobs."""
+        try:
+            if self._model is not None:
+                del self._model
+                self._model = None
+                self._loaded_model_name = None
+                self._loaded_device = None
+                self._loaded_compute = None
+        except Exception:
+            pass
+        try:
+            import gc
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _run_whisper(
         self,

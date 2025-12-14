@@ -42,6 +42,7 @@ class DownloadService:
         cookies_browser: str | None = None,
         upload_type: str | None = None,
         ytdlp_overrides: dict[str, Any] | None = None,
+        force_download: bool = False,
     ) -> Job:
         """
         Enqueues a video download job.
@@ -88,6 +89,7 @@ class DownloadService:
         job_config: dict[str, Any] = {
             "url": url,
             "ytdlp": ytdlp_cfg,
+            "force_download": force_download,
         }
         if upload_type:
             job_config["upload_type"] = upload_type
@@ -146,10 +148,11 @@ class DownloadService:
                     error_message="Job missing yt-dlp config; re-enqueue with current settings.",
                 )
                 return
+            force_download = bool(job_config.get("force_download"))
             ytid = self._extract_ytid(url)
             is_single_video = self._looks_like_video_id(ytid)
             # Early exit if media already exists in pull/ (only for single-video URLs)
-            if is_single_video:
+            if is_single_video and not force_download:
                 existing = None
                 for ext in (".opus", ".m4a", ".mp3", ".mp4", ".mkv", ".webm", ".mka"):
                     candidates = sorted(download_dir.glob(f"{ytid}__*.{ext}"))

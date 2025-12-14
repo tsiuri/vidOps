@@ -67,14 +67,16 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 ## Active Pipeline CLI Updates (2025-12-11)
 - New `vo pipeline enqueue` command creates a full processing pipeline (download → transcription → diarization → analysis) with automatic dependency management
 - Usage: `vo pipeline enqueue <YTID_or_URL> [--skip-diarization] [--transcription-model large-v3]`
-- All jobs created immediately in PENDING status; GenericWorker claims them in dependency order
+- All jobs created immediately in PENDING status (including analysis-distributed by default); GenericWorker claims them in dependency order
 - Each job stores `pipeline_id` and `depends_on` in config for traceability and orchestration
 - Dependency enforcement at database level: `JobRepository.claim_next()` uses `FOR UPDATE OF j SKIP LOCKED` with LEFT JOIN to check `config->>'depends_on'`
 - Jobs only become claimable when their dependency is COMPLETED, enforced via SQL WHERE clause (no worker-side logic needed)
 - `vo pipeline status <pipeline_id>` shows all jobs, their dependencies, and completion status
+- `vo pipeline status` exits non-zero and prints error snippets when any stage has failed, so shells/CI notice failures
 - Configuration integration: Pipeline reads defaults from `config.yaml` (diarization device, transcription model, etc.); CLI options override
 - Skip flags disable stages: `--skip-download`, `--skip-transcription`, `--skip-diarization`, `--skip-analysis` allow partial pipelines
 - Works seamlessly with existing GenericWorker - dependency checking moved entirely into database queries, not application code
+- Pipeline enqueue now blocks on interactive preflight prompts (curses/text) for diarization references and analysis configs (with a skip option) and aborts before DB writes if required selections are cancelled
 
 ## Active Diarization Updates (2025-12-11)
 - `DiarizationService` now loads diarization configuration from `config.yaml` (`diarization.*` block) and applies these defaults to all enqueued jobs.

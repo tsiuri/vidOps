@@ -15,6 +15,7 @@ from dal import FilesystemCache, JobRepository, TranscriptRepository, VideoRepos
 from models import Job, JobStatus
 from configuration import load_config
 from .reference_builder import ReferenceBuilder
+from .reference_registry import ReferenceRegistry
 from .memory_monitor import MemoryMonitor
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,8 @@ class DiarizationService:
         else:
             # For forced enqueue (pipeline mode), skip reference setup and use defaults
             media_asset = f"data/media/{ytid}/{ytid}.*"  # Wildcard - will be resolved at runtime
-            words_rel = self._normalize_relative(words_path or f"data/transcripts/{ytid}/words_{transcript_kind}.jsonl", allow_dir=False)
+            # Defer words path resolution to runtime; transcription job will populate transcripts table
+            words_rel = None
             ref_rel = self._normalize_relative(f"data/references/{reference_name or ytid}", allow_dir=True)
             output_rel = self._normalize_output_dir(output_dir, ytid)
             reference_dir = None  # Will be created during processing if needed
@@ -192,7 +194,7 @@ class DiarizationService:
         ytids: list[str],
         transcript_kind: str,
         reference_name: str,
-        clips_count: int = 50,
+        clips_count: Optional[int] = None,
     ) -> str:
         """
         Build (or reuse) a shared reference directory for a batch of ytids.
@@ -203,8 +205,15 @@ class DiarizationService:
         if (dest / "reference.json").exists():
             return reference_rel
 
+        refs_cfg = self.config.diarization
+        clips_per_video = refs_cfg.refs_clips_per_video
+        max_clips = clips_count if clips_count is not None else refs_cfg.refs_max_clips
+        max_duration = refs_cfg.refs_max_clip_seconds
+        min_duration = refs_cfg.refs_min_clip_seconds
+
         workspace_root = self._workspace_root()
         builder = ReferenceBuilder(self.fs_cache, workspace_root)
+        registry = ReferenceRegistry()
 
         import random
 
@@ -239,18 +248,29 @@ class DiarizationService:
                 continue
 
             sources.append((ytid, media_local, words_local))
-            if len(sources) >= clips_count:
+            if len(sources) >= max_clips:
                 break
 
         if not sources:
             raise ValueError("No usable media+words sources found for shared reference.")
 
-        builder.build_shared(
+        ref_dir = builder.build_shared(
             reference_rel=reference_rel,
             sources=sources,
-            clips_per_video=1,
-            max_clips=clips_count,
+            clips_per_video=clips_per_video,
+            max_clips=max_clips,
+            max_duration=max_duration,
+            min_duration=min_duration,
         )
+        try:
+            registry.register(
+                name=reference_name,
+                reference_dir=self.fs_cache.get_central_path(reference_rel),
+                model=self.config.diarization.model,
+                transcript_kind=transcript_kind,
+            )
+        except Exception:
+            logger.warning("Failed to register shared reference %s", reference_name, exc_info=True)
         return reference_rel
 
     def process_job(self, job: Job) -> None:
@@ -277,9 +297,27 @@ class DiarizationService:
             words_rel = job.config.get("words_path")
             reference_dir = job.config.get("reference_dir")
             output_rel = self._normalize_output_dir(job.config.get("output_dir"), job.ytid)
+            transcript_kind = job.config.get("transcript_kind", "best")
 
-            if not media_rel or not words_rel:
-                raise ValueError("Job missing media, words, or reference configuration.")
+            if not media_rel:
+                raise ValueError("Job missing media configuration.")
+
+            # Resolve words_rel if missing, obviously wrong (jsonl), or non-existent
+            def _resolve_words_fresh() -> str:
+                return self._resolve_transcript_path(job.ytid, transcript_kind)
+
+            if not words_rel or (isinstance(words_rel, str) and words_rel.endswith(".jsonl")):
+                words_rel = _resolve_words_fresh()
+            else:
+                try:
+                    candidate = self.fs_cache.get_central_path(words_rel)
+                    if not candidate.exists():
+                        words_rel = _resolve_words_fresh()
+                except Exception:
+                    words_rel = _resolve_words_fresh()
+
+            if not words_rel:
+                raise ValueError("Job missing words configuration and no transcript could be resolved.")
 
             # If media path looks like a wildcard/placeholder, resolve from assets table
             if "*" in media_rel or media_rel.startswith("data/media/"):
@@ -293,7 +331,10 @@ class DiarizationService:
             audio_path = self._stage_media(media_rel, workspace_root)
             words_path = self._stage_words(words_rel, workspace_root, job.job_id)
 
-            staged_reference_dir = self._stage_reference(reference_dir, workspace_root)
+            if reference_dir:
+                staged_reference_dir = self._stage_reference(reference_dir, workspace_root)
+            else:
+                staged_reference_dir = None
 
             output_dir = workspace_root / output_rel
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -301,7 +342,7 @@ class DiarizationService:
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting diarization.")
             # Memory monitor is active during preprocessing and diarization
             self._run_pyannote_diarize(job, workspace_root, audio_path, words_path, output_dir, staged_reference_dir)
-            job_result = self._persist_outputs(job, output_rel, output_dir)
+            job_result = self._persist_outputs(job, output_rel, output_dir, words_path=words_path)
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
             logger.info("Successfully diarized %s", job.ytid)
         except Exception as exc:
@@ -383,10 +424,20 @@ class DiarizationService:
         media_local = self.fs_cache.pull_to_cache(media_rel)
         words_local = self.fs_cache.pull_to_cache(words_rel)
         builder = ReferenceBuilder(self.fs_cache, workspace_root)
+        registry = ReferenceRegistry()
         # Force non-interactive reference build in worker/CLI paths
         prev_skip = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT")
         os.environ["BATCH_DIARIZE_SKIP_PROMPT"] = "1"
-        built_dir = builder.build(ytid, media_local, words_local, reference_rel)
+        refs_cfg = self.config.diarization
+        built_dir = builder.build(
+            ytid,
+            media_local,
+            words_local,
+            reference_rel,
+            clips_count=refs_cfg.refs_clips_count,
+            max_duration=refs_cfg.refs_max_clip_seconds,
+            min_duration=refs_cfg.refs_min_clip_seconds,
+        )
         if prev_skip is not None:
             os.environ["BATCH_DIARIZE_SKIP_PROMPT"] = prev_skip
         else:
@@ -399,6 +450,15 @@ class DiarizationService:
             shutil.rmtree(dest_dir)
         dest_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(built_dir, dest_dir)
+        try:
+            registry.register(
+                name=Path(reference_rel).name,
+                reference_dir=dest_dir,
+                model=self.config.diarization.model,
+                transcript_kind=None,
+            )
+        except Exception:
+            logger.warning("Failed to register reference %s in registry", reference_rel, exc_info=True)
         return reference_rel
 
     def _resolve_media_asset_path(self, ytid: str) -> str:
@@ -406,6 +466,18 @@ class DiarizationService:
         if not asset or not asset.path:
             raise ValueError(f"No media asset registered for {ytid}. Download first.")
         return asset.path
+
+    def _resolve_transcript_path(self, ytid: str, transcript_kind: str) -> str:
+        """
+        Resolve a transcript path from the transcripts table, honoring "best" selection.
+        """
+        if transcript_kind.lower() == "best":
+            transcript = self.transcript_repo.get_best_available(ytid)
+        else:
+            transcript = self.transcript_repo.get(ytid, transcript_kind)
+        if not transcript or not transcript.path:
+            raise ValueError(f"Transcript of kind '{transcript_kind}' not found for video '{ytid}'.")
+        return self._normalize_relative(transcript.path, allow_dir=False)
 
     def _stage_media(self, media_rel: str, workspace_root: Path) -> Path:
         cached = self.fs_cache.pull_to_cache(media_rel)
@@ -523,7 +595,7 @@ class DiarizationService:
         audio_path: Path,
         words_path: Path,
         output_dir: Path,
-        reference_dir: Path,
+        reference_dir: Optional[Path],
     ) -> None:
         if os.environ.get("VIDOPS_FAKE_DIARIZATION", "").lower() in {"1", "true"}:
             self._write_fake_outputs(job, output_dir, audio_path)
@@ -565,7 +637,7 @@ class DiarizationService:
         audio_path: Path,
         words_path: Path,
         output_dir: Path,
-        reference_dir: Path,
+        reference_dir: Optional[Path],
     ) -> None:
         """Run diarization on a single file (no chunking)."""
         # TOOL_ROOT should point to the code tree that has scripts/diarization/batch_diarize.py.
@@ -610,7 +682,7 @@ class DiarizationService:
             device_arg,
         ]
 
-        ref_name = reference_dir.name
+        ref_name = reference_dir.name if reference_dir else ""
         if ref_name:
             cmd.extend(["--reference", ref_name])
             cmd.extend(["--match-threshold", str(job.config.get("match_threshold", 0.75))])
@@ -675,7 +747,7 @@ class DiarizationService:
         audio_path: Path,
         words_path: Path,
         output_dir: Path,
-        reference_dir: Path,
+        reference_dir: Optional[Path],
         audio_duration: float,
     ) -> None:
         """
@@ -797,7 +869,7 @@ class DiarizationService:
                 "--device", device_arg,
             ]
 
-            ref_name = reference_dir.name
+            ref_name = reference_dir.name if reference_dir else ""
             if ref_name:
                 chunk_cmd.extend(["--reference", ref_name])
                 chunk_cmd.extend(["--match-threshold", str(job.config.get("match_threshold", 0.75))])
@@ -1017,7 +1089,7 @@ class DiarizationService:
             "unknown_pct": 100 * unknown_count / len(assignments) if assignments else 0,
         }
 
-    def _persist_outputs(self, job: Job, output_rel: str, output_dir: Path) -> dict:
+    def _persist_outputs(self, job: Job, output_rel: str, output_dir: Path, words_path: Optional[Path] = None) -> dict:
         rel_base = Path(output_rel.strip("/"))
         ts_candidates = [
             output_dir / "diarized_timestamps_clean.tsv",
@@ -1030,9 +1102,25 @@ class DiarizationService:
 
         speaker_words = output_dir / "speaker_words.tsv"
         meta_path = output_dir / "diarization.json"
-        for path in (speaker_words, meta_path):
-            if not path.exists():
-                raise FileNotFoundError(f"Missing diarization output: {path}")
+        # Ensure speaker_words exists; generate if possible, otherwise placeholder
+        if not speaker_words.exists():
+            if words_path and Path(words_path).exists():
+                try:
+                    _ = self._map_words_to_speakers(
+                        timestamps_file=timestamps,
+                        words_file=Path(words_path),
+                        output_file=speaker_words,
+                        gap_tolerance=job.config.get("gap_threshold", 0.15),
+                    )
+                    logger.info("Generated speaker_words.tsv via post-mapping for %s", job.ytid)
+                except Exception as exc:
+                    logger.warning("Failed to map words to speakers for %s: %s; writing placeholder", job.ytid, exc)
+                    self._write_placeholder_speaker_words(output_dir)
+            else:
+                logger.warning("speaker_words.tsv missing at %s; writing placeholder", speaker_words)
+                self._write_placeholder_speaker_words(output_dir)
+        if not meta_path.exists():
+            raise FileNotFoundError(f"Missing diarization output: {meta_path}")
 
         ts_rel = str(rel_base / timestamps.name)
         sw_rel = str(rel_base / speaker_words.name)

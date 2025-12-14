@@ -288,6 +288,7 @@ class GenericWorker:
         claimed_type = job.job_type or self.base_worker_type
         self._update_state(WorkerStatus.BUSY, job.job_id, worker_type=claimed_type)
         job_released = False
+        job_failed = False
 
         try:
             service = self._get_service_for_job(claimed_type)
@@ -333,6 +334,7 @@ class GenericWorker:
                     JobStatus.FAILED,
                     error_message=str(exc),
                 )
+                job_failed = True
 
         finally:
             self.current_job_id = None
@@ -343,6 +345,14 @@ class GenericWorker:
             )
             if job_released:
                 logger.info("Job %s released; worker %s returned to IDLE", job.job_id, self.worker_id)
+            elif job_failed:
+                refreshed = self.job_repo.get(job.job_id) if job else None
+                logger.info(
+                    "Job %s finished with status %s; worker %s returned to IDLE",
+                    job.job_id,
+                    refreshed.status if refreshed else "failed",
+                    self.worker_id,
+                )
             else:
                 logger.info("Job %s completed and worker %s returned to IDLE", job.job_id, self.worker_id)
             # Clean up memory after each job to prevent accumulation

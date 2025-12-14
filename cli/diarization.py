@@ -68,6 +68,20 @@ def enqueue_diarization(
 
     try:
         service = get_diarization_service()
+        ref_name = reference_name or ytid
+        try:
+            click.echo(f"  … Preparing diarization reference '{ref_name}'")
+            service.build_shared_reference(
+                ytids=[ytid],
+                transcript_kind=transcript_kind,
+                reference_name=ref_name,
+                clips_count=50,
+            )
+            reference_name = ref_name
+            click.echo(click.style(f"  ✓ Reference ready: {ref_name}", fg="green"))
+        except Exception as exc:
+            click.echo(click.style(f"✗ Reference setup failed/cancelled: {exc}", fg="red"), err=True)
+            return
         job = service.enqueue_diarization_job(
             ytid=ytid,
             transcript_kind=transcript_kind,

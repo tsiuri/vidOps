@@ -2,6 +2,7 @@
 
 import click
 import logging
+import sys
 from pathlib import Path
 
 from configuration import load_config
@@ -13,6 +14,7 @@ from scripts.analysis.analyze_transcript import VTTParser, TranscriptChunker
 from scripts.analysis.analyze_to_db import create_analysis_job, export_vtt_from_db
 from scripts.analysis.analysis_config import AnalysisConfig
 from services import get_analysis_service
+from typing import Optional, List, Any
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +52,14 @@ def enqueue_analysis(ytid: str, transcript_kind: str, model: str, priority: int,
 
 @analyze.command("enqueue-distributed")
 @click.argument("ytid")
-@click.option("--config-id", required=True, help="ID of the analysis config stored in analysis_configs.")
+@click.option("--config-id", required=False, help="ID of the analysis config stored in analysis_configs.")
 @click.option("--transcript-kind", default=None, help="Transcript kind to use (defaults to best available).")
 @click.option("--chunk-size", type=int, default=None, help="Chunk size override (words).")
 @click.option("--chunk-overlap", type=int, default=None, help="Overlap override (words).")
 @click.option("--priority", type=int, default=50, help="Job priority (higher = claimed first; default: 50).")
 def enqueue_distributed_analysis(
     ytid: str,
-    config_id: str,
+    config_id: str | None,
     transcript_kind: str | None,
     chunk_size: int | None,
     chunk_overlap: int | None,
@@ -66,8 +68,23 @@ def enqueue_distributed_analysis(
     """
     Chunk a transcript locally and enqueue distributed-analysis tasks.
     """
-    click.echo(f"Preparing distributed analysis job for {ytid} using config {config_id}...")
     cfg = load_config()
+    db = AnalysisDatabase()
+    db.connect()
+    try:
+        if not config_id:
+            config_id, selected_name = _select_analysis_config(db)
+            if config_id and selected_name:
+                click.echo(f"Selected analysis config: {config_id} ({selected_name})")
+        if not config_id:
+            raise click.ClickException("No analysis config selected; aborting.")
+        click.echo(f"Preparing distributed analysis job for {ytid} using config {config_id}...")
+        config_row = db.get_analysis_config(config_id)
+        if not config_row:
+            raise click.ClickException(f"Config id '{config_id}' not found in analysis_configs; add it via the web UI first.")
+        config_obj = AnalysisConfig.model_validate(config_row["config_json"])
+    finally:
+        db.disconnect()
     repo = TranscriptRepository()
 
     transcript = repo.get(ytid, transcript_kind) if transcript_kind else repo.get_best_available(ytid)
@@ -114,10 +131,6 @@ def enqueue_distributed_analysis(
     db = AnalysisDatabase()
     db.connect()
     try:
-        config_row = db.get_analysis_config(config_id)
-        if not config_row:
-            raise click.ClickException(f"Config id '{config_id}' not found in analysis_configs; add it via the web UI first.")
-        config_obj = AnalysisConfig.model_validate(config_row["config_json"])
         job_id = create_analysis_job(
             ytid=ytid,
             config_id=config_id,
@@ -132,14 +145,14 @@ def enqueue_distributed_analysis(
     try:
         job_repo = JobRepository()
         # if config has a model override, honor it
-        config_model = (config_obj.model if hasattr(config_obj, "model") else None) or (config.get("model") if isinstance(config, dict) else None)
+        config_model = getattr(config_obj, "model", None) or cfg.analysis.ollama.model
         job_config = {
             "analysis_job_id": job_id,
             "config_id": config_id,
             "ytid": ytid,
             "transcript_kind": transcript.kind or "unknown",
             "model_url": cfg.analysis.ollama.url,
-            "model_name": config_model or cfg.analysis.ollama.model,
+            "model_name": config_model,
         }
         generic_job = Job(
             job_type="analysis-distributed",
@@ -151,7 +164,7 @@ def enqueue_distributed_analysis(
         created_job = job_repo.create(generic_job)
         click.echo(click.style(f"✓ GenericWorker job created: {created_job.job_id}", fg="green"))
     except Exception as e:
-        logger.error(f"Failed to create generic job for distributed analysis: {e}")
+        logger.error(f"Failed to create generic job for distributed analysis: {e}", exc_info=True)
         click.echo(
             click.style(
                 f"✗ Warning: Failed to create GenericWorker job (distributed analysis will not be picked up by general worker): {e}",
@@ -208,3 +221,93 @@ def _rebuild_transcript_from_db(ytid: str, output_dir: Path) -> Path | None:
         logger.error("Rebuild returned no transcript for %s; words table may be empty.", ytid)
         return None
     return rebuilt
+
+
+def _select_analysis_config(db: AnalysisDatabase) -> tuple[Optional[str], Optional[str]]:
+    configs: List[dict[str, Any]] = db.list_analysis_configs()
+    if not configs:
+        return None, None
+    default = next((c for c in configs if c.get("is_default")), None)
+    if not sys.stdin.isatty():
+        click.echo("No TTY detected; using text prompt for analysis config selection.", err=True)
+        chosen = (default or configs[0])
+        return chosen["id"], chosen.get("name") or chosen["id"]
+    try:
+        import curses
+    except Exception:
+        click.echo("Curses UI unavailable (import failed); falling back to text prompt.", err=True)
+        return _prompt_config_text(configs, default)
+
+    def _menu(stdscr):
+        curses.curs_set(0)
+        stdscr.nodelay(False)
+        stdscr.keypad(True)
+        idx = 0
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            if h < 5 or w < 10:
+                return None, None
+            header = "↑/↓: move  Enter: select  q: cancel"
+            stdscr.addnstr(0, 0, header.ljust(w - 1)[: w - 1], w - 1)
+            max_rows = max(1, h - 3)
+            start = max(0, min(idx - max_rows + 1, len(configs) - max_rows))
+            end = min(len(configs), start + max_rows)
+            view = configs[start:end]
+            for line_idx, cfg in enumerate(view, start=0):
+                i = start + line_idx
+                prefix = ">" if i == idx else " "
+                name = cfg.get("name") or cfg["id"]
+                meta = f"{cfg.get('analysis_type','?')} v{cfg.get('version','?')}"
+                if cfg.get("is_default"):
+                    meta += " [default]"
+                line = f"{prefix} {cfg['id']} :: {name} :: {meta}"
+                stdscr.addnstr(line_idx + 2, 0, line.ljust(w - 1)[: w - 1], w - 1)
+            ch = stdscr.getch()
+            if ch in (curses.KEY_UP, ord("k")):
+                idx = (idx - 1) % len(configs)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                idx = (idx + 1) % len(configs)
+            elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                sel = configs[idx]
+                return sel["id"], sel.get("name") or sel["id"]
+            elif ch in (ord("q"), 27):
+                return None, None
+
+    try:
+        return curses.wrapper(_menu)
+    except Exception as exc:
+        click.echo(f"Curses UI failed ({exc}); falling back to text prompt.", err=True)
+        return _prompt_config_text(configs, default)
+
+
+def _prompt_config_text(configs: List[dict[str, Any]], default: Optional[dict[str, Any]]) -> tuple[Optional[str], Optional[str]]:
+    """Fallback text prompt to select analysis config."""
+    if not configs:
+        return None, None
+    print("\nAvailable analysis configs:")
+    for idx, cfg in enumerate(configs, 1):
+        meta = f"{cfg.get('analysis_type','?')} v{cfg.get('version','?')}"
+        if cfg.get("is_default"):
+            meta += " [default]"
+        print(f"  {idx}. {cfg['id']} :: {cfg.get('name') or cfg['id']} :: {meta}")
+    print("  0. Cancel")
+    try:
+        choice = input("Select config (number) [default uses first/default]: ").strip()
+    except EOFError:
+        choice = ""
+    if not choice:
+        chosen = default or configs[0]
+        return chosen["id"], chosen.get("name") or chosen["id"]
+    try:
+        num = int(choice)
+    except ValueError:
+        chosen = default or configs[0]
+        return chosen["id"], chosen.get("name") or chosen["id"]
+    if num <= 0:
+        return None, None
+    if 1 <= num <= len(configs):
+        cfg = configs[num - 1]
+        return cfg["id"], cfg.get("name") or cfg["id"]
+    chosen = default or configs[0]
+    return chosen["id"], chosen.get("name") or chosen["id"]

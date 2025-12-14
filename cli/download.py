@@ -22,9 +22,14 @@ def download():
     show_default=False,
     help="Optional upload type/id to tag the video record.",
 )
-def enqueue_download(url: str, priority: int, cookies_browser: str | None, upload_type: str | None):
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Force re-download even if media is already present in pull/ or download archive.",
+)
+def enqueue_download(url: str, priority: int, cookies_browser: str | None, upload_type: str | None, force: bool):
     """Enqueue a video URL for download."""
-    click.echo(f"Enqueuing download for URL: {url} (Priority: {priority})...")
+    click.echo(f"Enqueuing download for URL: {url} (Priority: {priority}, Force: {force})...")
 
     upload_type = (upload_type or "").strip() or None
     try:
@@ -34,6 +39,8 @@ def enqueue_download(url: str, priority: int, cookies_browser: str | None, uploa
             priority,
             cookies_browser=cookies_browser,
             upload_type=upload_type,
+            ytdlp_overrides={"force_download": True, "no_overwrites": False} if force else None,
+            force_download=force,
         )
         click.echo(click.style(f"✓ Download job enqueued: {job.job_id}", fg="green"))
     except Exception as e:

@@ -213,7 +213,7 @@ class FilesystemCache:
                 # Broker assumes relative addressing; only attempt if we have a relative path
                 if not asset_path.is_absolute() and self.broker_client.download_asset(str(asset_path), local_path):
                     return local_path
-                logger.warning("Broker download failed for %s, falling back to direct copy", relative_path)
+                logger.warning("Broker download failed for %s, falling back to direct copy", asset_path)
             # Direct copy
             try:
                 local_path.parent.mkdir(parents=True, exist_ok=True)

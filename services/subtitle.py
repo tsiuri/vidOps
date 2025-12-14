@@ -294,7 +294,7 @@ class SubtitleService:
 
         words, segment_count = self._parse_words(words_path, job.ytid)
         if words:
-            self.word_repo.bulk_insert(words)
+            self.word_repo.bulk_insert(words, job_id=job.job_id)
 
         lang = job.config.get("lang") or DEFAULT_LANG
 

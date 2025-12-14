@@ -21,12 +21,15 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from dal import FilesystemCache
+from .reference_registry import ReferenceRegistry, ReferenceRecord
 
 DEFAULT_CLIPS = 50
 MIN_WORDS = 3
 MAX_WORDS = 6
 MIN_DURATION = 6.0
 MAX_DURATION = 12.0
+DEFAULT_AUDIO_CHANNELS = 1
+DEFAULT_AUDIO_RATE = 16000
 
 
 @dataclass
@@ -68,7 +71,7 @@ def _ffprobe_duration(path: Path) -> float:
     return float(out)
 
 
-def _cut_clip(src: Path, start: float, end: float, dest: Path) -> None:
+def _cut_clip(src: Path, start: float, end: float, dest: Path, audio_channels: int = DEFAULT_AUDIO_CHANNELS, audio_rate: int = DEFAULT_AUDIO_RATE) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg",
@@ -82,9 +85,9 @@ def _cut_clip(src: Path, start: float, end: float, dest: Path) -> None:
         "-i",
         str(src),
         "-ac",
-        "1",
+        str(DEFAULT_AUDIO_CHANNELS),
         "-ar",
-        "16000",
+        str(DEFAULT_AUDIO_RATE),
         "-vn",
         "-y",
         str(dest),
@@ -205,10 +208,262 @@ def _prompt_selection(clips: Sequence[Tuple[Path, float, float]], labels: Option
     return chosen
 
 
+def _prompt_reference_choice(existing: Sequence[str]) -> Optional[str]:
+    print("\nAvailable references:")
+    for idx, name in enumerate(existing, 1):
+        print(f"  {idx}. {name}")
+    print("  0. None (build new)")
+    try:
+        choice = input("Select a reference to reuse (number), or 0 for none: ").strip()
+    except EOFError:
+        return None
+    if not choice:
+        return None
+    try:
+        num = int(choice)
+    except ValueError:
+        return None
+    if num <= 0:
+        return None
+    if 1 <= num <= len(existing):
+        return existing[num - 1]
+    return None
+
+
+def _prompt_reference_from_registry(records: Sequence[ReferenceRecord]) -> Optional[str]:
+    if not records:
+        return None
+    print("\nExisting references (pick to reuse, or 0 to build new):")
+    for idx, rec in enumerate(records, 1):
+        meta = []
+        if rec.clip_count is not None:
+            meta.append(f"clips={rec.clip_count}")
+        if rec.model:
+            meta.append(f"model={rec.model}")
+        if rec.transcript_kind:
+            meta.append(f"transcript={rec.transcript_kind}")
+        if rec.aggregate_hash:
+            meta.append(f"hash={rec.aggregate_hash[:8]}…")
+        meta_str = " ".join(meta)
+        print(f"  {idx}. {rec.name} {meta_str}")
+    print("  0. None (build new)")
+    try:
+        choice = input("Select reference to reuse: ").strip()
+    except EOFError:
+        return None
+    if not choice:
+        return None
+    try:
+        num = int(choice)
+    except ValueError:
+        return None
+    if num <= 0:
+        return None
+    if 1 <= num <= len(records):
+        return records[num - 1].name
+    return None
+
+
+def _curses_reference_menu(records: Sequence[ReferenceRecord]) -> tuple[Optional[str], bool]:
+    """Curses menu to choose an existing reference or build new. Returns (choice, displayed_flag)."""
+    try:
+        import curses
+    except Exception:
+        return None, False
+    if not sys.stdin.isatty() or not records:
+        return None, False
+
+    def _menu(stdscr):
+        curses.curs_set(0)
+        stdscr.nodelay(False)
+        stdscr.keypad(True)
+        idx = 0
+        options = list(records) + [None]  # last entry = build new
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            header = "↑/↓: move  Enter: select  q: cancel (build new)"
+            stdscr.addnstr(0, 0, header, w - 1)
+            for i, rec in enumerate(options):
+                prefix = ">" if i == idx else " "
+                if rec is None:
+                    line = f"{prefix} [build new]"
+                else:
+                    meta = []
+                    if rec.clip_count is not None:
+                        meta.append(f"clips={rec.clip_count}")
+                    if rec.model:
+                        meta.append(f"model={rec.model}")
+                    if rec.transcript_kind:
+                        meta.append(f"tx={rec.transcript_kind}")
+                    if rec.aggregate_hash:
+                        meta.append(f"hash={rec.aggregate_hash[:8]}…")
+                    meta_str = " ".join(meta)
+                    line = f"{prefix} {rec.name} {meta_str}"
+                stdscr.addnstr(i + 2, 0, line, w - 1)
+            ch = stdscr.getch()
+            if ch in (curses.KEY_UP, ord("k")):
+                idx = (idx - 1) % len(options)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                idx = (idx + 1) % len(options)
+            elif ch in (curses.KEY_ENTER, 10, 13, ord(" ")):
+                choice = options[idx]
+                return choice.name if choice else None
+            elif ch in (ord("q"), 27):
+                return None
+
+    try:
+        return curses.wrapper(_menu), True
+    except Exception:
+        return None, False
+
+
+def _curses_param_form(fields: list[dict]) -> list[dict]:
+    """Generic curses form for numeric fields with simple +/- adjustment and edit."""
+    try:
+        import curses
+    except Exception:
+        return fields
+    if not sys.stdin.isatty():
+        return fields
+
+    def _edit_value(stdscr, row, prompt, current, is_float):
+        curses.echo()
+        stdscr.addstr(row, 0, prompt)
+        stdscr.clrtoeol()
+        val = stdscr.getstr(row, len(prompt)).decode("utf-8").strip()
+        curses.noecho()
+        if not val:
+            return current
+        try:
+            return float(val) if is_float else int(val)
+        except ValueError:
+            return current
+
+    def _form(stdscr):
+        curses.curs_set(0)
+        stdscr.nodelay(False)
+        stdscr.keypad(True)
+        idx = 0
+        options = fields + [{"label": "[accept]", "value": None, "step": 0, "min": 0, "is_float": False}]
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            stdscr.addnstr(0, 0, "↑/↓: move  +/-: adjust  e/Enter: edit/select  q: accept", w - 1)
+            for i, f in enumerate(options):
+                prefix = ">" if i == idx else " "
+                val = "" if f["value"] is None else f": {f['value']}"
+                stdscr.addnstr(i + 2, 0, f"{prefix} {f['label']}{val}", w - 1)
+            ch = stdscr.getch()
+            if ch in (curses.KEY_UP, ord("k")):
+                idx = (idx - 1) % len(options)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                idx = (idx + 1) % len(options)
+            elif ch in (ord("+"), ord("=")):
+                if idx < len(fields):
+                    step = fields[idx]["step"]
+                    fields[idx]["value"] = fields[idx]["value"] + step
+            elif ch == ord("-"):
+                if idx < len(fields):
+                    step = fields[idx]["step"]
+                    fields[idx]["value"] = max(fields[idx]["min"], fields[idx]["value"] - step)
+            elif ch in (curses.KEY_ENTER, 10, 13, ord("e")):
+                if idx >= len(fields):
+                    return fields
+                f = fields[idx]
+                prompt = f"Set {f['label']} (current {f['value']}): "
+                fields[idx]["value"] = _edit_value(stdscr, len(options) + 3, prompt, f["value"], f["is_float"])
+            elif ch in (ord("q"), 27):
+                return fields
+
+    try:
+        return curses.wrapper(_form)
+    except Exception:
+        return fields
+
+
+def _prompt_reference_name(default_name: str) -> str:
+    """Prompt for reference name (curses if available, fallback to input)."""
+    try:
+        import curses
+    except Exception:
+        try:
+            val = input(f"Reference name [{default_name}]: ").strip()
+            return val or default_name
+        except EOFError:
+            return default_name
+
+    if not sys.stdin.isatty():
+        return default_name
+
+    def _edit(stdscr):
+        curses.curs_set(1)
+        stdscr.nodelay(False)
+        stdscr.keypad(True)
+        prompt = f"Reference name [{default_name}]: "
+        stdscr.erase()
+        stdscr.addstr(0, 0, prompt)
+        curses.echo()
+        val = stdscr.getstr(0, len(prompt)).decode("utf-8").strip()
+        curses.noecho()
+        return val or default_name
+
+    try:
+        return curses.wrapper(_edit)
+    except Exception:
+        return default_name
+
+
+def _curses_input(prompt: str, default: str = "") -> str:
+    try:
+        import curses
+    except Exception:
+        try:
+            val = input(f"{prompt} [{default}]: ").strip()
+            return val or default
+        except EOFError:
+            return default
+    if not sys.stdin.isatty():
+        return default
+
+    def _edit(stdscr):
+        curses.curs_set(1)
+        stdscr.nodelay(False)
+        stdscr.keypad(True)
+        stdscr.erase()
+        full = f"{prompt} [{default}]: "
+        stdscr.addstr(0, 0, full)
+        curses.echo()
+        val = stdscr.getstr(0, len(full)).decode("utf-8").strip()
+        curses.noecho()
+        return val or default
+
+    try:
+        return curses.wrapper(_edit)
+    except Exception:
+        return default
+
+
 class ReferenceBuilder:
     def __init__(self, fs_cache: FilesystemCache, workspace_root: Path):
         self.fs_cache = fs_cache
         self.workspace_root = workspace_root
+        self.registry = ReferenceRegistry()
+        # Pull defaults from config when available
+        try:
+            from configuration import load_config
+            cfg = load_config()
+            global DEFAULT_CLIPS, MIN_WORDS, MAX_WORDS, MIN_DURATION, MAX_DURATION
+            global DEFAULT_AUDIO_CHANNELS, DEFAULT_AUDIO_RATE
+            DEFAULT_CLIPS = cfg.diarization.refs_clips_count
+            MIN_WORDS = cfg.diarization.refs_min_words
+            MAX_WORDS = cfg.diarization.refs_max_words
+            MIN_DURATION = cfg.diarization.refs_min_clip_seconds
+            MAX_DURATION = cfg.diarization.refs_max_clip_seconds
+            DEFAULT_AUDIO_CHANNELS = cfg.diarization.refs_audio_channels
+            DEFAULT_AUDIO_RATE = cfg.diarization.refs_audio_rate
+        except Exception:
+            pass
 
     def build(
         self,
@@ -218,18 +473,80 @@ class ReferenceBuilder:
         reference_rel: str,
         clips_count: int = DEFAULT_CLIPS,
         max_duration: float = MAX_DURATION,
+        min_duration: float = MIN_DURATION,
+        min_words: int = MIN_WORDS,
+        max_words: int = MAX_WORDS,
+        audio_channels: int = DEFAULT_AUDIO_CHANNELS,
+        audio_rate: int = DEFAULT_AUDIO_RATE,
     ) -> Path:
         skip_prompts = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT") or not sys.stdin.isatty()
+
+        # Offer reuse of an existing reference (interactive only) before any cutting
+        if not skip_prompts:
+            try:
+                records = self.registry.list_records(limit=50)
+            except Exception:
+                records = []
+            reuse, displayed = _curses_reference_menu(records)
+            if reuse:
+                reused_path = self.fs_cache.get_central_path(f"data/references/{reuse}")
+                if reused_path.exists():
+                    return reused_path
+            elif not displayed:
+                # Only fall back to text prompts if curses UI did not show
+                reuse = _prompt_reference_from_registry(records) or _prompt_reference_choice([r.name for r in records])
+                if reuse:
+                    reused_path = self.fs_cache.get_central_path(f"data/references/{reuse}")
+                    if reused_path.exists():
+                        return reused_path
+        if not skip_prompts:
+            ref_name = _prompt_reference_name(Path(reference_rel).name)
+            reference_rel = f"data/references/{ref_name}"
+
         words = _read_words(words_path)
         if not words:
             raise ValueError(f"No words found at {words_path}")
 
+        if not skip_prompts:
+            fields = [
+                {"label": "clips_count", "value": clips_count, "step": 1, "min": 1, "is_float": False},
+                {"label": "max_clip_seconds", "value": max_duration, "step": 0.5, "min": 1.0, "is_float": True},
+                {"label": "min_clip_seconds", "value": min_duration, "step": 0.5, "min": 0.1, "is_float": True},
+                {"label": "min_words", "value": min_words, "step": 1, "min": 1, "is_float": False},
+                {"label": "max_words", "value": max_words, "step": 1, "min": 1, "is_float": False},
+                {"label": "audio_channels", "value": audio_channels, "step": 1, "min": 1, "is_float": False},
+                {"label": "audio_rate", "value": audio_rate, "step": 1000, "min": 8000, "is_float": False},
+            ]
+            fields = _curses_param_form(fields)
+            clips_count = int(fields[0]["value"])
+            max_duration = float(fields[1]["value"])
+            min_duration = float(fields[2]["value"])
+            min_words = int(fields[3]["value"])
+            max_words = int(fields[4]["value"])
+            audio_channels = int(fields[5]["value"])
+            audio_rate = int(fields[6]["value"])
+
         duration = _ffprobe_duration(media_path)
-        candidates = self._generate_candidates(words, duration, clips_count, max_duration)
+        candidates = self._generate_candidates(
+            words,
+            duration,
+            clips_count,
+            max_duration,
+            min_duration,
+            min_words,
+            max_words,
+        )
         if not candidates:
             raise ValueError("No reference candidates generated from words.")
 
-        local_clips = self._cut_candidates(media_path, candidates, ytid, name_prefix=ytid)
+        local_clips = self._cut_candidates(
+            media_path,
+            candidates,
+            ytid,
+            name_prefix=ytid,
+            audio_channels=audio_channels,
+            audio_rate=audio_rate,
+        )
 
         selected: list[Path] = []
         if not skip_prompts and sys.stdin.isatty():
@@ -247,10 +564,7 @@ class ReferenceBuilder:
         if skip_prompts:
             speaker_name = Path(reference_rel).name or "speaker"
         else:
-            try:
-                speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
-            except EOFError:
-                speaker_name = "speaker"
+            speaker_name = _curses_input("Enter speaker name", Path(reference_rel).name or "speaker")
 
         dest_dir = self.fs_cache.get_central_path(reference_rel)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -281,6 +595,11 @@ class ReferenceBuilder:
         clips_per_video: int = 1,
         max_clips: int = DEFAULT_CLIPS,
         max_duration: float = MAX_DURATION,
+        min_duration: float = MIN_DURATION,
+        min_words: int = MIN_WORDS,
+        max_words: int = MAX_WORDS,
+        audio_channels: int = DEFAULT_AUDIO_CHANNELS,
+        audio_rate: int = DEFAULT_AUDIO_RATE,
     ) -> Path:
         """
         Build a shared reference set from multiple videos.
@@ -297,16 +616,73 @@ class ReferenceBuilder:
         - Uses reference name as speaker name
         """
         skip_prompts = os.environ.get("BATCH_DIARIZE_SKIP_PROMPT") or not sys.stdin.isatty()
+        if not skip_prompts:
+            try:
+                records = self.registry.list_records(limit=50)
+            except Exception:
+                records = []
+            reuse, displayed = _curses_reference_menu(records)
+            if reuse:
+                reused_path = self.fs_cache.get_central_path(f"data/references/{reuse}")
+                if reused_path.exists():
+                    return reused_path
+            elif not displayed:
+                reuse = _prompt_reference_from_registry(records) or _prompt_reference_choice([r.name for r in records])
+                if reuse:
+                    reused_path = self.fs_cache.get_central_path(f"data/references/{reuse}")
+                    if reused_path.exists():
+                        return reused_path
+
+        if not skip_prompts:
+            ref_name = _prompt_reference_name(Path(reference_rel).name)
+            reference_rel = f"data/references/{ref_name}"
+
+        if not skip_prompts:
+            fields = [
+                {"label": "clips_per_video", "value": clips_per_video, "step": 1, "min": 1, "is_float": False},
+                {"label": "max_clips", "value": max_clips, "step": 1, "min": 1, "is_float": False},
+                {"label": "max_clip_seconds", "value": max_duration, "step": 0.5, "min": 1.0, "is_float": True},
+                {"label": "min_clip_seconds", "value": min_duration, "step": 0.5, "min": 0.1, "is_float": True},
+                {"label": "min_words", "value": min_words, "step": 1, "min": 1, "is_float": False},
+                {"label": "max_words", "value": max_words, "step": 1, "min": 1, "is_float": False},
+                {"label": "audio_channels", "value": audio_channels, "step": 1, "min": 1, "is_float": False},
+                {"label": "audio_rate", "value": audio_rate, "step": 1000, "min": 8000, "is_float": False},
+            ]
+            fields = _curses_param_form(fields)
+            clips_per_video = int(fields[0]["value"])
+            max_clips = int(fields[1]["value"])
+            max_duration = float(fields[2]["value"])
+            min_duration = float(fields[3]["value"])
+            min_words = int(fields[4]["value"])
+            max_words = int(fields[5]["value"])
+            audio_channels = int(fields[6]["value"])
+            audio_rate = int(fields[7]["value"])
+
         combined: list[Tuple[Path, float, float, str]] = []
         for ytid, media_path, words_path in sources:
             words = _read_words(words_path)
             if not words:
                 continue
             duration = _ffprobe_duration(media_path)
-            windows = self._generate_candidates(words, duration, clips_per_video, max_duration)
+            windows = self._generate_candidates(
+                words,
+                duration,
+                clips_per_video,
+                max_duration,
+                min_duration,
+                min_words,
+                max_words,
+            )
             if not windows:
                 continue
-            local_clips = self._cut_candidates(media_path, windows, ytid, name_prefix=ytid)
+            local_clips = self._cut_candidates(
+                media_path,
+                windows,
+                ytid,
+                name_prefix=ytid,
+                audio_channels=audio_channels,
+                audio_rate=audio_rate,
+            )
             combined.extend((p, s, e, ytid) for p, s, e in local_clips[:clips_per_video])
             if len(combined) >= max_clips:
                 break
@@ -334,10 +710,7 @@ class ReferenceBuilder:
         if skip_prompts:
             speaker_name = Path(reference_rel).name or "speaker"
         else:
-            try:
-                speaker_name = input("Enter speaker name for this reference: ").strip() or "speaker"
-            except EOFError:
-                speaker_name = "speaker"
+            speaker_name = _curses_input("Enter speaker name", Path(reference_rel).name or "speaker")
 
         dest_dir = self.fs_cache.get_central_path(reference_rel)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -366,19 +739,26 @@ class ReferenceBuilder:
         return dest_dir
 
     def _generate_candidates(
-        self, words: List[WordSpan], duration: float, clips_count: int, max_duration: float
+        self,
+        words: List[WordSpan],
+        duration: float,
+        clips_count: int,
+        max_duration: float,
+        min_duration: float,
+        min_words: int,
+        max_words: int,
     ) -> List[Tuple[float, float]]:
         windows: List[Tuple[float, float]] = []
         for i in range(len(words)):
-            n_words = random.randint(MIN_WORDS, MAX_WORDS)
+            n_words = random.randint(min_words, max_words)
             if i + n_words > len(words):
                 continue
             start = words[i].start
             end = words[i + n_words - 1].end
             end = min(end, start + max_duration, duration)
             # Enforce a minimum duration by extending if possible
-            if end - start < MIN_DURATION:
-                end = min(start + MIN_DURATION, duration)
+            if end - start < min_duration:
+                end = min(start + min_duration, duration)
             if end - start <= 0:
                 continue
             windows.append((start, end))
@@ -386,7 +766,13 @@ class ReferenceBuilder:
         return windows[:clips_count]
 
     def _cut_candidates(
-        self, media_path: Path, windows: Sequence[Tuple[float, float]], ytid: str, name_prefix: Optional[str] = None
+        self,
+        media_path: Path,
+        windows: Sequence[Tuple[float, float]],
+        ytid: str,
+        name_prefix: Optional[str] = None,
+        audio_channels: int = DEFAULT_AUDIO_CHANNELS,
+        audio_rate: int = DEFAULT_AUDIO_RATE,
     ) -> List[Tuple[Path, float, float]]:
         out_dir = self.workspace_root / "tmp" / "reference_builder" / ytid
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -394,6 +780,6 @@ class ReferenceBuilder:
         for idx, (start, end) in enumerate(windows, 1):
             stem = f"{name_prefix}_{idx}" if name_prefix else f"{idx}"
             clip_path = out_dir / f"{stem}.wav"
-            _cut_clip(media_path, start, end, clip_path)
+            _cut_clip(media_path, start, end, clip_path, audio_channels=audio_channels, audio_rate=audio_rate)
             generated.append((clip_path, start, end))
         return generated

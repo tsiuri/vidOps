@@ -18,6 +18,7 @@ class Word:
     confidence: Optional[float] = None
     idx: Optional[int] = None
     segment_id: Optional[int] = None
+    job_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: Dict[str, Any]) -> "Word":
@@ -34,9 +35,10 @@ class Word:
             confidence=float(row['confidence']) if row.get('confidence') is not None else None,
             idx=row.get('idx'),
             segment_id=row.get('segment_id'),
+            job_id=row.get('job_id'),
         )
     
-    def to_tuple(self) -> tuple:
+    def to_tuple(self, job_id: Optional[str] = None) -> tuple:
         """Converts the Word instance to a tuple for bulk database insertion."""
         return (
             self.ytid,
@@ -47,6 +49,7 @@ class Word:
             self.end_sec,
             self.confidence,
             self.segment_id,
+            job_id if job_id is not None else self.job_id,
         )
 
 

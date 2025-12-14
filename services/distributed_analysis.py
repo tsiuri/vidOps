@@ -11,9 +11,16 @@ one code path (DB store, spans, drills, etc.).
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
+from pathlib import Path
 
 from models import Job, JobStatus
 from workers.analysis_distributed import AnalysisWorker
+from configuration import load_config
+from dal import TranscriptRepository
+from scripts.analysis.analyze_to_db import create_analysis_job, export_vtt_from_db
+from scripts.analysis.analyze_transcript import TranscriptChunker, VTTParser
+from scripts.analysis.analysis_config import AnalysisConfig
+from db import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +77,17 @@ class DistributedAnalysisService:
 
         try:
             analysis_job_id = job.config.get("analysis_job_id")
-            if not analysis_job_id:
-                raise ValueError(f"Job {job.job_id} missing 'analysis_job_id' in config")
-
             config_id = job.config.get("config_id")
             if not config_id:
                 raise ValueError(f"Job {job.job_id} missing 'config_id' in config")
+
+            if not analysis_job_id:
+                analysis_job_id = self._ensure_analysis_job(job, config_id)
+                job.config["analysis_job_id"] = analysis_job_id
+                try:
+                    self.job_repo.update_config(job.job_id, job.config)
+                except Exception:
+                    logger.warning("Failed to persist analysis_job_id for %s", job.job_id, exc_info=True)
 
             model_url = job.config.get("model_url") or self.model_url
             model_name = job.config.get("model_name") or self.model_name
@@ -138,3 +150,105 @@ class DistributedAnalysisService:
                     worker.shutdown()
             except Exception:
                 pass
+
+    def _ensure_analysis_job(self, job: Job, config_id: str) -> str:
+        """
+        Build analysis_tasks entry on the fly if it wasn't created at enqueue time.
+        """
+        cfg = load_config()
+        db = None
+        transcript_repo = TranscriptRepository()
+
+        transcript_kind = job.config.get("transcript_kind") or f"words_whisper_{cfg.transcription.model}"
+        transcript = transcript_repo.get(job.ytid, transcript_kind) or transcript_repo.get_best_available(job.ytid)
+        if not transcript or not transcript.path:
+            raise ValueError(f"No transcript available for {job.ytid} (kind={transcript_kind})")
+
+        transcript_path = self._resolve_transcript_path(Path(transcript.path), cfg)
+        if not transcript_path.exists():
+            transcript_path = self._rebuild_transcript_from_db(job.ytid, cfg)
+            if not transcript_path or not transcript_path.exists():
+                raise FileNotFoundError(f"Transcript file missing and rebuild failed for {job.ytid}")
+
+        text = self._load_transcript_text(transcript_path)
+        if not text.strip():
+            raise ValueError(f"Transcript at {transcript_path} is empty")
+
+        chunker = TranscriptChunker(
+            chunk_size=cfg.analysis.chunk_size_words,
+            overlap=cfg.analysis.chunk_overlap_words,
+        )
+        raw_chunks = chunker.chunk(text)
+        if not raw_chunks:
+            raise ValueError("Transcript chunking produced no chunks")
+
+        chunk_payload = []
+        for idx, chunk in enumerate(raw_chunks):
+            payload = {
+                "chunk_id": chunk.get("chunk_id", idx),
+                "text": chunk.get("text", ""),
+                "word_count": chunk.get("word_count"),
+                "start_sec": chunk.get("start_sec"),
+                "end_sec": chunk.get("end_sec"),
+                "speaker": chunk.get("speaker"),
+            }
+            if transcript_path.suffix.lower() == ".vtt":
+                payload["vtt_path"] = str(transcript_path)
+            chunk_payload.append(payload)
+
+        db = self._connect_analysis_db()
+        try:
+            config_row = db.get_analysis_config(config_id)
+            if not config_row:
+                raise ValueError(f"Config id '{config_id}' not found in analysis_configs")
+            config_obj = AnalysisConfig.model_validate(config_row["config_json"])
+            analysis_job_id = create_analysis_job(
+                ytid=job.ytid,
+                config_id=config_id,
+                config=config_obj,
+                chunks=chunk_payload,
+                db=db,
+            )
+        finally:
+            if db:
+                db.disconnect()
+        return analysis_job_id
+
+    def _connect_analysis_db(self):
+        from dal.analysis_task_repository import AnalysisDatabase
+
+        db = AnalysisDatabase(
+            host=self.db_host,
+            dbname=self.db_name,
+            user=self.db_user,
+            password=self.db_password,
+        )
+        db.connect()
+        return db
+
+    def _resolve_transcript_path(self, path: Path, cfg) -> Path:
+        if path.is_absolute():
+            return path
+        prefix = cfg.paths.path_prefix or cfg.paths.central_storage_root
+        base = Path(prefix) if prefix else Path.cwd()
+        return (base / path).resolve()
+
+    def _load_transcript_text(self, transcript_path: Path) -> str:
+        if transcript_path.suffix.lower() in {".vtt", ".srt"}:
+            parser = VTTParser()
+            return parser.parse(transcript_path)
+        return transcript_path.read_text(encoding="utf-8", errors="ignore")
+
+    def _rebuild_transcript_from_db(self, ytid: str, cfg) -> Optional[Path]:
+        """
+        Rebuild a VTT from the words table when the stored file is missing.
+        """
+        try:
+            base = Path(cfg.paths.local_temp_dir or Path.cwd() / "tmp")
+            target_dir = base if base.is_absolute() else Path.cwd() / base
+            target_dir.mkdir(parents=True, exist_ok=True)
+            with get_connection() as conn:
+                return export_vtt_from_db(conn, ytid, target_dir)
+        except Exception as exc:
+            logger.error("Failed to rebuild transcript for %s: %s", ytid, exc, exc_info=True)
+            return None

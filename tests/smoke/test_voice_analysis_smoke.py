@@ -87,7 +87,7 @@ def test_voice_and_analysis_flow(smoke_env, smoke_storage_root):
         Word(ytid=ytid, source="whisper-tiny", word="Hello", start_sec=0.0, end_sec=0.5, confidence=-0.1, idx=0),
         Word(ytid=ytid, source="whisper-tiny", word="World", start_sec=0.5, end_sec=1.0, confidence=-0.2, idx=1),
     ]
-    word_repo.bulk_insert(words)
+    word_repo.bulk_insert(words, job_id="test_job")
 
     analysis_service = get_analysis_service()
     analysis_job = analysis_service.enqueue_analysis_job(
