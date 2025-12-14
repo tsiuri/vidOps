@@ -131,13 +131,15 @@ def enqueue_distributed_analysis(
     # Also create a job entry in the generic jobs table for GenericWorker
     try:
         job_repo = JobRepository()
+        # if config has a model override, honor it
+        config_model = (config_obj.model if hasattr(config_obj, "model") else None) or (config.get("model") if isinstance(config, dict) else None)
         job_config = {
             "analysis_job_id": job_id,
             "config_id": config_id,
             "ytid": ytid,
             "transcript_kind": transcript.kind or "unknown",
             "model_url": cfg.analysis.ollama.url,
-            "model_name": cfg.analysis.ollama.model,
+            "model_name": config_model or cfg.analysis.ollama.model,
         }
         generic_job = Job(
             job_type="analysis-distributed",

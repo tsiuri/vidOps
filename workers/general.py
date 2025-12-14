@@ -17,7 +17,6 @@ from dal import JobRepository, WorkerRepository
 from models import JobStatus, Worker, WorkerStatus
 from exceptions import WorkerLocalError, DiskSpaceError
 from services import (
-    get_analysis_service,
     get_distributed_analysis_service,
     get_clipping_service,
     get_diarization_service,
@@ -62,7 +61,7 @@ class GenericWorker:
             "download": get_download_service,
             "transcription": get_transcription_service,
             "clipping": get_clipping_service,
-            "analysis": get_analysis_service,
+            "analysis": get_distributed_analysis_service,  # legacy alias
             "analysis-distributed": get_distributed_analysis_service,
             "diarization": get_diarization_service,
             "stitching": get_stitching_service,
@@ -288,6 +287,7 @@ class GenericWorker:
         self.current_job_id = job.job_id
         claimed_type = job.job_type or self.base_worker_type
         self._update_state(WorkerStatus.BUSY, job.job_id, worker_type=claimed_type)
+        job_released = False
 
         try:
             service = self._get_service_for_job(claimed_type)
@@ -314,7 +314,16 @@ class GenericWorker:
                 )
                 # Release job back to PENDING
                 self.job_repo.release(job.job_id)
+                job_released = True
                 # Signal shutdown
+                self._shutdown_requested = True
+            except KeyboardInterrupt:
+                logger.warning("KeyboardInterrupt received; releasing job %s back to pending", job.job_id)
+                try:
+                    self.job_repo.release(job.job_id)
+                    job_released = True
+                except Exception as exc:
+                    logger.error("Failed to release job %s after interrupt: %s", job.job_id, exc, exc_info=True)
                 self._shutdown_requested = True
             except Exception as exc:
                 logger.error("Error processing job %s: %s", job.job_id, exc, exc_info=True)
@@ -332,7 +341,10 @@ class GenericWorker:
                 job_id=None,
                 worker_type=self.base_worker_type,
             )
-            logger.info("Job %s completed and worker %s returned to IDLE", job.job_id, self.worker_id)
+            if job_released:
+                logger.info("Job %s released; worker %s returned to IDLE", job.job_id, self.worker_id)
+            else:
+                logger.info("Job %s completed and worker %s returned to IDLE", job.job_id, self.worker_id)
             # Clean up memory after each job to prevent accumulation
             self._cleanup_memory()
         return True
@@ -349,6 +361,14 @@ class GenericWorker:
         try:
             # Run Python garbage collection
             gc.collect()
+
+            # Free any cached GPU memory between jobs
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
             # Clear CUDA cache if available
             try:

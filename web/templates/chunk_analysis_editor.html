@@ -34,6 +34,24 @@
           Default: 150. Overlap allows chunks to share words at boundaries, preserving continuity. Set to 0 for no overlap. Multiples of 50 (e.g., 100, 150) work best with the default chunking heuristics.
         </p>
       </div>
+
+      <div style="margin-bottom: 20px;">
+        <label for="modelOverride">Model override (optional):</label><br/>
+        <input type="text" id="modelOverride" name="model_override" value="{{ model_override or '' }}" placeholder="e.g., qwen2.5:7b-instruct" style="width: 320px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em;" />
+        <p style="color: #666; margin-top: 5px;">
+          Leave blank to use default model <code>{{ default_model }}</code>. If set, all chunk_analysis tasks for this config will request this model.
+        </p>
+        {% if available_models and available_models|length %}
+        <div style="margin-top:8px; font-size:0.9em; color:#444; background:#f7f9fc; border:1px solid #e0e7f1; border-radius:6px; padding:8px 10px;">
+          <strong>Installed models:</strong>
+          <div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:6px;">
+            {% for m in available_models %}
+              <span style="padding:4px 8px; border-radius:999px; background:#eef2ff; color:#2d3a8c; font-size:0.85em;">{{ m }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
     </fieldset>
 
     <!-- Section 2: Speaker Handling -->

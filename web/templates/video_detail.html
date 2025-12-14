@@ -28,6 +28,9 @@
   .segments th, .segments td { padding:10px; border-bottom:1px solid #ecf0f1; text-align:left; }
   .segments th { background:#f8fafc; font-weight:600; }
   .table-wrap { overflow:auto; }
+  .tag-row { margin-bottom:6px; display:flex; flex-wrap:wrap; gap:6px; }
+  .tag { display:inline-flex; align-items:center; padding:4px 8px; border-radius:999px; background:#f5e8ff; color:#5b2cad; font-size:0.78rem; font-weight:600; letter-spacing:0.01em; text-transform:uppercase; }
+  .legend-row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
   .actions a { display:inline-flex; align-items:center; padding:10px 14px; border-radius:6px; text-decoration:none; font-weight:600; }
   .actions a.primary { background:#3498db; color:#fff; }
   .actions a.secondary { background:#ecf0f1; color:#2c3e50; }
@@ -36,8 +39,14 @@
 <script>
   const SEGMENT_LIMIT = 2000;
   let SEGMENTS = [];
+  let TARGET_SPANS = [];
+  let TOPIC_SPANS = [];
+  let PERSON_SPANS = [];
+  let HOT_TARGET_SPANS = [];
+  let DRILL_SPANS = [];
   let FILTERS = { search: '', sentiment: '', spansOnly: false };
   let SPAN_CHUNK_IDS = new Set();
+  let CHUNK_LABELS = new Map();
   let VIDEO_URL = '';
   let LAST_DETAIL = null;
   let WORDS_CACHE = [];
@@ -73,6 +82,9 @@
       document.getElementById('overview').innerHTML = `<div class="muted">${escapeHtml(detail.error)}</div>`;
       return;
     }
+    TARGET_SPANS = detail.target_spans || [];
+    TOPIC_SPANS = detail.topic_spans || [];
+    PERSON_SPANS = detail.person_spans || [];
     const words = await wordsRes.json();
     const segs = await segmentsRes.json();
     WORDS_CACHE = words;
@@ -86,11 +98,30 @@
 
   function collectSpanChunks(detail){
     SPAN_CHUNK_IDS = new Set();
+    CHUNK_LABELS = new Map();
+    const addLabel = (chunkId, label) => {
+      const cid = Number(chunkId);
+      if (Number.isNaN(cid)) return;
+      const prev = CHUNK_LABELS.get(cid) || [];
+      if (!prev.includes(label)) {
+        CHUNK_LABELS.set(cid, prev.concat(label));
+      }
+    };
     ['target_spans','topic_spans','person_spans'].forEach(key => {
       (detail[key] || []).forEach(span => {
         (span.chunk_ids || []).forEach(id => {
           if (typeof id === 'number' || typeof id === 'string') {
             SPAN_CHUNK_IDS.add(Number(id));
+            const src = (span.source_pass || '').toLowerCase();
+            if (key === 'target_spans' && src.includes('hot')) {
+              addLabel(id, 'Hot target');
+            } else if (key === 'target_spans') {
+              addLabel(id, 'Target span');
+            } else if (key === 'topic_spans') {
+              addLabel(id, 'Topic span');
+            } else if (key === 'person_spans') {
+              addLabel(id, 'Person span');
+            }
           }
         });
       });
@@ -107,6 +138,7 @@
       <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <div>
           <h2>${escapeHtml(video.title || video.ytid || 'Video')}</h2>
+          <div class="muted" style="font-size:0.9rem;">YTID: <code>${escapeHtml(video.ytid || '')}</code></div>
           <div class="muted">${video.title_date || video.upload_date || 'Unknown date'} • ${video.channel || 'Unknown channel'}</div>
           <div class="meta">
             <span>Duration: ${formatDuration(video.duration_sec)}</span>
@@ -177,8 +209,16 @@
 
   function renderQuotes(quotes, keyPoints){
     const card = document.getElementById('quotes-card');
-    const quoteHtml = quotes.length ? quotes.map(q => `<div class="quote-item"><div class="muted">Chunk ${q.chunk_id ?? '—'}</div><div style="margin-top:4px;">“${escapeHtml(q.text || '')}”</div></div>`).join('') : '<div class="muted">No quotes captured for this transcript.</div>';
-    const kpHtml = keyPoints.length ? keyPoints.map(k => `<li>Chunk ${k.chunk_id ?? '—'} — ${escapeHtml(k.text || '')}</li>`).join('') : '<div class="muted">No key points logged.</div>';
+    const quoteHtml = quotes.length ? quotes.map(q => {
+      const cleaned = normalizeKeyPointText(q.text || '');
+      return `<div class="quote-item"><div class="muted">Chunk ${q.chunk_id ?? '—'}</div><div style="margin-top:4px;">“${escapeHtml(cleaned)}”</div></div>`;
+    }).join('') : '<div class="muted">No quotes captured for this transcript.</div>';
+    const kpHtml = keyPoints.length ? keyPoints.map(k => {
+      const cleaned = normalizeKeyPointText(k.text || '');
+      const needsEllipsis = cleaned.length > 220;
+      const display = needsEllipsis ? cleaned.slice(0, 220) + '…' : cleaned;
+      return `<li>Chunk ${k.chunk_id ?? '—'} — ${escapeHtml(display)}</li>`;
+    }).join('') : '<div class="muted">No key points logged.</div>';
     card.innerHTML = `
       <h3 style="margin-top:0;">Quotes & Key Points</h3>
       <div class="grid two" style="gap:20px;">
@@ -194,31 +234,103 @@
     `;
   }
 
+  function normalizeKeyPointText(text){
+    if (!text) return '';
+    const tokens = text.trim().split(/\s+/);
+    // Detect words TSV-ish rows: idx start end word conf speaker ...
+    if (tokens.length >= 6) {
+      const words = [];
+      for (let i = 0; i + 5 < tokens.length; i += 6) {
+        const idx = parseFloat(tokens[i]);
+        const start = parseFloat(tokens[i + 1]);
+        const end = parseFloat(tokens[i + 2]);
+        const word = tokens[i + 3];
+        const numericCheck = !Number.isNaN(idx) && !Number.isNaN(start) && !Number.isNaN(end);
+        if (!numericCheck) break;
+        words.push(word);
+      }
+      if (words.length >= 3) {
+        return words.join(' ');
+      }
+    }
+    return text;
+  }
+
   function renderSpans(detail){
-    renderSpanList(detail.target_spans || [], 'conflict-spans', 'No conflict or drill spans recorded.', span => {
+    const targets = detail.target_spans || [];
+    const isDrill = (span) => {
+      const tier = (span.pass_tier || '').toLowerCase();
+      const src = (span.source_pass || '').toLowerCase();
+      return tier === 'drill' || src.includes('drill');
+    };
+    const isHot = (span) => {
+      const src = (span.source_pass || '').toLowerCase();
+      return src.includes('hot');
+    };
+    DRILL_SPANS = targets.filter(isDrill);
+    HOT_TARGET_SPANS = targets.filter(span => !isDrill(span) && isHot(span));
+
+    renderSpanList(HOT_TARGET_SPANS, 'hot-span-list', 'No hot targets recorded.', (span, idx) => {
       const parties = Array.isArray(span.parties) && span.parties.length ? `Parties: ${span.parties.join(', ')}` : '';
+      const snippet = span.context ? truncate(span.context, 160) : '';
       return `
         <div class="span-entry">
-          <h4>${escapeHtml(span.description || span.source_pass || 'Span')}</h4>
+          ${renderSpanTags(span)}
+          <h4>${escapeHtml(span.description || 'Hot target')}</h4>
           <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.source_pass || 'hot_target')} ${spanJumpLink(span)}</div>
-          ${span.context ? `<div style="margin-top:6px;">${escapeHtml(span.context)}</div>` : ''}
+          ${snippet ? `<div style="margin-top:6px;">${escapeHtml(snippet)}</div>` : ''}
           ${parties ? `<div class="muted" style="margin-top:4px;">${escapeHtml(parties)}</div>` : ''}
+          <button class="summary-btn" type="button" onclick="showSpanDetail('hot', ${idx})">View details</button>
         </div>`;
     });
-    renderSpanList(detail.topic_spans || [], 'topic-spans', 'No topic spans detected.', span => `
+
+    renderSpanList(DRILL_SPANS, 'drill-span-list', 'No drills recorded.', (span, idx) => {
+      const parties = Array.isArray(span.parties) && span.parties.length ? `Parties: ${span.parties.join(', ')}` : '';
+      const snippet = span.context ? truncate(span.context, 160) : '';
+      return `
+        <div class="span-entry">
+          ${renderSpanTags(span)}
+          <h4>${escapeHtml(span.description || span.source_pass || 'Drill')}</h4>
+          <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.source_pass || 'drill')} ${spanJumpLink(span)}</div>
+          ${snippet ? `<div style="margin-top:6px;">${escapeHtml(snippet)}</div>` : ''}
+          ${parties ? `<div class="muted" style="margin-top:4px;">${escapeHtml(parties)}</div>` : ''}
+          <button class="summary-btn" type="button" onclick="showSpanDetail('drill', ${idx})">View details</button>
+        </div>`;
+    });
+
+    renderSpanList(detail.topic_spans || [], 'topic-spans', 'No topic spans detected.', (span, idx) => `
       <div class="span-entry">
         <h4>${escapeHtml(span.topic || '')}</h4>
         <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.source_pass || '')} ${spanJumpLink(span)}</div>
-        ${span.context ? `<div style="margin-top:6px;">${escapeHtml(span.context)}</div>` : ''}
+        ${span.context ? `<div style="margin-top:6px;">${escapeHtml(truncate(span.context, 160))}</div>` : ''}
+        <button class="summary-btn" type="button" onclick="showSpanDetail('topic', ${idx})">View details</button>
       </div>
     `);
-    renderSpanList(detail.person_spans || [], 'person-spans', 'No person spans detected.', span => `
+    renderSpanList(detail.person_spans || [], 'person-spans', 'No person spans detected.', (span, idx) => `
       <div class="span-entry">
         <h4>${escapeHtml(span.person_name || '')}</h4>
         <div class="meta">${formatTime(span.start_sec)} – ${formatTime(span.end_sec)} · ${escapeHtml(span.sentiment || '')} ${spanJumpLink(span)}</div>
-        ${span.context ? `<div style="margin-top:6px;">${escapeHtml(span.context)}</div>` : ''}
+        ${span.context ? `<div style="margin-top:6px;">${escapeHtml(truncate(span.context, 160))}</div>` : ''}
+        <button class="summary-btn" type="button" onclick="showSpanDetail('person', ${idx})">View details</button>
       </div>
     `);
+  }
+
+  function renderSpanTags(span){
+    const tags = [];
+    const source = (span.source_pass || '').trim();
+    const tier = (span.pass_tier || '').trim();
+    const drill = tier.toLowerCase() === 'drill' || source.toLowerCase().includes('drill');
+    if (drill) {
+      tags.push(`Drill${source ? ': ' + source : ''}`);
+    } else if (source) {
+      tags.push(source);
+    }
+    if (tier && !tags.includes(tier)) {
+      tags.push(tier);
+    }
+    if (!tags.length) return '';
+    return `<div class="tag-row">${tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>`;
   }
 
   function renderSpanList(spans, targetId, emptyText, renderer){
@@ -228,7 +340,7 @@
       el.innerHTML = `<div class="muted">${emptyText}</div>`;
       return;
     }
-    el.innerHTML = spans.map(renderer).join('');
+    el.innerHTML = spans.map((span, idx) => renderer(span, idx)).join('');
   }
 
   function renderInspector(detail){
@@ -246,6 +358,7 @@
       <div class="actions" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
         <a class="secondary" href="/analyses/{{ ytid }}" target="_blank" rel="noopener">Open JSON viewer ↗</a>
         <a class="primary" href="/api/analyses/{{ ytid }}" target="_blank" rel="noopener">Download raw JSON</a>
+        <a class="secondary" href="/api/video/{{ ytid }}/transcript.txt" target="_blank" rel="noopener">Regenerated transcript ↗</a>
       </div>
     `;
   }
@@ -302,14 +415,22 @@
 
   function formatSummaryCell(row){
     const full = String(row.summary || '');
+    const tags = renderChunkTags(row.chunk_id);
     if (full.length <= 280) {
-      return escapeHtml(full);
+      return `${tags}${escapeHtml(full)}`;
     }
     const snippet = escapeHtml(truncate(full, 280));
     return `
+      ${tags}
       <div>${snippet}</div>
       <button class="summary-btn" onclick="showFullSummary(${row.chunk_id})" type="button">Show full</button>
     `;
+  }
+
+  function renderChunkTags(chunkId){
+    const labels = CHUNK_LABELS.get(Number(chunkId)) || [];
+    if (!labels.length) return '';
+    return `<div class="tag-row">${labels.map(l => `<span class="tag">${escapeHtml(l)}</span>`).join('')}</div>`;
   }
 
   function showFullSummary(chunkId){
@@ -318,6 +439,39 @@
     const modal = document.getElementById('summary-modal');
     const text = document.getElementById('summary-modal-text');
     text.textContent = entry.summary || '';
+    modal.showModal();
+  }
+
+  function showSpanDetail(kind, idx){
+    const lookup = {
+      target: TARGET_SPANS,
+      hot: HOT_TARGET_SPANS,
+      drill: DRILL_SPANS,
+      topic: TOPIC_SPANS,
+      person: PERSON_SPANS
+    };
+    const span = (lookup[kind] || [])[idx];
+    if (!span) return;
+    const modal = document.getElementById('span-modal');
+    const title = document.getElementById('span-modal-title');
+    const meta = document.getElementById('span-modal-meta');
+    const body = document.getElementById('span-modal-body');
+    const label = span.description || span.topic || span.person_name || span.source_pass || 'Span';
+    const start = formatTime(span.start_sec);
+    const end = formatTime(span.end_sec);
+    const parties = Array.isArray(span.parties) ? span.parties.filter(Boolean).join(', ') : '';
+    title.textContent = label;
+    const chunkIds = Array.isArray(span.chunk_ids) ? span.chunk_ids.join(', ') : '';
+    meta.innerHTML = `
+      <div>${start || '—'} – ${end || '—'}</div>
+      ${span.id ? `<div>Span ID: ${escapeHtml(span.id)}</div>` : ''}
+      ${chunkIds ? `<div>Chunk IDs: ${escapeHtml(chunkIds)}</div>` : ''}
+      ${span.source_pass ? `<div>Source: ${escapeHtml(span.source_pass)}</div>` : ''}
+      ${span.pass_tier ? `<div>Tier: ${escapeHtml(span.pass_tier)}</div>` : ''}
+      ${parties ? `<div>Parties: ${escapeHtml(parties)}</div>` : ''}
+      ${span.sentiment ? `<div>Sentiment: ${escapeHtml(span.sentiment)}</div>` : ''}
+    `;
+    body.textContent = span.context || '(No additional context provided.)';
     modal.showModal();
   }
 
@@ -372,10 +526,19 @@
 
   <div class="card" style="margin-top:16px;" id="quotes-card"></div>
 
-  <div class="grid three" style="margin-top:16px;">
-    <div class="card" id="conflict-spans">
-      <h3 style="margin-top:0;">Conflict / Drill Spans</h3>
+  <div class="card" style="margin-top:16px;" id="conflict-spans">
+    <h3 style="margin-top:0;">Hot Targets & Drills</h3>
+    <div class="legend-row">
+      <span class="tag">Hot targets</span>
+      <span class="tag">Drills</span>
     </div>
+    <h4 style="margin:10px 0 6px;">Hot targets</h4>
+    <div id="hot-span-list"></div>
+    <h4 style="margin:14px 0 6px;">Drills</h4>
+    <div id="drill-span-list"></div>
+  </div>
+
+  <div class="grid two" style="margin-top:16px;">
     <div class="card" id="topic-spans">
       <h3 style="margin-top:0;">Topic Spans</h3>
     </div>
@@ -433,5 +596,14 @@
       <button type="button" onclick="document.getElementById('summary-modal').close()">Close</button>
     </div>
     <div id="summary-modal-text" style="white-space:pre-wrap;"></div>
+  </dialog>
+
+  <dialog id="span-modal" class="summary-modal">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+      <strong id="span-modal-title">Span detail</strong>
+      <button type="button" onclick="document.getElementById('span-modal').close()">Close</button>
+    </div>
+    <div id="span-modal-meta" class="muted" style="display:flex; flex-direction:column; gap:4px; margin-bottom:10px;"></div>
+    <div id="span-modal-body" style="white-space:pre-wrap;"></div>
   </dialog>
 {% endblock %}

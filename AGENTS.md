@@ -85,9 +85,19 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 
 ## Active Analysis Updates (2025-12-11)
 - GenericWorker now claims distributed analysis work through `services/distributed_analysis.py`, so `vo worker start general` covers download, transcription, clips, diarization, stitching, and `analysis-distributed` in one process. See `tests/workers/test_generic_worker_distributed_analysis.py` for the handoff coverage.
+- The legacy `analysis` worker path now aliases to the distributed analysis worker; both GenericWorker and `vo worker start analysis` route through the same `AnalysisWorker` implementation so DB store/drill/span behavior stays in sync.
 - The analysis web UI (`web/templates/video_detail.html`, `/analysis-configs*` templates, `web/web_app.py`) was rebuilt: nav includes an Analysis Configs link, the video detail page shows TLDR/summary, quotes, spans, per-chunk tables with filters, "Show full" modals, jump links, and a "See config ↗" action. Drill counts on `/analysis-configs` now come from the `drills` table, and the config/detail editors expose all drill + hot target settings (model/endpoint overrides, options JSON, prompt text, dependencies).
 - Distributed analysis workers now hydrate drills from the DB (`workers/analysis_distributed.py`), run them through `DrillExecutor`, and persist emitted spans via `store_target_spans`, independent of hot targets. Hot targets remain a separate pass driven by their pattern rules but share the refreshed configurability UI.
 - `/api/video/<ytid>/detail`, `/segments`, and the new `/words` endpoint power the UI. Chunk detail uses DB start/end offsets and word indices to highlight whether text was truncated; future edits should keep these endpoints in sync with the templates and update this note if contract changes.
+- Video detail segments now surface badges for chunks touched by spans (hot targets, target spans, topic/person spans) so span-derived rows are clearly labeled in the table.
+- Distributed worker fallback now seeds `key_points` with a short 50-word summary when the model omits them, instead of duplicating raw sentences.
+- Topic/person spans are now built in the distributed worker (parity with legacy pipeline) by grouping chunk topics/people during `_store_full_analysis`.
+- Data inspector includes a regenerated transcript download (`/api/video/<ytid>/transcript.txt`), built on-demand from the words table with a warning header.
+- GenericWorker now releases the current job back to `PENDING` on KeyboardInterrupt, worker-local failures, or shutdown signals (SIGINT/SIGTERM) instead of logging it as completed.
+- Chunk-analysis editor allows specifying a per-config model override; enqueue-distributed respects it when setting job config `model_name`.
+- Hot targets now have an explicit mode toggle (pattern vs LLM); LLM mode drives HotTargetRunner, pattern mode stays keyword/regex.
+- Analysis worker and GenericWorker now empty CUDA cache after jobs to avoid VRAM carryover between tasks.
+- Jobs browser supports free-text search (job id/ytid/worker/error) and extra sort fields.
 
 ## Active QuickClip Updates (2025-12-12)
 - Clip transcription is now optional and configurable: `--transcribe-clips` flag enqueues transcription jobs for extracted clips

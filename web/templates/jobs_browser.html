@@ -43,6 +43,11 @@
                     <input type="text" id="ytid" name="ytid" class="form-control" value="{{ ytid_filter }}" placeholder="Enter video ID...">
                 </div>
 
+                <div class="col-md-3">
+                    <label for="q" class="form-label">Search (job id, ytid, worker, error)</label>
+                    <input type="text" id="q" name="q" class="form-control" value="{{ q_filter or '' }}" placeholder="Free text search...">
+                </div>
+
                 <div class="col-md-2">
                     <label for="sort" class="form-label">Sort By</label>
                     <select id="sort" name="sort" class="form-select">
@@ -50,6 +55,8 @@
                         <option value="updated_at" {% if sort_by == 'updated_at' %}selected{% endif %}>Updated</option>
                         <option value="status" {% if sort_by == 'status' %}selected{% endif %}>Status</option>
                         <option value="priority" {% if sort_by == 'priority' %}selected{% endif %}>Priority</option>
+                        <option value="ytid" {% if sort_by == 'ytid' %}selected{% endif %}>Video</option>
+                        <option value="claimed_by" {% if sort_by == 'claimed_by' %}selected{% endif %}>Worker</option>
                     </select>
                 </div>
 
@@ -78,14 +85,14 @@
         <table class="table table-striped table-hover align-middle">
             <thead class="table-dark">
                 <tr>
-                    <th style="font-size: 0.95rem;">Job ID</th>
-                    <th style="font-size: 0.95rem;">Type</th>
-                    <th style="font-size: 0.95rem;">Status</th>
-                    <th style="font-size: 0.95rem;">Video ID</th>
-                    <th style="font-size: 0.95rem;">Priority</th>
-                    <th style="font-size: 0.95rem;">Worker</th>
-                    <th style="font-size: 0.95rem;">Created</th>
-                    <th style="font-size: 0.95rem;">Updated</th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='job_id', dir='ASC' if sort_by!='job_id' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Job ID</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='job_type', dir='ASC' if sort_by!='job_type' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Type</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='status', dir='ASC' if sort_by!='status' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Status</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='ytid', dir='ASC' if sort_by!='ytid' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Video ID</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='priority', dir='ASC' if sort_by!='priority' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Priority</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='claimed_by', dir='ASC' if sort_by!='claimed_by' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Worker</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='created_at', dir='ASC' if sort_by!='created_at' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Created</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='updated_at', dir='ASC' if sort_by!='updated_at' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Updated</a></th>
                     <th style="font-size: 0.95rem;">Error</th>
                 </tr>
             </thead>
@@ -118,17 +125,21 @@
                         </td>
                         <td>
                             {% if job.ytid %}
-                                <a href="{{ url_for('video_detail_page', ytid=job.ytid) }}" class="text-decoration-none" style="font-weight: 500;">
+                                <a href="{{ url_for('video_detail_page', ytid=job.ytid) }}" class="text-decoration-none" style="font-weight: 600; display:block;">
                                     {{ job.ytid }}
                                 </a>
+                                {% if job.title %}
+                                  <div class="text-muted" style="font-size:0.85em;">{{ job.title }}</div>
+                                {% endif %}
                             {% else %}
                                 <span class="text-muted">-</span>
                             {% endif %}
                         </td>
                         <td>
-                            <span class="badge {% if job.priority >= 100 %}bg-danger{% elif job.priority >= 75 %}bg-warning text-dark{% elif job.priority >= 50 %}bg-info{% else %}bg-secondary{% endif %}" style="font-size: 0.85rem;">
-                                {{ job.priority }}
-                            </span>
+                            <form method="POST" action="{{ url_for('update_job_priority', job_id=job.job_id) }}" class="d-flex align-items-center" style="gap:6px;">
+                                <input type="number" name="priority" value="{{ job.priority }}" min="-1000" max="1000" class="form-control form-control-sm" style="width:90px;">
+                                <button type="submit" class="btn btn-sm btn-outline-primary">Update</button>
+                            </form>
                         </td>
                         <td>
                             {% if job.claimed_by %}

@@ -9,7 +9,6 @@ from workers import (
     GenericWorker,
     TranscriptionWorker,
     ClippingWorker,
-    AnalysisWorker,
     DiarizeWorker,
     StitchWorker,
     SubtitleWorker,
@@ -163,10 +162,7 @@ def start_worker(
     elif worker_type == "clipping":
         worker_instance = ClippingWorker()
         worker_instance.run()
-    elif worker_type == "analysis":
-        worker_instance = AnalysisWorker()
-        worker_instance.run()
-    elif worker_type == "analysis-distributed":
+    elif worker_type in ("analysis", "analysis-distributed"):
         try:
             config = load_config()
 
@@ -192,6 +188,8 @@ def start_worker(
             else:
                 click.echo(f"  Metrics: disabled")
             click.echo(f"  Web UI: {web_status_msg}")
+            if worker_type == "analysis":
+                click.echo("  (alias) Using distributed analysis worker for legacy 'analysis' type")
 
             worker_instance = DistributedAnalysisWorker(
                 machine_alias=_machine_alias,

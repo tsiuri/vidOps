@@ -289,24 +289,23 @@
             <label>Description:</label>
             <input type="text" class="ht-description" value="{{ ht.get('description', '') }}" placeholder="What to look for...">
           </div>
-          <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-            <div>
-              <label>Pattern Type:</label>
-              <select class="ht-pattern-type">
-                <option value="keyword" {% if ht.get('pattern_type') == 'keyword' %}selected{% endif %}>keyword</option>
-                <option value="regex" {% if ht.get('pattern_type') == 'regex' %}selected{% endif %}>regex</option>
-                <option value="llm_tag" {% if ht.get('pattern_type') == 'llm_tag' %}selected{% endif %}>llm_tag</option>
-              </select>
-            </div>
-            <div>
-              <label>Category:</label>
-              <input type="text" class="ht-category" value="{{ ht.get('category', '') }}" placeholder="e.g., conflict">
-            </div>
-          </div>
-          <div class="form-group">
-            <label>Pattern / Keyword / Regex:</label>
-            <input type="text" class="ht-pattern" value="{{ ht.get('pattern', '') }}" placeholder="Text, keyword, or regex depending on type">
-          </div>
+      <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+        <div>
+          <label>Detection Mode:</label>
+          <select class="ht-mode">
+            <option value="pattern" {% if ht.get('mode','pattern') == 'pattern' %}selected{% endif %}>Pattern (keyword/regex)</option>
+            <option value="llm" {% if ht.get('mode') == 'llm' %}selected{% endif %}>LLM (uses prompt)</option>
+          </select>
+        </div>
+        <div>
+          <label>Category:</label>
+          <input type="text" class="ht-category" value="{{ ht.get('category', '') }}" placeholder="e.g., conflict">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Pattern / Keyword / Regex:</label>
+        <input type="text" class="ht-pattern" value="{{ ht.get('pattern', '') }}" placeholder="Text, keyword, or regex (used when mode=pattern)">
+      </div>
           <div class="form-group" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
             <label><input type="checkbox" class="ht-always" {% if ht.get('always') %}checked{% endif %}> Always run (ignore triggers)</label>
             <div>
@@ -319,7 +318,7 @@
             </div>
           </div>
           <div class="form-group">
-            <label>Prompt / Instruction:</label>
+            <label>Prompt / Instruction (LLM mode):</label>
             <textarea class="ht-prompt" rows="3" placeholder="What should the LLM do when this target fires?">{{ ht.get('prompt', '') }}</textarea>
           </div>
           <div class="form-group" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap:12px;">
@@ -380,11 +379,10 @@ function addHotTarget() {
       </div>
       <div class="form-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
         <div>
-          <label>Pattern Type:</label>
-          <select class="ht-pattern-type">
-            <option value="keyword">keyword</option>
-            <option value="regex">regex</option>
-            <option value="llm_tag">llm_tag</option>
+          <label>Detection Mode:</label>
+          <select class="ht-mode">
+            <option value="pattern">Pattern (keyword/regex)</option>
+            <option value="llm">LLM (uses prompt)</option>
           </select>
         </div>
         <div>
@@ -394,7 +392,7 @@ function addHotTarget() {
       </div>
       <div class="form-group">
         <label>Pattern / Keyword / Regex:</label>
-        <input type="text" class="ht-pattern" placeholder="Text, keyword, or regex depending on type">
+        <input type="text" class="ht-pattern" placeholder="Text, keyword, or regex (used when mode=pattern)">
       </div>
       <div class="form-group" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px;">
         <label><input type="checkbox" class="ht-always"> Always run (ignore triggers)</label>
@@ -529,29 +527,31 @@ function getEnabledPasses() {
 
 function getHotTargets() {
   const targets = [];
-  document.querySelectorAll('.hot-target').forEach(el => {
-    const name = el.querySelector('.ht-name').value;
-    if (name) {
-      const patternType = el.querySelector('.ht-pattern-type').value || 'keyword';
-      const pattern = el.querySelector('.ht-pattern').value || name;
-      const prompt = el.querySelector('.ht-prompt').value;
-      const model = el.querySelector('.ht-model').value;
-      const endpoint = el.querySelector('.ht-endpoint').value;
-      const outputShape = el.querySelector('.ht-output-shape').value;
-      const always = el.querySelector('.ht-always').checked;
-      const minHits = parseInt(el.querySelector('.ht-min-hits').value || '0', 10);
+    document.querySelectorAll('.hot-target').forEach(el => {
+      const name = el.querySelector('.ht-name').value;
+      if (name) {
+      const mode = el.querySelector('.ht-mode')?.value || 'pattern';
+      const patternType = (mode === 'pattern' ? (el.querySelector('.ht-pattern-type')?.value || 'keyword') : 'llm_tag');
+      const pattern = el.querySelector('.ht-pattern')?.value || name;
+      const prompt = el.querySelector('.ht-prompt')?.value;
+      const model = el.querySelector('.ht-model')?.value;
+      const endpoint = el.querySelector('.ht-endpoint')?.value;
+      const outputShape = el.querySelector('.ht-output-shape')?.value;
+      const always = el.querySelector('.ht-always')?.checked;
+      const minHits = parseInt(el.querySelector('.ht-min-hits')?.value || '0', 10);
       let options = undefined;
-      const optionsText = el.querySelector('.ht-options').value.trim();
+      const optionsText = el.querySelector('.ht-options')?.value.trim();
       if (optionsText) {
         try { options = JSON.parse(optionsText); } catch (e) { options = optionsText; }
       }
       targets.push({
         id: name,
         name: name,
-        description: el.querySelector('.ht-description').value,
+        description: el.querySelector('.ht-description')?.value,
+        mode: mode,
         pattern_type: patternType,
         pattern: pattern,
-        category: el.querySelector('.ht-category').value,
+        category: el.querySelector('.ht-category')?.value,
         enabled: true,
         prompt: prompt,
         model: model,

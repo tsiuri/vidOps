@@ -23,6 +23,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 import logging
 from pathlib import Path
+try:
+    import torch  # Optional, for GPU cleanup
+except Exception:
+    torch = None
 
 from configuration import load_config
 from dal.analysis_task_repository import AnalysisDatabase, AnalysisTaskRepository
@@ -31,6 +35,7 @@ from dal import AnalysisResultsRepository
 from scripts.analysis.analyze_transcript import OllamaAnalyzer, AnalysisAggregator, VTTParser, TranscriptChunker
 from scripts.analysis.analysis_config import AnalysisConfig, HotTargetRule, Drill
 from scripts.analysis.drills import DrillExecutor
+from scripts.analysis.llm.hot_targets import HotTargetRunner
 from monitoring.exporter import start_metrics_server, stop_metrics_server
 from monitoring.metrics import (
     tasks_claimed_total,
@@ -140,6 +145,12 @@ class AnalysisWorker:
             category_suggestions=[],
             category_map={},
         )
+        self.hot_target_runner = HotTargetRunner(
+            model=model_name,
+            base_url=model_url,
+            options=getattr(self.analyzer, "options", {}) or {},
+            log_mode="quiet",
+        )
 
         self.should_exit: bool = False
         self.current_task: Optional[AnalysisTask] = None
@@ -156,6 +167,112 @@ class AnalysisWorker:
         # Initialize uptime tracking
         self._last_uptime_update = datetime.now(timezone.utc)
         worker_uptime_seconds.labels(worker_id=self.worker_id).set(0)
+
+    # ------------------------------------------------------------------
+    # Single-job execution (for GenericWorker bridge)
+    # ------------------------------------------------------------------
+
+    def process_analysis_job(self, analysis_job_id: str, force_job_level_passes: bool = False) -> bool:
+        """
+        Run all tasks for a specific analysis_job_id once (no worker loop).
+
+        Used by GenericWorker/DistributedAnalysisService so both paths share the
+        same pass implementations and DB store behavior.
+        """
+        tasks = self.task_repo.get_job_tasks(analysis_job_id)
+        if not tasks:
+            logger.warning("No analysis_tasks found for job %s", analysis_job_id)
+            return False
+
+        # Prime contexts using any completed chunk_analysis tasks so job-level passes can run
+        for task in tasks:
+            if task.pass_id == "chunk_analysis" and task.result_json and task.status.value == "completed":
+                self._hydrate_chunk_context(task)
+
+        pass_priority = {
+            "chunk_analysis": 0,
+            "sentiment_pass": 1,
+            "categories_pass": 1,
+            "subchunks": 2,
+            "aggregate_results": 3,
+            "hot_targets": 4,
+            "drills": 5,
+            "db_store": 6,
+            "local_json": 7,
+            "markdown_report": 8,
+        }
+
+        job_level_passes = set(
+            ["aggregate_results", "hot_targets", "drills", "db_store", "local_json", "markdown_report"]
+        )
+
+        ordered = sorted(
+            tasks,
+            key=lambda t: (pass_priority.get(t.pass_id, 99), int(t.chunk_id or 0), t.task_id),
+        )
+
+        for task in ordered:
+            should_run = task.status.value not in ("completed", "failed")
+            if task.pass_id in job_level_passes and force_job_level_passes:
+                should_run = True
+
+            if not should_run:
+                continue
+
+            result = self._execute_pass(task)
+            if result is not None:
+                result_meta = dict(result)
+                result_meta.setdefault("worker_id", self.worker_id)
+                result_meta.setdefault("completed_at", datetime.now(timezone.utc).isoformat())
+                if task.pass_id == "drills":
+                    drill_results = result_meta.get("drill_results") or {}
+                    span_count = result_meta.get("drill_span_count") or 0
+                    result_meta["drill_count"] = len(drill_results)
+                    result_meta["drill_span_count"] = span_count
+                ok = self.task_repo.mark_completed(task.task_id, result_meta)
+                if ok:
+                    logger.info("✓ Task %s completed via process_analysis_job", task.task_id)
+                else:
+                    logger.error("Failed to mark task %s as completed", task.task_id)
+            else:
+                error_msg = f"Pass execution returned None for pass_id={task.pass_id}"
+                ok = self.task_repo.mark_failed(task.task_id, error_msg)
+                if ok:
+                    logger.error("Task %s failed: %s", task.task_id, error_msg)
+                else:
+                    logger.error("Failed to mark task %s as failed", task.task_id)
+
+        try:
+            if self.task_repo.is_job_complete(analysis_job_id):
+                logger.info("Job %s complete after bridge execution; aggregating", analysis_job_id)
+                self._aggregate_job_results(analysis_job_id)
+                return True
+            logger.warning("Job %s not complete after bridge execution", analysis_job_id)
+            return False
+        finally:
+            self.current_task = None
+            self._cleanup_vram()
+
+    def shutdown(self) -> None:
+        """Clean up resources when used outside the long-running loop."""
+        if self.metrics_server:
+            try:
+                stop_metrics_server()
+            except Exception:
+                pass
+        try:
+            self.db.disconnect()
+        except Exception:
+            pass
+        self._cleanup_vram()
+
+    def _cleanup_vram(self) -> None:
+        """Best-effort GPU memory cleanup after a job/run."""
+        try:
+            if torch and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _get_job_context(self, task: AnalysisTask) -> JobContext:
         ctx = self.job_contexts.get(task.job_id)
@@ -505,8 +622,12 @@ class AnalysisWorker:
         if text and not analysis.get("summary"):
             analysis["summary"] = text[:600]
         if text and not analysis.get("key_points"):
-            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-            analysis["key_points"] = sentences[:3]
+            summary_src = analysis.get("summary") or text
+            words = summary_src.split()
+            trimmed = " ".join(words[:50]).strip()
+            if len(words) > 50:
+                trimmed = f"{trimmed}…"
+            analysis["key_points"] = [trimmed] if trimmed else []
         if text and not analysis.get("notable_quotes"):
             quotes = re.findall(r'"([^"]{10,})"', text)
             if quotes:
@@ -515,6 +636,21 @@ class AnalysisWorker:
             cats = analysis.get("categories")
             if isinstance(cats, list) and cats:
                 analysis["topics"] = cats[:5]
+
+    def _hydrate_chunk_context(self, task: AnalysisTask) -> None:
+        """Hydrate in-memory context from an already-completed chunk task."""
+        try:
+            chunk_idx = int(task.chunk_id)
+        except Exception:
+            return
+        context = self._get_job_context(task)
+        analysis = {}
+        if isinstance(task.result_json, dict):
+            analysis = task.result_json.get("analysis") or task.result_json
+        self._ensure_chunk_defaults(analysis, task.chunk_text or "")
+        context.chunk_results[chunk_idx] = analysis
+        context.chunk_texts[chunk_idx] = task.chunk_text or ""
+        context.chunk_metadata_map[chunk_idx] = task.chunk_metadata or {}
 
     def _pass_sentiment(
         self,
@@ -602,11 +738,12 @@ class AnalysisWorker:
             }
 
         if pass_id == "hot_targets":
-            detections = self._detect_hot_targets(chunk_text, context.config)
+            detections, llm_spans = self._detect_hot_targets(chunk_text, context.config, chunk_id=int(task.chunk_id))
             return {
                 "pass_id": pass_id,
                 "status": "completed",
                 "targets": detections,
+                "llm_spans": llm_spans,
                 "metadata": metadata,
             }
 
@@ -629,6 +766,14 @@ class AnalysisWorker:
             formatted = self._normalize_drill_spans(emitted_spans, context)
             if formatted:
                 context.drill_spans.extend(formatted)
+            span_count = sum(len(v or []) for v in emitted_spans.values()) if emitted_spans else 0
+            logger.info(
+                "Drills completed for job %s chunk %s: %d drills, %d spans",
+                task.job_id,
+                task.chunk_id,
+                len(drill_results or {}),
+                span_count,
+            )
             return {
                 "pass_id": pass_id,
                 "status": "completed",
@@ -649,7 +794,8 @@ class AnalysisWorker:
             stored = self._store_full_analysis(context, aggregated)
             return {
                 "pass_id": pass_id,
-                "status": "completed" if stored else "skipped",
+                "status": "completed" if stored else "failed",
+                "note": None if stored else "DB store failed",
                 "metadata": aggregated.get("metadata", {}),
             }
 
@@ -847,14 +993,33 @@ class AnalysisWorker:
             rewritten.append(updated)
         return "".join(rewritten)
 
-    def _detect_hot_targets(self, chunk_text: str, config: AnalysisConfig) -> List[Dict[str, Any]]:
+    def _detect_hot_targets(self, chunk_text: str, config: AnalysisConfig, chunk_id: int) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Return (pattern_detections, llm_spans) for the current chunk.
+        """
         detections: List[Dict[str, Any]] = []
+        llm_spans: List[Dict[str, Any]] = []
         if not config.hot_targets:
-            return detections
+            return detections, llm_spans
+
         lower_text = chunk_text.lower()
+        pattern_targets: List[Any] = []
+        llm_targets: List[Any] = []
         for spec in config.hot_targets:
-            if isinstance(spec, HotTargetRule) and not spec.enabled:
+            enabled = getattr(spec, "enabled", True)
+            if not enabled:
                 continue
+            prompt = getattr(spec, "prompt", None) or getattr(spec, "instruction", None)
+            pattern_type = getattr(spec, "pattern_type", "keyword")
+            mode = getattr(spec, "mode", None) or getattr(spec, "pattern_type", "")
+            use_llm_mode = str(mode).lower() == "llm" or pattern_type == "llm_tag" or bool(prompt)
+            if use_llm_mode:
+                llm_targets.append(spec)
+            else:
+                pattern_targets.append(spec)
+
+        # Pattern-based detections
+        for spec in pattern_targets:
             pattern_type = getattr(spec, "pattern_type", "keyword")
             pattern = getattr(spec, "pattern", None)
             if not pattern:
@@ -878,15 +1043,39 @@ class AnalysisWorker:
                         "description": getattr(spec, "description", ""),
                         "matches": matches,
                         "excerpt": self._excerpt_for_matches(chunk_text, matches[0]),
+                        "source": "pattern",
                     }
                 )
-        return detections
+
+        # LLM-based detections
+        chunk_payload = [{"chunk_id": chunk_id, "text": chunk_text}]
+        for spec in llm_targets:
+            spec_dict = spec.model_dump() if hasattr(spec, "model_dump") else spec.dict() if hasattr(spec, "dict") else spec if isinstance(spec, dict) else {}
+            spans_resp = self.hot_target_runner.run_targets([spec_dict], chunk_payload)
+            for name, entries in (spans_resp or {}).items():
+                for entry in entries or []:
+                    spans = entry.get("spans") or []
+                    if not spans:
+                        continue
+                    llm_spans.append(
+                        {
+                            "target": name,
+                            "chunk_id": entry.get("chunk_id"),
+                            "spans": spans,
+                            "model_used": entry.get("model_used"),
+                            "endpoint": entry.get("endpoint"),
+                            "source": "llm",
+                        }
+                    )
+
+        return detections, llm_spans
 
     def _store_full_analysis(self, context: JobContext, aggregated: Dict[str, Any]) -> bool:
         if not hasattr(self.db, "store_full_analysis_with_chunks"):
+            logger.error("DB storage adapter missing store_full_analysis_with_chunks; cannot persist analysis for %s", context.job_id)
             return False
         chunk_analyses = [context.chunk_results[i] for i in sorted(context.chunk_results)]
-        spans = []
+        spans = self._build_topic_person_spans(chunk_analyses, context.ytid)
         try:
             self.db.store_full_analysis_with_chunks(
                 aggregated,
@@ -912,8 +1101,64 @@ class AnalysisWorker:
                 )
             return True
         except Exception as exc:
-            logger.warning("Failed to store full analysis for job %s: %s", context.job_id, exc)
+            logger.error("Failed to store full analysis for job %s (ytid=%s): %s", context.job_id, context.ytid, exc, exc_info=True)
             return False
+
+    def _build_topic_person_spans(self, chunk_analyses: List[Dict[str, Any]], ytid: str) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Build topic and person spans by grouping chunk topics/people (legacy parity).
+        """
+        topic_spans: List[Dict[str, Any]] = []
+        person_spans: List[Dict[str, Any]] = []
+
+        topic_to_chunks: Dict[str, List[int]] = {}
+        for chunk in chunk_analyses:
+            chunk_id = chunk.get("chunk_id", 0)
+            for topic in (chunk.get("topics") or []):
+                if not topic:
+                    continue
+                norm = str(topic).lower().strip()
+                topic_to_chunks.setdefault(norm, []).append(chunk_id)
+
+        for norm_topic, chunk_ids in topic_to_chunks.items():
+            first_chunk = next((c for c in chunk_analyses if c.get("chunk_id") in chunk_ids), None)
+            context_snippet = (first_chunk.get("summary", "") if first_chunk else "")[:200]
+            sentiment = (first_chunk.get("sentiment") if first_chunk else None)
+            topic_spans.append({
+                "ytid": ytid,
+                "topic": norm_topic.title(),
+                "normalized_topic": norm_topic,
+                "chunk_ids": sorted(chunk_ids),
+                "context": context_snippet,
+                "sentiment": sentiment if sentiment and sentiment != "unknown" else None,
+                "source_pass": "chunk_analysis",
+            })
+
+        person_to_chunks: Dict[str, List[int]] = {}
+        for chunk in chunk_analyses:
+            chunk_id = chunk.get("chunk_id", 0)
+            for person in (chunk.get("people") or []):
+                if not person:
+                    continue
+                norm = str(person).lower().strip()
+                person_to_chunks.setdefault(norm, []).append(chunk_id)
+
+        for norm_name, chunk_ids in person_to_chunks.items():
+            first_chunk = next((c for c in chunk_analyses if c.get("chunk_id") in chunk_ids), None)
+            context_snippet = (first_chunk.get("summary", "") if first_chunk else "")[:200]
+            sentiment = (first_chunk.get("sentiment") if first_chunk else None)
+            person_spans.append({
+                "ytid": ytid,
+                "person_name": norm_name.title(),
+                "normalized_name": norm_name,
+                "chunk_ids": sorted(chunk_ids),
+                "context": context_snippet,
+                "sentiment": sentiment if sentiment and sentiment != "unknown" else None,
+                "polarity": None,
+                "source_pass": "chunk_analysis",
+            })
+
+        return {"topic_spans": topic_spans, "person_spans": person_spans}
 
     def _write_local_artifacts(self, context: JobContext, aggregated: Dict[str, Any], pass_id: str) -> Dict[str, str]:
         safe_job = context.job_id.replace(":", "_")

@@ -7,8 +7,8 @@ Simple Flask app for querying the analysis database.
 import os
 import sys
 import logging
-from datetime import datetime
-from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort
+from datetime import datetime, timezone
+from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort, Response
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,13 @@ from scripts.analysis.db_storage import AnalysisDatabase
 from scripts.analysis.analysis_config import AnalysisConfig
 from scripts.web_app.analyses_view import register_analyses_routes
 from scripts.web_app.drill_api import create_drill_blueprint
-from dal import QuickClipRepository, VideoRepository, FilesystemCache, JobRepository
+from dal import QuickClipRepository, VideoRepository, FilesystemCache, JobRepository, TranscriptRepository
 from models import Job, JobStatus
-from configuration import get_project_root
+from configuration import get_project_root, load_config
 from services.download import DownloadService
 from services.clipping import ClippingService
 from services.quickclip import QuickClipService
+from db import get_connection
 
 app = Flask(__name__)
 
@@ -1047,12 +1048,12 @@ def api_video_detail(ytid: str):
 
     target_spans = fetch_spans(
         """
-        SELECT id, parties, description, start_sec, end_sec, chunk_ids, context, sentiment, polarity, source_pass
+        SELECT id, parties, description, start_sec, end_sec, chunk_ids, context, sentiment, polarity, source_pass, pass_tier
         FROM target_spans
         WHERE ytid = %s
         ORDER BY start_sec NULLS LAST, id
         """,
-        ['id', 'parties', 'description', 'start_sec', 'end_sec', 'chunk_ids', 'context', 'sentiment', 'polarity', 'source_pass']
+        ['id', 'parties', 'description', 'start_sec', 'end_sec', 'chunk_ids', 'context', 'sentiment', 'polarity', 'source_pass', 'pass_tier']
     )
 
     topic_spans = fetch_spans(
@@ -1848,7 +1849,15 @@ def edit_analysis_config(config_id):
     overlap_words = cfg.get('chunk_params', {}).get('overlap_words', 150)
     per_speaker_tracks = cfg.get('chunk_params', {}).get('per_speaker_tracks', False)
     enabled_passes = [p.get('id') for p in (cfg.get('passes', []) or [])]
-    hot_targets = cfg.get('hot_targets', [])
+    hot_targets = []
+    for ht in cfg.get('hot_targets', []):
+        try:
+            ht_dict = {}
+            ht_dict.update(ht if isinstance(ht, dict) else getattr(ht, "model_dump", lambda: {})())
+            ht_dict["mode"] = ht_dict.get("mode", "pattern")
+            hot_targets.append(ht_dict)
+        except Exception:
+            continue
     strict_pass_validation = cfg.get('strict_pass_validation', False)
 
     return render_template(
@@ -2017,6 +2026,21 @@ def edit_chunk_analysis(config_id):
     if not row:
         return f"No config found with id={config_id}", 404
 
+    default_model = load_config().analysis.ollama.model
+    try:
+        import subprocess, json as _json
+        ollama_list = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip().splitlines()
+        # Skip header line if present
+        if ollama_list and ollama_list[0].lower().startswith("name"):
+            ollama_list = ollama_list[1:]
+        available_models = [line.split()[0] for line in ollama_list if line.strip()]
+    except Exception:
+        available_models = []
     cfg = row.get('config_json') or {}
     error = None
     success = False
@@ -2027,12 +2051,15 @@ def edit_chunk_analysis(config_id):
             max_words = int(flask_request.form.get('max_words', 1000))
             overlap_words = int(flask_request.form.get('overlap_words', 150))
             per_speaker_tracks = bool(flask_request.form.get('per_speaker_tracks'))
+            model_override = (flask_request.form.get('model_override') or "").strip()
 
             # Validate ranges
             if max_words < 100 or max_words > 5000:
                 raise ValueError("max_words must be between 100 and 5000")
             if overlap_words < 0 or overlap_words > 2000:
                 raise ValueError("overlap_words must be between 0 and 2000")
+            if len(model_override) > 200:
+                raise ValueError("Model name too long")
 
             # Update config chunk_params
             if 'chunk_params' not in cfg:
@@ -2041,6 +2068,10 @@ def edit_chunk_analysis(config_id):
             cfg['chunk_params']['max_words'] = max_words
             cfg['chunk_params']['overlap_words'] = overlap_words
             cfg['chunk_params']['per_speaker_tracks'] = per_speaker_tracks
+            if model_override:
+                cfg['model'] = model_override
+            elif 'model' in cfg:
+                cfg.pop('model', None)
 
             # Save to database
             db.upsert_analysis_config(
@@ -2069,6 +2100,7 @@ def edit_chunk_analysis(config_id):
     max_words = chunk_params.get('max_words', 1000)
     overlap_words = chunk_params.get('overlap_words', 150)
     per_speaker_tracks = chunk_params.get('per_speaker_tracks', False)
+    model_override = cfg.get('model') or ""
 
     return render_template(
         'chunk_analysis_editor.html',
@@ -2076,6 +2108,9 @@ def edit_chunk_analysis(config_id):
         max_words=max_words,
         overlap_words=overlap_words,
         per_speaker_tracks=per_speaker_tracks,
+        model_override=model_override,
+        default_model=default_model,
+        available_models=available_models,
         error=error,
         success=success,
     )
@@ -2283,6 +2318,93 @@ def api_video_words(ytid: str):
         for r in rows
     ]
     return jsonify(out)
+
+
+@app.route('/api/video/<ytid>/transcript.txt')
+def api_video_transcript_txt(ytid: str):
+    """
+    Reconstruct a plain-text transcript from the best available words source.
+    Prepends a warning about regeneration time/source and inserts line breaks based on time gaps.
+    """
+    tx_repo = TranscriptRepository()
+    best = tx_repo.get_best_available(ytid)
+    if not best:
+        return Response("No transcript metadata found for this video.\n", status=404, mimetype="text/plain")
+
+    try:
+        from web.scripts.export_subtitles import group_words, detok
+    except Exception:
+        # Fallback: inline minimal detok/group to avoid import issues
+        def detok(words):
+            s = " ".join(w.strip() for w in words if w and w.strip())
+            for p in [" .", " ,", " ;", " :", " !", " ?"]:
+                s = s.replace(p, p[1:])
+            return s.strip()
+        def group_words(rows, gap):
+            group = []
+            group_start = group_end = last_end = None
+            for _idx, word, start, end in rows:
+                s = float(start) if start is not None else 0.0
+                e = float(end) if end is not None else s
+                if last_end is None or (s - last_end) >= gap:
+                    if group:
+                        yield (group_start if group_start is not None else s,
+                               group_end if group_end is not None else e,
+                               detok(group))
+                    group = [word]
+                    group_start = s
+                    group_end = e
+                else:
+                    group.append(word)
+                    group_end = e
+                last_end = e
+            if group:
+                yield (group_start if group_start is not None else 0.0,
+                       group_end if group_end is not None else (group_start or 0.0),
+                       detok(group))
+
+    # Choose source: prefer best.kind, fall back to most populous source for this ytid
+    chosen_source = best.kind
+    rows = []
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM words WHERE ytid=%s AND source=%s",
+                (ytid, chosen_source),
+            )
+            count = cur.fetchone()[0]
+            if count == 0:
+                cur.execute(
+                    "SELECT source, COUNT(*) AS c FROM words WHERE ytid=%s GROUP BY source ORDER BY c DESC LIMIT 1",
+                    (ytid,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return Response("No words available for this video.\n", status=404, mimetype="text/plain")
+                chosen_source = row[0]
+
+            cur.execute(
+                "SELECT idx, word, start_sec, end_sec FROM words WHERE ytid=%s AND source=%s ORDER BY idx",
+                (ytid, chosen_source),
+            )
+            rows = cur.fetchall()
+
+    if not rows:
+        return Response("No words available for this video.\n", status=404, mimetype="text/plain")
+
+    # Group words into paragraphs based on a 1.0s gap
+    grouped = list(group_words(rows, gap=1.0))
+    paragraphs = [text for _s, _e, text in grouped if text]
+
+    created_at = best.created_at.isoformat() if best.created_at else "unknown"
+    warning = (
+        f"NOTE: Regenerated from words table (source={chosen_source}) on "
+        f"{datetime.now(timezone.utc).isoformat()}. "
+        f"Original transcription added to DB at {created_at}. "
+        "This may not exactly match the original transcript.\n\n"
+    )
+    text = warning + "\n\n".join(paragraphs)
+    return Response(text, mimetype="text/plain")
 
 
 @app.route('/quickclip')
@@ -2494,6 +2616,7 @@ def jobs_browser():
     ytid_filter = request.args.get('ytid', '')
     sort_by = request.args.get('sort', 'created_at')
     sort_dir = request.args.get('dir', 'DESC')
+    q_filter = request.args.get('q', '').strip()
     try:
         limit = int(request.args.get('limit', 100))
         if limit < 1 or limit > 1000:
@@ -2523,6 +2646,17 @@ def jobs_browser():
                     where_parts.append("ytid ILIKE %s")
                     params.append(f"%{ytid_filter}%")
 
+                if q_filter:
+                    where_parts.append("""
+                        (
+                            job_id ILIKE %s
+                            OR ytid ILIKE %s
+                            OR claimed_by ILIKE %s
+                            OR error_message ILIKE %s
+                        )
+                    """)
+                    params.extend([f"%{q_filter}%"] * 4)
+
                 where_clause = " WHERE " + " AND ".join(where_parts) if where_parts else ""
 
                 # Get total count
@@ -2530,25 +2664,27 @@ def jobs_browser():
                 total_count = cur.fetchone()[0]
 
                 # Get jobs with sorting and limit
-                valid_sorts = ['job_id', 'job_type', 'status', 'priority', 'created_at', 'updated_at']
+                valid_sorts = ['job_id', 'job_type', 'status', 'priority', 'created_at', 'updated_at', 'ytid', 'claimed_by']
                 sort_col = sort_by if sort_by in valid_sorts else 'created_at'
                 sort_direction = 'DESC' if sort_dir.upper() == 'DESC' else 'ASC'
 
                 cur.execute(
                     f"""
                     SELECT
-                        job_id,
-                        job_type,
-                        status,
-                        ytid,
-                        priority,
-                        claimed_by,
-                        created_at,
-                        updated_at,
-                        started_at,
-                        completed_at,
-                        error_message
-                    FROM jobs
+                        j.job_id,
+                        j.job_type,
+                        j.status,
+                        j.ytid,
+                        j.priority,
+                        j.claimed_by,
+                        j.created_at,
+                        j.updated_at,
+                        j.started_at,
+                        j.completed_at,
+                        j.error_message,
+                        v.title
+                    FROM jobs j
+                    LEFT JOIN videos v ON v.ytid = j.ytid
                     {where_clause}
                     ORDER BY {sort_col} {sort_direction}
                     LIMIT %s
@@ -2570,6 +2706,7 @@ def jobs_browser():
                         'started_at': row[8],
                         'completed_at': row[9],
                         'error_message': row[10],
+                        'title': row[11],
                     })
     except Exception as e:
         logger.error(f"Error fetching jobs: {type(e).__name__}: {e}", exc_info=True)
@@ -2583,7 +2720,35 @@ def jobs_browser():
         status_filter=status_filter,
         job_type_filter=job_type_filter,
         ytid_filter=ytid_filter,
+        q_filter=q_filter,
         sort_by=sort_by,
         sort_dir=sort_dir,
         limit=limit,
     )
+
+
+@app.route('/jobs/<job_id>/priority', methods=['POST'])
+def update_job_priority(job_id: str):
+    """Update the priority of a job and redirect back to jobs browser."""
+    from db import get_connection
+    try:
+        new_priority = int(request.form.get('priority', ''))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid priority'}), 400
+
+    # Keep priorities within a reasonable range
+    if new_priority < -1000 or new_priority > 1000:
+        return jsonify({'error': 'Priority out of range'}), 400
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE jobs SET priority=%s, updated_at=NOW() WHERE job_id=%s",
+                    (new_priority, job_id),
+                )
+        ref = request.referrer or url_for('jobs_browser')
+        return redirect(ref)
+    except Exception as e:
+        logger.error("Failed to update priority for job %s: %s", job_id, e, exc_info=True)
+        return jsonify({'error': 'Failed to update priority'}), 500

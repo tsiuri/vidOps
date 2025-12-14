@@ -64,22 +64,20 @@ def test_distributed_analysis_job_handling(test_analysis_job):
 
     # Mock the database operations
     with patch.object(service, "job_repo") as mock_job_repo:
-        with patch.object(service, "_init_db"):
-            with patch.object(service, "_process_job_tasks"):
-                with patch.object(service, "_aggregate_and_complete"):
-                    with patch.object(service, "_cleanup_db"):
-                        # Call process_job
-                        service.process_job(test_analysis_job)
+        with patch("services.distributed_analysis.AnalysisWorker.process_analysis_job", return_value=True) as mock_process:
+            with patch("services.distributed_analysis.AnalysisWorker.shutdown"):
+                service.process_job(test_analysis_job)
 
-                        # Verify job status was updated to RUNNING
-                        mock_job_repo.update_status.assert_any_call(
-                            test_analysis_job.job_id,
-                            JobStatus.RUNNING,
-                        )
+                mock_process.assert_called_once()
+                # Verify job status was updated to RUNNING
+                mock_job_repo.update_status.assert_any_call(
+                    test_analysis_job.job_id,
+                    JobStatus.RUNNING,
+                )
 
-                        # Verify job status was updated to COMPLETED
-                        calls = [call[0] for call in mock_job_repo.update_status.call_args_list]
-                        assert any(JobStatus.COMPLETED == call[1] for call in calls)
+                # Verify job status was updated to COMPLETED
+                calls = [call[0] for call in mock_job_repo.update_status.call_args_list]
+                assert any(JobStatus.COMPLETED == call[1] for call in calls)
 
 
 def test_distributed_analysis_service_missing_ytid():

@@ -204,4 +204,6 @@ def get_distributed_analysis_service() -> DistributedAnalysisService:
         db_password=config.database.password,
         model_url=config.analysis.ollama.url,
         model_name=config.analysis.ollama.model,
+        capabilities=list(config.analysis.default_capabilities or []),
+        machine_alias=config.workers.machine_alias,
     )
