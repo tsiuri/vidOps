@@ -143,6 +143,7 @@ def enqueue_pipeline(
     reference_selection: Optional[ReferenceSelection] = None
     analysis_selection: Optional[AnalysisSelection] = None
 
+    # Step 1: Diarization reference selection (menu to pick which reference to use/build)
     if not skip_diarization:
         try:
             if reference_name:
@@ -163,29 +164,7 @@ def enqueue_pipeline(
             click.echo("Diarization configuration cancelled; no jobs enqueued.")
             return
 
-    if not skip_analysis and not analysis_config_id:
-        db = AnalysisDatabase()
-        db.connect()
-        try:
-            analysis_selection = _select_analysis_config_for_pipeline(db)
-        except Exception as exc:  # noqa: BLE001
-            click.echo(click.style(f"✗ Analysis config selection failed: {exc}", fg="red"), err=True)
-            click.echo("No jobs enqueued.")
-            return
-        finally:
-            db.disconnect()
-
-        if analysis_selection.skip_analysis:
-            skip_analysis = True
-            click.echo(click.style("  ↷ Analysis skipped per selection.", fg="yellow"))
-        elif analysis_selection.config_id:
-            analysis_config_id = analysis_selection.config_id
-            click.echo(f"  ✓ Selected analysis config: {analysis_selection.name or analysis_config_id}")
-        else:
-            click.echo("Analysis configuration cancelled; no jobs enqueued.")
-            return
-
-    # Pre-build/reference selection for diarization (execute after config is locked)
+    # Step 2: Build/prepare diarization reference (interactive UIs for clip selection, params, speaker name if needed)
     reference_dir_rel: Optional[str] = None
     ref_name: Optional[str] = None
     if not skip_diarization:
@@ -212,6 +191,29 @@ def enqueue_pipeline(
         except Exception as exc:
             click.echo(click.style(f"✗ Reference setup failed/cancelled: {exc}", fg="red"), err=True)
             click.echo("No jobs enqueued.")
+            return
+
+    # Step 3: Analysis config selection (after diarization is fully configured)
+    if not skip_analysis and not analysis_config_id:
+        db = AnalysisDatabase()
+        db.connect()
+        try:
+            analysis_selection = _select_analysis_config_for_pipeline(db)
+        except Exception as exc:  # noqa: BLE001
+            click.echo(click.style(f"✗ Analysis config selection failed: {exc}", fg="red"), err=True)
+            click.echo("No jobs enqueued.")
+            return
+        finally:
+            db.disconnect()
+
+        if analysis_selection.skip_analysis:
+            skip_analysis = True
+            click.echo(click.style("  ↷ Analysis skipped per selection.", fg="yellow"))
+        elif analysis_selection.config_id:
+            analysis_config_id = analysis_selection.config_id
+            click.echo(f"  ✓ Selected analysis config: {analysis_selection.name or analysis_config_id}")
+        else:
+            click.echo("Analysis configuration cancelled; no jobs enqueued.")
             return
 
     # Create placeholder video record so dependent stages can reference it
@@ -448,6 +450,8 @@ def _select_diarization_reference_for_pipeline(
     Interactive picker for diarization references. Returns the chosen reference
     name, whether it should be built if missing, or a skip signal.
     """
+    from dal import FilesystemCache
+
     registry = ReferenceRegistry()
     records: List[Any] = []
     try:
@@ -460,23 +464,32 @@ def _select_diarization_reference_for_pipeline(
         records = []
 
     default_name = ytid
+    # Check if default_name reference already exists
+    fs_cache = FilesystemCache()
+    default_ref_path = fs_cache.get_central_path(f"data/references/{default_name}")
+    default_ref_exists = (default_ref_path / "reference.json").exists()
 
     if not sys.stdin.isatty():
-        return _prompt_reference_text(default_name, records)
+        return _prompt_reference_text(default_name, records, default_ref_exists)
 
     try:
         import curses
     except Exception:  # noqa: BLE001
         click.echo("Curses UI unavailable; falling back to text prompt for reference selection.", err=True)
-        return _prompt_reference_text(default_name, records)
+        return _prompt_reference_text(default_name, records, default_ref_exists)
 
     def _menu(stdscr):
         curses.curs_set(0)
         stdscr.nodelay(False)
         stdscr.keypad(True)
-        options = [
-            ("build", default_name, f"Build reference '{default_name}' from transcript {transcript_kind}"),
-        ]
+        options = []
+
+        # First option: build or rebuild the default reference
+        if default_ref_exists:
+            options.append(("build", default_name, f"Rebuild reference '{default_name}' from transcript {transcript_kind}"))
+        else:
+            options.append(("build", default_name, f"Build reference '{default_name}' from transcript {transcript_kind}"))
+
         for rec in records:
             label = f"Use existing {rec.name}"
             if rec.clip_count:
@@ -516,9 +529,12 @@ def _select_diarization_reference_for_pipeline(
     return curses.wrapper(_menu)
 
 
-def _prompt_reference_text(default_name: str, records: List[Any]) -> ReferenceSelection:
+def _prompt_reference_text(default_name: str, records: List[Any], default_ref_exists: bool = False) -> ReferenceSelection:
     print("\nDiarization reference options:")
-    print(f"  1. Build reference '{default_name}' from this video")
+    if default_ref_exists:
+        print(f"  1. Rebuild reference '{default_name}' from this video")
+    else:
+        print(f"  1. Build reference '{default_name}' from this video")
     for idx, rec in enumerate(records, start=2):
         meta = []
         if getattr(rec, "clip_count", None):

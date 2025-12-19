@@ -203,7 +203,7 @@ class DiarizationService:
         reference_rel = f"data/references/{reference_name}"
         dest = self.fs_cache.get_central_path(reference_rel)
         if (dest / "reference.json").exists():
-            return reference_rel
+            logger.info(f"Reference '{reference_name}' already exists at {reference_rel}; proceeding to rebuild via build_shared()")
 
         refs_cfg = self.config.diarization
         clips_per_video = refs_cfg.refs_clips_per_video
@@ -281,6 +281,9 @@ class DiarizationService:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job has no ytid.")
             return
 
+        # Best-effort GPU cache clear before starting heavy work
+        self._clear_cuda_cache()
+
         # Start memory monitoring if enabled
         monitor_started = False
         if self._memory_monitor:
@@ -357,6 +360,8 @@ class DiarizationService:
                     logger.info("Memory monitoring stopped for diarization job %s", job.job_id)
                 except Exception as exc:
                     logger.warning("Error stopping memory monitor: %s", exc)
+            # Free GPU cache after job
+            self._clear_cuda_cache()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -601,6 +606,9 @@ class DiarizationService:
             self._write_fake_outputs(job, output_dir, audio_path)
             return
 
+        # Free GPU cache before heavy pyannote load
+        self._clear_cuda_cache()
+
         # Check audio duration and use chunking for files > 1 hour
         chunk_threshold = float(os.environ.get("DIAR_CHUNK_THRESHOLD", "3600"))  # Default: 1 hour
         audio_duration = self._get_audio_duration(audio_path)
@@ -698,6 +706,9 @@ class DiarizationService:
         # Skipping preprocessing forces torchaudio to decode multi-hour MP4/OPUS directly,
         # which can balloon resident memory. Users can still override to skip if needed.
         env.setdefault("BATCH_DIARIZE_SKIP_PREPROCESS", "0")
+
+        # Best-effort GPU cache clear before launching pyannote
+        self._clear_cuda_cache()
 
         logger.info("Running pyannote diarize: %s", " ".join(cmd))
         proc = subprocess.Popen(
@@ -877,6 +888,9 @@ class DiarizationService:
                 if job.config.get("match_force_best", True) is False:
                     chunk_cmd.append("--no-match-force-best")
 
+            # Clear cache before spawning a chunk subprocess to reduce VRAM pressure
+            self._clear_cuda_cache()
+
             logger.info(f"Running diarization on chunk {chunk_idx}: {' '.join(chunk_cmd)}")
             proc = subprocess.Popen(
                 chunk_cmd,
@@ -915,6 +929,8 @@ class DiarizationService:
                 chunk_in_pull.unlink()
 
             logger.info(f"Chunk {chunk_idx+1}/{num_chunks} completed")
+            # Clear between chunks to release VRAM for the next subprocess
+            self._clear_cuda_cache()
 
         # Step 3: Combine chunk results
         logger.info("Combining chunk results")
@@ -1004,6 +1020,16 @@ class DiarizationService:
                 "start\tend\tword\tseg\tconfidence\tretried\tspeaker\n",
                 encoding="utf-8",
             )
+
+    def _clear_cuda_cache(self) -> None:
+        """Best-effort GPU cache clear to reduce VRAM fragmentation between jobs/chunks."""
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _map_words_to_speakers(
         self,

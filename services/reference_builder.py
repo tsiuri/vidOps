@@ -379,6 +379,16 @@ def _curses_param_form(fields: list[dict]) -> list[dict]:
     try:
         return curses.wrapper(_form)
     except Exception:
+        # Curses failed; fall back to text prompts
+        print("\nAdjust reference building parameters:")
+        for field in fields:
+            try:
+                prompt = f"  {field['label']} (current {field['value']}): "
+                val = input(prompt).strip()
+                if val:
+                    field["value"] = float(val) if field["is_float"] else int(val)
+            except (ValueError, EOFError):
+                pass
         return fields
 
 
@@ -394,7 +404,11 @@ def _prompt_reference_name(default_name: str) -> str:
             return default_name
 
     if not sys.stdin.isatty():
-        return default_name
+        try:
+            val = input(f"Reference name [{default_name}]: ").strip()
+            return val or default_name
+        except EOFError:
+            return default_name
 
     def _edit(stdscr):
         curses.curs_set(1)
@@ -411,7 +425,12 @@ def _prompt_reference_name(default_name: str) -> str:
     try:
         return curses.wrapper(_edit)
     except Exception:
-        return default_name
+        # Curses failed; fall back to text input
+        try:
+            val = input(f"Reference name [{default_name}]: ").strip()
+            return val or default_name
+        except EOFError:
+            return default_name
 
 
 def _curses_input(prompt: str, default: str = "") -> str:
@@ -424,7 +443,11 @@ def _curses_input(prompt: str, default: str = "") -> str:
         except EOFError:
             return default
     if not sys.stdin.isatty():
-        return default
+        try:
+            val = input(f"{prompt} [{default}]: ").strip()
+            return val or default
+        except EOFError:
+            return default
 
     def _edit(stdscr):
         curses.curs_set(1)
@@ -441,7 +464,12 @@ def _curses_input(prompt: str, default: str = "") -> str:
     try:
         return curses.wrapper(_edit)
     except Exception:
-        return default
+        # Curses failed; fall back to text input
+        try:
+            val = input(f"{prompt} [{default}]: ").strip()
+            return val or default
+        except EOFError:
+            return default
 
 
 class ReferenceBuilder:

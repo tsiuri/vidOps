@@ -10,17 +10,20 @@ one code path (DB store, spans, drills, etc.).
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from pathlib import Path
 
 from models import Job, JobStatus
-from workers.analysis_distributed import AnalysisWorker
 from configuration import load_config
 from dal import TranscriptRepository
 from scripts.analysis.analyze_to_db import create_analysis_job, export_vtt_from_db
 from scripts.analysis.analyze_transcript import TranscriptChunker, VTTParser
 from scripts.analysis.analysis_config import AnalysisConfig
 from db import get_connection
+
+# Lazy import to break circular dependency with workers package
+if TYPE_CHECKING:
+    from workers.analysis_distributed import AnalysisWorker
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,9 @@ class DistributedAnalysisService:
         Main entry point for GenericWorker.
         Processes a distributed analysis job using the shared AnalysisWorker.
         """
+        # Import here to avoid circular dependency at module load time
+        from workers.analysis_distributed import AnalysisWorker
+
         worker: Optional[AnalysisWorker] = None
         if not job.ytid:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job missing ytid.")
