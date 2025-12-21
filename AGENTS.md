@@ -34,6 +34,7 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/
 ## Project Structure & Modules
 - Core code lives under `scripts/`, `services/`, `workers/`, and `cli/` (entrypoint `vo_cli.py`). Worker configs and web bits sit in `web/`. Shared utilities are in `utils/` and `wrappers/`.  ASK THE USER BEFORE CREATING ANY FOLDERS IN THE ROOTDIR OF THE PROJECT.  IDEALLY, USE EXISTING FOLDER STRUCTURE WITH SUBDIRS.
 - Data and run artifacts stay out of the repo; the workspace pattern uses `pull/`, `generated/`, `tmp/`, and `logs/` in your project root. Repo-level `tmp/` is safe for scratch.
+- `.gitignore` excludes runtime and local config (`pull/`, `generated/`, `logs/`, `tmp/`, `media/`, `results/`, `.venv/`, `config.yaml`, `config.local.*`, `db.cfg`, `.vidops_*` markers); recreate via `./workspace.sh` (accept init prompt), `bash scripts/setup_diarization_venv.sh`, and copying `config/config.yaml.example` to `config.yaml`.
 - Tests are in `tests/` plus a few top-level smoke helpers (e.g., `TEST_METRICS_INTEGRATION.sh`, `docs/SMOKE_TESTS.md`).
 
 ## Build, Test, and Dev Commands

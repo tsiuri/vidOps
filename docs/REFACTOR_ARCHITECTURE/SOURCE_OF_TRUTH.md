@@ -379,6 +379,12 @@ First claimable job becomes the pipeline entry point.
 - Clip outputs now backfill `quickclip_clips.asset_path` using timestamp-matched filenames so the QuickClip UI can render clip media
 - Isolation: Clip transcripts are separate jobs with full-video ytid; `quickclip_clips.transcripts` tracks per-model metadata; prevents housekeeping confusion between clip and full-video transcripts
 
+**Repo Hygiene (current):**
+- `.gitignore` excludes runtime and local config (`pull/`, `generated/`, `logs/`, `tmp/`, `media/`, `results/`, `data/references`, `.venv/`, `config.yaml`, `config.local.*`, `db.cfg`, `.vidops_*` markers).
+- Recreate ignored folders via `./workspace.sh` (accept init prompt) or `mkdir -p pull generated logs/pull logs/db data results media/clips media/final config cuts`.
+- Recreate local config by copying `config/config.yaml.example` → `config.yaml` and setting env secrets (`VIDOPS_DB_*`, `HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`).
+- Recreate diarization env via `bash scripts/setup_diarization_venv.sh` and references via `python scripts/diarization/build_reference.py` or `vo diarize build-reference`.
+
 ## TODO (minor follow-ups)
 - Decide whether to auto-enqueue transcription after download (DownloadService hook or Overlord rule) to restore the old download→transcribe convenience.
 - Align all workers (clipping/stitching/analysis/diarization/voice/subtitle/transcription) to the new 2s heartbeat/poll intervals and consistent lease durations.
