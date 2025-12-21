@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block nav_configs %}active{% endblock %}
+{% block content %}
+<div class="container">
+  <h1>Subchunks Configuration</h1>
+  <p><a href="{{ url_for('edit_analysis_config', config_id=config_id) }}">← Back to Config</a></p>
+
+  <div style="background: #f9f9f9; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+    <h3>About Subchunks</h3>
+    <p>
+      The Subchunks pass breaks down each chunk into smaller pieces based on speaker turns in the VTT subtitle file.
+      This enables analyzing what each speaker said separately, allowing per-speaker sentiment and category analysis
+      within the context of each chunk.
+    </p>
+  </div>
+
+  <form method="POST" style="max-width: 1000px;">
+    <!-- Section 0: Critical Requirement Notice -->
+    <fieldset style="margin-bottom: 30px; border: 2px solid #FF9800; padding: 15px; border-radius: 6px; background: #FFF3E0;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px; color: #FF6F00;">⚠️ Critical Requirement</legend>
+      <p style="color: #E65100; margin: 0; font-weight: bold;">
+        ⚡ Subchunks REQUIRES "Enable per-speaker subchunks" to be enabled in Chunk Analysis configuration!
+      </p>
+      <p style="color: #666; margin-top: 8px; margin-bottom: 0;">
+        Subchunks and per-speaker tracking are tightly coupled. When you enable subchunks here,
+        the pipeline automatically enables per-speaker processing. If you disable per-speaker in
+        Chunk Analysis, subchunks will be automatically disabled during analysis regardless of this setting.
+      </p>
+    </fieldset>
+
+    <!-- Section 1: Enable/Disable -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Pass Control</legend>
+
+      <div style="margin-bottom: 15px;">
+        <label for="subchunksEnabled">
+          <input type="checkbox" id="subchunksEnabled" name="subchunks_enabled" {% if subchunks_enabled %}checked{% endif %} />
+          Enable Subchunks Pass
+        </label>
+        <p style="color: #666; margin-top: 5px; margin-left: 20px;">
+          <strong>Also requires:</strong>
+          <ul style="margin: 5px 0; padding-left: 20px;">
+            <li>Per-speaker tracks ENABLED in Chunk Analysis (⚙️ Configure Chunk Size)</li>
+            <li>VTT subtitle file with speaker information uploaded</li>
+          </ul>
+          <strong>When disabled:</strong> Analysis operates at chunk level only.
+        </p>
+      </div>
+    </fieldset>
+
+    <!-- Section 2: Execution Order -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #ddd; padding: 15px; border-radius: 6px;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">Execution Order</legend>
+
+      <div style="margin-bottom: 15px;">
+        <label for="subchunksOrder">Execution Order:</label><br/>
+        <input type="number" id="subchunksOrder" name="subchunks_order" value="{{ subchunks_order or 20 }}" min="0" max="100" step="1" style="width: 100px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 1em;" />
+        <p style="color: #666; margin-top: 5px;">
+          Default: 20. Lower numbers run first. Typical order: subchunks (20) → sentiment_pass (30) → categories_pass (40)
+        </p>
+      </div>
+    </fieldset>
+
+    <!-- Section 3: Requirements -->
+    <fieldset style="margin-bottom: 30px; border: 1px solid #e3f2fd; padding: 15px; border-radius: 6px; background: #f3f8ff;">
+      <legend style="font-weight: bold; font-size: 1.1em; padding: 0 10px;">ℹ️ Requirements & Dependencies</legend>
+
+      <p style="color: #555; margin-bottom: 10px;">
+        <strong>To use Subchunks, you must have:</strong>
+      </p>
+      <ul style="color: #555; line-height: 1.8; margin-left: 20px;">
+        <li><strong>VTT Subtitle File</strong> - The transcript with speaker timing information</li>
+        <li><strong>Per-Speaker Tracks Enabled</strong> - Must be enabled in Chunk Analysis configuration</li>
+        <li><strong>Subchunks Pass Enabled</strong> - Toggle above to enable/disable</li>
+      </ul>
+
+      <p style="color: #555; margin-top: 15px; margin-bottom: 10px;">
+        <strong>What Subchunks Does:</strong>
+      </p>
+      <ol style="color: #555; line-height: 1.8; margin-left: 20px;">
+        <li>Reads VTT cues to identify speaker turns within each chunk</li>
+        <li>Breaks chunks into subchunks at speaker boundaries</li>
+        <li>Each subchunk tagged with speaker information</li>
+        <li>Downstream passes (sentiment, categories) can analyze per-speaker</li>
+      </ol>
+
+      <p style="color: #555; margin-top: 15px; margin-bottom: 10px;">
+        <strong>When to Use:</strong>
+      </p>
+      <ul style="color: #555; line-height: 1.8; margin-left: 20px;">
+        <li>✅ Multi-speaker content (interviews, podcasts, debates)</li>
+        <li>✅ Need speaker-level sentiment analysis</li>
+        <li>✅ Need to attribute categories to specific speakers</li>
+        <li>❌ Single-speaker or no VTT file available</li>
+      </ul>
+    </fieldset>
+
+    <!-- Save Button -->
+    <div style="margin-top: 30px;">
+      <button type="submit" style="background-color: #4CAF50; color: white; padding: 12px 24px; font-size: 1em; border: none; border-radius: 4px; cursor: pointer;">
+        Save Subchunks Configuration
+      </button>
+      <a href="{{ url_for('edit_analysis_config', config_id=config_id) }}" style="margin-left: 10px; padding: 12px 24px; display: inline-block; background-color: #ddd; color: #333; text-decoration: none; border-radius: 4px;">
+        Cancel
+      </a>
+    </div>
+  </form>
+
+  {% if error %}
+  <div style="background: #ffebee; border: 1px solid #ef5350; border-radius: 4px; padding: 12px; margin-top: 15px; color: #c62828;">
+    <strong>Error:</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  {% if success %}
+  <div style="background: #e8f5e9; border: 1px solid #66bb6a; border-radius: 4px; padding: 12px; margin-top: 15px; color: #2e7d32;">
+    ✓ Configuration saved successfully
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>HC Project: {{ project.name }}</h2>
+
+<p>
+  <a href="{{ url_for('hc_projects_page') }}">← All projects</a>
+</p>
+
+<div style="display:flex; gap:2rem; flex-wrap:wrap;">
+  <div style="min-width: 340px; flex: 1;">
+    <h3>Summary</h3>
+    <ul>
+      <li>Status: <b>{{ project.status }}</b></li>
+      <li>Created: {{ project.created_at }}</li>
+      <li>Hits: <b>{{ hit_count }}</b></li>
+      <li>Clips: <b>{{ clip_count }}</b></li>
+      <li>Suggestions: <b>{{ suggestion_count }}</b></li>
+    </ul>
+
+    <h3>Observability (Phase 6)</h3>
+    <ul>
+      <li><a href="{{ url_for('hc_project_audit_page', project_id=project.project_id) }}">Audit overview</a></li>
+      <li><a href="{{ url_for('hc_project_runs_page', project_id=project.project_id) }}">Runs (table)</a></li>
+    </ul>
+
+    <h3>Run DAG</h3>
+    <form method="POST" action="{{ url_for('hc_project_create_run', project_id=project.project_id) }}">
+      {% if project.status == 'finalized' %}
+        <div style="margin-bottom:0.5rem; padding:0.5rem; border:1px solid #ccc;">
+          <b>Finalized project:</b> runs are blocked by default (Phase 5). You can override explicitly.
+        </div>
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+          <input type="checkbox" name="allow_finalized" value="1">
+          Allow enqueue run anyway
+        </label>
+      {% endif %}
+      <button type="submit">Enqueue Run</button>
+    </form>
+
+    <h3>Finalize Project</h3>
+    {% if project.status != 'finalized' %}
+      <form method="POST" action="{{ url_for('hc_project_finalize_action', project_id=project.project_id) }}">
+        <div style="margin: 0.5rem 0;">
+          <label>Reason (optional)</label><br>
+          <input name="reason" style="width:100%;" placeholder="e.g. freeze pinned hits + current clips">
+        </div>
+        <button type="submit">Finalize (explicit)</button>
+      </form>
+    {% else %}
+      <p>
+        Latest finalization: <a href="{{ url_for('api_hc_project_finalization', project_id=project.project_id) }}" target="_blank">/api/hc/projects/{{ project.project_id }}/finalization</a>
+      </p>
+    {% endif %}
+
+    <h3>Export Project (Phase 7)</h3>
+    <form method="POST" action="{{ url_for('hc_project_export_action', project_id=project.project_id) }}">
+      <div style="margin: 0.5rem 0;">
+        <label>Output root (optional)</label><br>
+        <input name="output_root" style="width:100%;" placeholder="default: <workspace>/exports">
+      </div>
+      <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+        <input type="checkbox" name="no_assets" value="1">
+        Manifest only (do not copy clip files)
+      </label>
+      {% if project.status != 'finalized' %}
+        <div style="margin-bottom:0.5rem; padding:0.5rem; border:1px solid #ccc;">
+          <b>Non-finalized project:</b> export is blocked by default. You can override explicitly.
+        </div>
+        <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem;">
+          <input type="checkbox" name="allow_nonfinalized" value="1">
+          Allow export anyway (uses latest versions snapshot)
+        </label>
+      {% endif %}
+      <button type="submit">Export (download zip)</button>
+      <div style="opacity:0.8; font-size:0.9em; margin-top:0.25rem;">
+        Export is explicit, read-only, and does not render/rebuild.
+      </div>
+    </form>
+
+    <h3>Clips</h3>
+    <p><a href="{{ url_for('hc_project_clips_page', project_id=project.project_id) }}">View clips + render/rebuild</a></p>
+
+    <h3>Add / Update Node</h3>
+    <form method="POST" action="{{ url_for('hc_project_upsert_node', project_id=project.project_id) }}">
+      <div style="margin: 0.5rem 0;">
+        <label>node_key</label><br>
+        <input name="node_key" style="width:100%;" placeholder="e.g. keywords_1" required>
+      </div>
+      <div style="margin: 0.5rem 0;">
+        <label>node_type</label><br>
+        <select name="node_type" style="width:100%;">
+          <option value="keyword_hit_generator">keyword_hit_generator</option>
+          <option value="suggestion_emitter">suggestion_emitter</option>
+          <option value="analysis_suggestion_emitter">analysis_suggestion_emitter</option>
+          <option value="analysis_hit_generator">analysis_hit_generator</option>
+          <option value="clip_projection">clip_projection</option>
+        </select>
+      </div>
+      <div style="margin: 0.5rem 0;">
+        <label>config_json</label><br>
+        <textarea name="config_json" style="width:100%;" rows="8" placeholder='{"phrases":["hasan","destiny"],"padding_pre":0.2,"padding_post":0.2}'></textarea>
+        <div style="opacity:0.8; font-size: 0.9em;">Accepted nodes currently: keyword_hit_generator, suggestion_emitter, analysis_suggestion_emitter, analysis_hit_generator, clip_projection.</div>
+      </div>
+      <button type="submit">Save Node</button>
+    </form>
+  </div>
+
+  <div style="min-width: 520px; flex: 2;">
+    <h3>Nodes</h3>
+    <table class="table" style="width:100%; border-collapse: collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left;">Key</th>
+          <th style="text-align:left;">Type</th>
+          <th style="text-align:left;">Enabled</th>
+          <th style="text-align:left;">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for n in nodes %}
+        <tr>
+          <td>{{ n.node_key }}</td>
+          <td>{{ n.node_type }}</td>
+          <td>{{ n.enabled }}</td>
+          <td>{{ n.updated_at }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Runs</h3>
+    <table class="table" style="width:100%; border-collapse: collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left;">Run</th>
+          <th style="text-align:left;">Status</th>
+          <th style="text-align:left;">Started</th>
+          <th style="text-align:left;">Completed</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in runs %}
+        <tr>
+          <td><a href="{{ url_for('hc_project_run_detail', project_id=project.project_id, run_id=r.run_id) }}">{{ r.run_id }}</a></td>
+          <td>{{ r.status }}</td>
+          <td>{{ r.started_at }}</td>
+          <td>{{ r.completed_at }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Quick API Links</h3>
+    <ul>
+      <li><a href="{{ url_for('api_hc_hits', project_id=project.project_id) }}" target="_blank">/api/hc/projects/{{ project.project_id }}/hits</a></li>
+      <li><a href="{{ url_for('api_hc_hits', project_id=project.project_id) }}?hit_type=analysis" target="_blank">/api/hc/projects/{{ project.project_id }}/hits?hit_type=analysis</a></li>
+      <li><a href="{{ url_for('api_hc_clips', project_id=project.project_id) }}" target="_blank">/api/hc/projects/{{ project.project_id }}/clips</a></li>
+      <li><a href="{{ url_for('api_hc_suggestions', project_id=project.project_id) }}" target="_blank">/api/hc/projects/{{ project.project_id }}/suggestions</a></li>
+      <li><a href="{{ url_for('api_hc_project_finalization', project_id=project.project_id) }}" target="_blank">/api/hc/projects/{{ project.project_id }}/finalization</a></li>
+    </ul>
+  </div>
+</div>
+
+{% endblock %}

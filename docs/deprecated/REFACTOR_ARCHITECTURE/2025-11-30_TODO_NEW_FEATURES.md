@@ -1,0 +1,20 @@
+# TODO 2025-11-30 — Legacy Script Bridge Completion (Non-Clips)
+
+## Workjob A: Subtitle Pipeline (dl-subs + convert-captions) — ✅ Delivered
+- Goal: bridge legacy `workspace.sh dl-subs` and `workspace.sh convert-captions` to the DB→legacy→DB flow: enqueue via CLI, stage inputs in legacy paths, run legacy scripts, ingest subtitles/words, register assets with `rel_path`, and push to storage.
+- Scope: add CLI enqueue commands (`vo dl-subs enqueue`, `vo convert-captions enqueue`), job_types + workers that read `jobs.config`, rebuild URL/ytid lists in `pull/`, run legacy scripts, ingest VTT/SRT and `.words.tsv` into DB, and register `subtitle/transcript` assets (plus manifest if generated). Update LEGACY_BRIDGE_MAP.md, SOURCE_OF_TRUTH.md, QUICK_REFERENCE.md.
+- Guardrails: DB is source of truth; no file queues; use FilesystemCache for staging/push; honor storage root `/mnt/mainroot/mnt/13tb_sas/vidops/storage` and cache `~/vidops_cache`; rely on legacy completion markers; non-destructive unless `--force` arrives later.
+- Deliverables: CLI + worker code, ingestion hooks for subtitles/words, asset registration with `rel_path`, and smoke/manual checklist for a known video. Implemented via `SubtitleService`/`SubtitleWorker` bridging to legacy `dl-subs` and `convert-captions`, asset registration with `rel_path`, and DB ingestion for VTT/SRT + `.words.yt.tsv`.
+
+## Workjob B: Voice Filter + Diarization Bridge — ✅ Delivered
+- Goal: wrap legacy `workspace.sh voice ...` and `workspace.sh diarize ...` under DB jobs so workers stage media/reference clips/words in legacy paths, invoke legacy scripts, then ingest outputs and register assets.
+- Scope: ensure CLI enqueues (`vo voice enqueue`, `vo diarize enqueue`) carry needed refs (ytid, ref clip paths, params) into `jobs.config`; workers pull media/words via FilesystemCache into `pull/` + `generated/`, run legacy scripts, parse results JSON/TSV, register `voice_match`/`diarization` assets, and attach spans to DB if schema expects it. Align worker heartbeat/lease with other job_types.
+- Guardrails: no bypassing DB; stage exactly where legacy expects (`pull/`, `generated/`, `results/`); rely on legacy completion marker/exit code; sanitize filenames; push outputs to storage with `rel_path`; update job.result with absolute + relative paths.
+- Deliverables: worker/service code, asset ingestion, CLI help updates, docs in SOURCE_OF_TRUTH.md and LEGACY_BRIDGE_MAP.md, plus a smoke that runs a short clip through voice and diarize paths. Completed with storage-aware staging via FilesystemCache, job.result summaries, and fake modes (`VIDOPS_FAKE_VOICE`, `VIDOPS_FAKE_DIARIZATION`) for smoke runs.
+
+## Workjob C: Stitch + Analyze + Dates/Extra-Utils Bridge
+- Status: ✅ Completed (stitch/analyze/dates/extra-utils bridged; smoke added for stitch→analyze).
+- Goal: finish bridging remaining legacy helpers—`workspace.sh stitch ...`, `workspace.sh analyze ...`, and queued date/extra-utils commands—to the DB→legacy→DB pattern so every legacy tool runs through the queue with storage/asset ingestion.
+- Scope: add/extend CLI enqueues (`vo stitch enqueue` already exists—ensure legacy bridge path; add `vo analyze enqueue`, optional `vo dates enqueue`, selective `vo extra-utils enqueue`), workers that rebuild manifests/lists under `generated/` and `media/` as legacy expects, call legacy scripts, register outputs (`stitched`, `analysis`, `dates_manifest`, `utility_output`), and push via FilesystemCache. Handle empty-output detection and error reporting in job.result.
+- Guardrails: DB remains the source; no ad-hoc pipelines; keep `rel_path` accurate; rely on legacy completion markers; avoid destructive overwrites unless `--force` is explicitly added; manifests/logs stored and registered when operator-relevant.
+- Deliverables: worker implementations, asset registration for stitched videos/analysis JSON-TSV/manifests, CLI/docs updates (SOURCE_OF_TRUTH.md, LEGACY_BRIDGE_MAP.md, START_HERE.md, QUICK_REFERENCE.md), and a minimal smoke that stitches a tiny manifest and runs analyze on its transcript.

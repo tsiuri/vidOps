@@ -1,0 +1,30 @@
+# Full Flow Test Log — 2025-12-01
+
+End-to-end real runs against the live DB/storage to exercise the bridged legacy commands. Storage mounted at `/mnt/mainroot/mnt/13tb_sas/vidops/storage`, DB `192.168.0.187/transcripts`. All commands run from project root with `PYTHONPATH=.`.
+
+## Summary
+- Download, subtitles, convert-captions, voice, diarization, stitch, analyze, dates all executed with real workers. Extra-utils (`sort_clips.py`) produced no output.
+- Multiple asset registrations failed due to `assets_kind_check` missing newer kinds (`voice_match`, `diarization`, `stitched`, `analysis`, `dates_manifest`). Broker uploads succeeded; files are present in storage but not recorded in `assets`.
+- Legacy transcription worker hung; VTT/words were produced locally. I copied them to storage and manually registered transcript assets, then marked the job complete via SQL. A duplicate transcription job was cancelled.
+- Diarization needed a `reference.json`; created a minimal one under `generated/diary_reference/jNQXAC9IVRw/` to unblock.
+
+## Commands and Results
+
+| Step | Command(s) | Job ID | Status | Outputs / Notes |
+| --- | --- | --- | --- | --- |
+| Download | `python3 vo_cli.py download enqueue https://www.youtube.com/watch?v=jNQXAC9IVRw`<br>`VIDOPS_WORKER_MAX_JOBS=1 python3 vo_cli.py worker start download` | job_a8f63e73-9d95-4a6d-97a2-ec70fb9a2ddd | completed | Asset existed already; rel_path `raw/jNQXAC9IVRw__20050424 - Me at the zoo.mp4` |
+| Transcribe (legacy bridge) | `python3 vo_cli.py transcribe enqueue jNQXAC9IVRw --model small --lang en --force`<br>worker runs hung; outputs landed under `generated/` | job_89583f65-e587-435b-aabf-802635078b2b | completed (manual) | Copied `generated/jNQXAC9IVRw__...small.vtt` → `transcripts/jNQXAC9IVRw_vtt_whisper_small.vtt` and `.words.tsv` → `transcripts/jNQXAC9IVRw_words_whisper_small.words.tsv`; inserted transcript assets and set job status to completed via SQL. Duplicate job job_03849e2e-d224-4464-a027-0c6c307ebb52 cancelled. |
+| Subtitles | `python3 vo_cli.py dl-subs enqueue jNQXAC9IVRw --lang en --format vtt`<br>`python3 vo_cli.py convert-captions enqueue jNQXAC9IVRw` | dl-subs: job_3ce2e4f1-40d8-4200-a8b5-eae966c2aa70<br>convert: job_6c4e16a3-e01b-4a4f-8ed9-c6cba1dc1b47 | completed | Assets registered: `pull/jNQXAC9IVRw__2005-04-24 - Me at the zoo.transcript.en.vtt` (vtt) and `generated/jNQXAC9IVRw__2005-04-24 - Me at the zoo.words.yt.tsv` (words_ytt). |
+| Voice filter | `python3 vo_cli.py voice enqueue jNQXAC9IVRw --clips-path clips/voice_demo --reference clips/voice_demo/ref_a.wav --threshold 0.7 --method chunked`<br>`python3 vo_cli.py worker start voice` | job_af140a05-ab98-4551-bbb3-0b7334d1d1ec | completed (asset insert failed) | Results in storage: `results/voice_filter/jNQXAC9IVRw/voice_analysis.json`, `.../hasan_clips.txt`. Broker upload OK; asset inserts failed (`assets_kind_check` lacks `voice_match`). |
+| Diarization | Prepare reference: `generated/diary_reference/jNQXAC9IVRw/ref_a.wav` + `reference.json` (minimal).<br>`python3 vo_cli.py diarize enqueue jNQXAC9IVRw --transcript-kind words_ytt --model resemblyzer --reference-dir generated/diary_reference/jNQXAC9IVRw --words-path generated/jNQXAC9IVRw__2005-04-24\\ -\\ Me\\ at\\ the\\ zoo.words.yt.tsv ...`<br>`python3 vo_cli.py worker start diarization` | job_fe34ae34-5212-452a-b1d9-e575631996b0 | completed (asset insert failed) | Files in storage: `generated/diarization_resemblyzer/jNQXAC9IVRw/{diarized_timestamps.tsv,speaker_words.tsv,diarization.json}`. Asset inserts failed (`assets_kind_check` lacks `diarization`). Two earlier diarization jobs failed due to missing reference dir/json. |
+| Stitch | `python3 vo_cli.py stitch enqueue --clip clips/stitch_demo/clip1.mp4 --clip clips/stitch_demo/clip2.mp4 --output-name stitch_demo_output.mp4 --method batch`<br>`python3 vo_cli.py worker start stitching` | job_97bb4ce0-03d9-42a0-a0d8-08008f40aea9 | completed (asset insert failed) | Output pushed: `stitch/stitch_demo_output.mp4` (broker OK). Asset insert failed (`assets_kind_check` lacks `stitched`). Earlier stitch job job_eb7df16d-eb84-4ef3-9f3a-796134f96090 failed due to wrong input paths (`storage/...` prefix). |
+| Analyze | `python3 vo_cli.py analyze enqueue jNQXAC9IVRw --transcript-kind words_ytt --model llama3 --output-name analysis/jNQXAC9IVRw_llama3.json`<br>`python3 vo_cli.py worker start analysis` | job_2f605360-9bbe-4c28-96ae-a405f6f420ad | completed (asset insert failed) | Output at `analysis/jNQXAC9IVRw_llama3.json`; broker upload OK; asset insert failed (`assets_kind_check` lacks `analysis`). |
+| Dates helper | `python3 vo_cli.py dates enqueue --action find-missing --dates-file data/dates_demo.tsv --source-dir pull/ --output-name results/dates_missing.tsv`<br>`python3 vo_cli.py worker start dates` | job_215bdc48-f5a9-41bf-b1bc-446594d8e28e | completed (asset insert failed) | Manifest `results/dates_missing.tsv` created/brokered; asset insert failed (`assets_kind_check` lacks `dates_manifest`). |
+| Extra-utils | `python3 vo_cli.py extra-utils enqueue --tool sort_clips.py --input results/wanted.tsv --output-name results/sorted_wanted.tsv --arg --by --arg start_sec`<br>`python3 vo_cli.py worker start extra_utils` | job_8d180ef5-c20f-4a58-8d03-175af25c9d19 | failed | Legacy tool produced no output (sort_clips.py reads stdin; no file emitted). |
+
+## Key Observations / Fixups Needed
+- `assets_kind_check` is missing several kinds used by the new bridges (`voice_match`, `diarization`, `stitched`, `analysis`, `dates_manifest`). Asset uploads succeeded but inserts failed for those jobs.
+- Legacy transcription worker doesn’t terminate cleanly in this environment; manual intervention was needed to persist/register outputs. Investigate auto-exit and ensure worker marks jobs completed.
+- Diarization requires a `reference.json`; created a minimal one to proceed.
+- Extra-utils `sort_clips.py` expects stdin; the enqueue pipeline doesn’t capture stdout to the declared output, leading to “produced no output.”
+- Use storage-relative paths (e.g., `clips/...`) for stitch inputs; prefixing with `storage/...` fails staging.

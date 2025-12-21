@@ -1,0 +1,131 @@
+# Diarization 2.0 Configuration
+# Optimized for 8GB GPU systems
+# See docs/DIARIZATION/INFERENCE_IMPLEMENTATION.md for details
+
+diarization:
+  # Model configuration
+  model: "pyannote/speaker-diarization-3.1"
+  device: "auto"  # auto|cuda|cpu|cuda:0
+
+  # Segmentation override (null = use default from model)
+  segmentation:
+    override: null  # Examples: "pyannote/segmentation-3.0", "pyannote/segmentation"
+
+  # Hyperparameters (8GB GPU optimized)
+  hyperparameters:
+    # Processing chunks
+    chunk_duration: 15.0      # seconds (12-20 recommended)
+    overlap_duration: 2.5     # seconds (2-3 recommended)
+
+    # Speaker clustering
+    threshold: 0.6            # similarity threshold (0.45-0.70 range)
+                              # Lower = stricter matching, more speakers
+                              # Higher = looser matching, fewer speakers
+
+    min_cluster_size: 15      # minimum segments per speaker
+    min_speakers: null        # null = auto-detect
+    max_speakers: null        # null = auto-detect
+
+    # Batch sizes (tuned for 8GB VRAM)
+    segmentation_batch_size: 32   # 16=low VRAM, 32=8GB, 64=12GB+
+    embedding_batch_size: 64      # 32=low VRAM, 64=8GB, 128=12GB+
+
+  # Preprocessing (canonicalization + padding + VAD)
+  preprocess:
+    workers: 1                # limit parallel VAD workers to control RAM
+    chunk_duration: null      # null = hyperparameters.chunk_duration
+
+  # Post-processing (merge gaps, drop short turns)
+  post_processing:
+    enabled: true
+    micro_gap: 3.0            # merge gaps smaller than this (seconds)
+    min_turn: 0.45            # drop turns shorter than this (seconds)
+
+  # Word mapping
+  word_mapping:
+    enabled: true
+    gap_tolerance: 0.15       # allow this much gap when mapping words (seconds)
+
+  # Reference handling
+  references:
+    enabled: true
+    directory: "data/references"  # relative to PROJECT_ROOT
+
+    # Reference building defaults
+    num_clips: 50                 # clips to extract per reference
+    clip_duration: [8.0, 12.0]    # [min, max] seconds
+    spacing: 30.0                 # minimum seconds between clips
+    sample_rate: 16000            # Hz (must be 16000 for pyannote)
+    reuse_existing: true          # don't rebuild if reference exists
+
+    # Reference matching
+    match_threshold: 0.75         # similarity threshold for speaker ID
+    match_margin: 0.01            # margin between best/second-best
+    force_best: true              # force best match even if below threshold/margin
+    max_segments_per_speaker: 10  # segments to average for matching
+
+  # Input/output paths (relative to PROJECT_ROOT)
+  paths:
+    # Input audio (post-enhancement)
+    input_audio_dir: "generated/diarization_inputs"
+    input_audio_filename: "enhanced.wav"  # or "canonical.wav"
+
+    # Raw audio fallback (if preprocessed audio not found)
+    fallback_audio_dir: "pull"
+
+    # Outputs
+    output_dir: "results/diarization"
+
+    # Logs
+    log_dir: "logs/diarization"
+
+  # HuggingFace authentication
+  huggingface:
+    use_auth_token: true  # true = use cached token from `huggingface-cli login`
+    # token: "hf_..."    # or provide explicit token (not recommended)
+
+  # Batch processing
+  batch:
+    progress_bar: true
+    continue_on_error: true       # skip failed files vs abort
+    log_errors: true              # write errors to log file
+    parallel: false               # multi-GPU support (future)
+    max_workers: 1                # parallel workers (if parallel=true)
+
+  # Memory monitoring
+  memory_monitor:
+    enabled: true                 # enable memory monitoring during diarization
+    memory_limit_mb: 8192         # maximum memory in MB before worker termination (default: 8GB)
+    check_interval: 1.0           # how often to check memory (seconds)
+
+# Per-domain overrides (optional)
+# Allows different thresholds for different video types
+domain_overrides:
+  # Example: Streams have more consistent speakers
+  stream:
+    hyperparameters:
+      threshold: 0.55  # Stricter for streams
+
+  # Example: VODs have more varied speakers
+  vod:
+    hyperparameters:
+      threshold: 0.65  # Looser for VODs
+
+  # Example: Clips are short, need different settings
+  clip:
+    hyperparameters:
+      chunk_duration: 10.0
+      threshold: 0.60
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG|INFO|WARNING|ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/diarization/diarization.log"
+  console: true
+
+# Runtime monitoring
+monitoring:
+  print_gpu_stats: true
+  track_timing: true
+  save_timing_report: true

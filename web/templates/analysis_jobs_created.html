@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block nav_configs %}active{% endblock %}
+{% block content %}
+
+<div class="container">
+  <h1>Analysis Jobs Created</h1>
+
+  <div style="background-color: #e8f5e9; padding: 15px; border-radius: 4px; border-left: 4px solid #4CAF50; margin-bottom: 20px;">
+    <strong>Success!</strong> Created {{ created_jobs|length }} of {{ total_requested }} analysis job(s).
+  </div>
+
+  {% if created_jobs %}
+  <div style="margin-bottom: 30px;">
+    <h2>Created Jobs</h2>
+    <table border="1" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse;">
+      <tr style="background-color: #f5f5f5;">
+        <th>Video ID</th>
+        <th>Job ID</th>
+        <th>Action</th>
+      </tr>
+      {% for ytid, job_id in created_jobs %}
+      <tr>
+        <td><code>{{ ytid }}</code></td>
+        <td><code style="color: #666; font-size: 12px;">{{ job_id[:16] }}...</code></td>
+        <td>
+          <a href="{{ url_for('jobs_browser', ytid=ytid) }}" style="color: #2196F3; text-decoration: none;">View Jobs →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {% if failed_videos %}
+  <div style="margin-bottom: 30px;">
+    <h2>Failed Videos</h2>
+    <table border="1" cellpadding="8" cellspacing="0" style="width: 100%; border-collapse: collapse;">
+      <tr style="background-color: #ffebee;">
+        <th>Video ID</th>
+        <th>Error</th>
+      </tr>
+      {% for ytid, error in failed_videos %}
+      <tr>
+        <td><code>{{ ytid }}</code></td>
+        <td><small style="color: #c62828;">{{ error }}</small></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <div style="margin-top: 30px;">
+    <a href="{{ url_for('list_analysis_configs') }}" style="background-color: #2196F3; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
+      Back to Configs
+    </a>
+    <a href="{{ url_for('jobs_browser') }}" style="background-color: #666; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; margin-left: 10px;">
+      View All Jobs
+    </a>
+  </div>
+</div>
+
+{% endblock %}

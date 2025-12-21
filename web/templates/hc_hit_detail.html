@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}HC Hit Detail{% endblock %}
+{% block nav_hc %}active{% endblock %}
+
+{% block head %}
+<style>
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; }
+  .muted { color:#666; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eef; font-size:0.85rem; }
+  .kv { display:grid; grid-template-columns: 180px 1fr; gap:8px 12px; }
+  .kv .k { color:#555; }
+  .kv .v code { background:#f3f3f3; padding:2px 4px; border-radius:4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div>
+        <h2 style="margin:0 0 6px 0;">Hit {{ hit.hit_id }}</h2>
+        <div class="muted">
+          Project: <a href="/hc/projects/{{ hit.project_id }}">{{ hit.project_id }}</a>
+          &nbsp;•&nbsp; Logical: {{ hit.hit_logical_id }}
+          &nbsp;•&nbsp; Version: {{ hit.hit_version }}
+        </div>
+      </div>
+      <div>
+        <span class="pill">status: {{ hit.status }}</span>
+        <span class="pill">validity: {{ hit.validity_status }}</span>
+        {% if hit.pinned %}<span class="pill">pinned</span>{% endif %}
+      </div>
+    </div>
+
+    <div style="margin-top:14px;" class="kv">
+      <div class="k">hit_type</div><div class="v">{{ hit.hit_type }}</div>
+      <div class="k">ytid</div><div class="v">{{ hit.ytid or '' }}</div>
+      <div class="k">label</div><div class="v">{{ hit.label or '' }}</div>
+      <div class="k">tags</div><div class="v">{{ (hit.tags or []) | join(', ') }}</div>
+      <div class="k">confidence</div><div class="v">{{ hit.confidence if hit.confidence is not none else '' }}</div>
+      <div class="k">created_at</div><div class="v">{{ hit.created_at }}</div>
+      <div class="k">updated_at</div><div class="v">{{ hit.updated_at }}</div>
+      <div class="k">invalidated_at</div><div class="v">{{ hit.invalidated_at or '' }}</div>
+      <div class="k">invalidation_reason</div><div class="v">{{ hit.invalidation_reason or '' }}</div>
+    </div>
+
+    <div style="margin-top:14px;">
+      <h3 style="margin:0 0 8px 0;">Spans</h3>
+      <table>
+        <thead><tr><th>start</th><th>end</th><th>speaker</th></tr></thead>
+        <tbody>
+          {% for s in spans %}
+            <tr><td>{{ '%.3f'|format(s.start_sec) }}</td><td>{{ '%.3f'|format(s.end_sec) }}</td><td>{{ s.speaker_name or '' }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;">
+    <h3 style="margin:0 0 10px 0;">Lineage (same logical id)</h3>
+    <table>
+      <thead><tr><th>version</th><th>hit_id</th><th>status</th><th>validity</th><th>created_at</th></tr></thead>
+      <tbody>
+        {% for v in lineage %}
+          <tr>
+            <td>{{ v.hit_version }}</td>
+            <td>
+              {% if v.hit_id == hit.hit_id %}<strong>{{ v.hit_id }}</strong>{% else %}<a href="/hc/hits/{{ v.hit_id }}">{{ v.hit_id }}</a>{% endif %}
+            </td>
+            <td>{{ v.status }}</td>
+            <td>{{ v.validity_status }}</td>
+            <td>{{ v.created_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;">
+    <h3 style="margin:0 0 10px 0;">Dependent Clips (by hit_id)</h3>
+    {% if dependent_clips|length == 0 %}
+      <div class="muted">No clips reference this exact hit version.</div>
+    {% else %}
+      <table>
+        <thead><tr><th>clip_id</th><th>clip_version</th><th>status</th><th>validity</th><th>label</th><th>created_at</th></tr></thead>
+        <tbody>
+          {% for c in dependent_clips %}
+            <tr>
+              <td><a href="/hc/clips/{{ c.clip_id }}">{{ c.clip_id }}</a></td>
+              <td>{{ c.clip_version }}</td>
+              <td>{{ c.status }}</td>
+              <td>{{ c.validity_status }}</td>
+              <td>{{ c.label or '' }}</td>
+              <td>{{ c.created_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin:0 0 10px 0;">Audit Events</h3>
+    {% if events|length == 0 %}
+      <div class="muted">No audit events recorded for this hit.</div>
+    {% else %}
+      <table>
+        <thead><tr><th>created_at</th><th>event_type</th><th>from</th><th>to</th><th>actor</th><th>reason</th></tr></thead>
+        <tbody>
+          {% for e in events %}
+            <tr>
+              <td>{{ e.created_at }}</td>
+              <td>{{ e.event_type }}</td>
+              <td>{{ e.from_state or '' }}</td>
+              <td>{{ e.to_state or '' }}</td>
+              <td>{{ e.actor or '' }}</td>
+              <td>{{ e.reason or '' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+{% endblock %}

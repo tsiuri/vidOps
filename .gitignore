@@ -1,0 +1,37 @@
+#ignores all these
+data/references/
+logs/
+generated/
+.clips-download-archive.txt
+pull/
+media/
+*.log
+*.pyc
+*.kate-swp
+*~
+__pycache__/
+.DS_Store
+.claude/
+backups/
+analyzed/
+.venv_cli/
+config.yaml
+config.local.json
+config.local.cfg
+config.cfg
+db.cfg
+tmp/
+/analysis/
+clips/
+results/
+manual diarized/
+manual_diarized_rttm/
+data/references/
+tmp/
+.vidops_deploy_marker
+.vidops-project
+
+
+# Ignore the virtual environment directory
+venv/
+.venv/

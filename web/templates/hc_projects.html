@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Hits & Clips Projects</h2>
+
+{% if error %}
+  <div style="color:#ff6b6b; margin: 0.5rem 0;">{{ error }}</div>
+{% endif %}
+
+<div style="display:flex; gap:2rem; flex-wrap:wrap;">
+  <div style="min-width: 320px; flex: 1;">
+    <h3>Create Project</h3>
+    <form method="POST">
+      <div style="margin: 0.5rem 0;">
+        <label>Name</label><br>
+        <input name="name" style="width:100%;" placeholder="e.g. hasan_drama_clips" required>
+      </div>
+      <div style="margin: 0.5rem 0;">
+        <label>Description</label><br>
+        <textarea name="description" style="width:100%;" rows="3" placeholder="Optional"></textarea>
+      </div>
+      <button type="submit">Create</button>
+    </form>
+  </div>
+
+  <div style="min-width: 420px; flex: 2;">
+    <h3>Recent Projects</h3>
+    <table class="table" style="width:100%; border-collapse: collapse;">
+      <thead>
+        <tr>
+          <th style="text-align:left;">Name</th>
+          <th style="text-align:left;">Status</th>
+          <th style="text-align:left;">Created</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for p in projects %}
+        <tr>
+          <td><a href="{{ url_for('hc_project_detail', project_id=p.project_id) }}">{{ p.name }}</a></td>
+          <td>{{ p.status }}</td>
+          <td>{{ p.created_at }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

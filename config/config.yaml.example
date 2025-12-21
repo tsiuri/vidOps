@@ -1,0 +1,149 @@
+# VidOps Configuration
+#
+# This file centralizes the configuration for the VidOps toolkit.
+# Settings are defined here with sensible defaults.
+#
+# Precedence Order:
+# 1. Default values in the Config classes (`configuration.py`)
+# 2. Values in this `config.yaml` file
+# 3. Environment variables (e.g., VIDOPS_DB_HOST)
+#
+
+# --- Database Configuration ---
+# Connection details for the central PostgreSQL database.
+database:
+  host: "192.168.0.187"
+  port: 5432
+  name: "transcripts"
+  user: "billie"
+  password: "z" # For local development; use env var in production
+
+# --- Storage Configuration ---
+# Paths for local and central (long-term) storage.
+paths:
+  # The root directory for the central, long-term media archive.
+  # This should be a network-mounted path accessible by all workers.
+  central_storage_root: "/mnt/mainroot/mnt/13tb_sas/vidops/storage"
+  # The local directory where temporary files (like downloaded media before
+  # being moved to central storage) are kept. This can be relative to the
+  # project root.
+  local_temp_dir: "tmp"
+  # Prefix to prepend to absolute paths stored in the database.
+  # Used when the database contains paths like /mnt/13tb_sas/... but the actual
+  # filesystem location is /mnt/mainroot/mnt/13tb_sas/... (for remote mounts).
+  path_prefix: "/mnt/mainroot"
+
+
+# --- Transcription Worker Configuration ---
+# Default settings for all transcription workers.
+transcription:
+  # Default Whisper model to use. (tiny, base, small, medium, large-v2, etc.)
+  model: "small"
+  # Default language for transcription. 'en' for English, or leave empty to auto-detect.
+  language: "en"
+
+  # NVIDIA (faster-whisper) specific settings
+  nvidia:
+    # float16 is a good balance of speed and accuracy.
+    # Other options: int8_float16, int8
+    compute_type: "float16"
+    # Use Voice Activity Detection to filter out silence.
+    vad_filter: true
+    # Average log probability threshold for a segment to be considered low-confidence.
+    # Segments below this threshold will be marked for retry.
+    confidence_threshold: -0.7
+
+  # CPU specific settings
+  cpu:
+    # Compute type for CPU workers.
+    compute_type: "int8_float32"
+    # Number of threads for the CPU worker.
+    threads: 8
+
+# --- Worker Configuration ---
+# General settings applicable to all types of workers.
+workers:
+  # How often (in seconds) a worker should send a heartbeat to the database.
+  heartbeat_interval: 2
+  # How many jobs a worker should process before exiting. 0 means run forever.
+  max_jobs: 0
+  # A user-friendly name for the machine this worker is running on.
+  # If not set, the hostname will be used.
+  machine_alias: "mothership-arch"
+
+# --- Workspace Management ---
+# Disk space safeguards for the workspace directory (TOOL_ROOT).
+# Workers will terminate if workspace size exceeds the configured limit.
+workspace:
+  # Maximum total workspace size before worker termination (GB)
+  # Set to 0 to disable workspace size monitoring.
+  max_workspace_size_gb: 100.0
+
+  # How often to check workspace size (in heartbeats)
+  # With heartbeat_interval=2s, size_check_interval=150 = every 5 minutes
+  # Checking the full workspace takes ~800ms with 74k files.
+  size_check_interval: 150
+
+  # Whether to check tmp/ directory separately
+  # tmp/ is faster to check (~6ms) and is the primary accumulation point.
+  monitor_tmp_separately: true
+
+  # Maximum size for tmp/ directory before worker termination (GB)
+  # Only used if monitor_tmp_separately is true.
+  max_tmp_size_gb: 50.0
+
+# --- Storage Broker ---
+# Optional HTTP broker that proxies asset uploads/downloads via SSH tunnel.
+storage_broker:
+  enabled: true
+  listen_host: 127.0.0.1
+  listen_port: 8443
+  base_url: https://broker.internal:8443
+  mtls_ca_cert: "/etc/vidops/certs/broker-ca.pem"
+  shared_token: "a75d8d57fd602724aa83e4cf7c9ac5f4a4047d26efaf2b0b"
+  request_timeout: 60
+
+# --- Download (yt-dlp) Defaults ---
+# Default downloader behavior; overridable via env (VIDOPS_YTDLP_*).
+download:
+  # yt-dlp format selector (legacy pull.sh default)
+  format: "bestaudio/best"
+  # Force audio-only path (uses FFmpegExtractAudio), legacy default
+  audio_only: true
+  # Audio codec and quality when audio_only=true, legacy default
+  audio_format: "opus"
+  audio_quality: "0"
+  # Embed metadata into the downloaded file
+  embed_metadata: true
+  # Use a download archive to skip already-downloaded entries
+  use_archive: true
+  archive_path: "pull/download_archive.txt"
+  # Skip re-downloading if file exists (yt-dlp no-overwrites)
+  no_overwrites: true
+  # Optional cookies browser (e.g., firefox, chrome); leave empty to skip
+  # Prior runs used Firefox default-release cookies for age/geo-restricted videos
+  # Format: "browser" or "browser:profile_directory"
+  # Using just "firefox" will auto-detect the default profile
+  # Or specify exact directory: "firefox:2qpama0f.default-release"
+  cookies_browser: "firefox"
+  # Pacing and retries (legacy pull.sh knobs)
+  sleep_requests: 0
+  sleep_interval: 0
+  sleep_max_interval: 0
+  retries: 5
+  fragment_retries: 5
+  extractor_retries: 3
+  concurrent_fragments: 1
+  # Auto subtitles and transcript naming
+  write_auto_subs: true
+  sub_langs: "en"
+  # Log file for videos with no transcripts found
+  no_transcript_log: "logs/no_transcripts_available.txt"
+
+# --- Analysis Defaults ---
+analysis:
+  # Default capabilities advertised when starting analysis-distributed workers.
+  # Override per-machine via --capabilities if needed.
+  default_capabilities:
+    - qwen2.5:7b-instruct
+    - gpu_8gb

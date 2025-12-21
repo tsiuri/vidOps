@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>HC Run</h2>
+
+<p>
+  <a href="{{ url_for('hc_project_detail', project_id=project_id) }}">← Back to project</a>
+</p>
+
+<h3>Run {{ run.run_id }}</h3>
+<ul>
+  <li>Status: <b>{{ run.status }}</b></li>
+  <li>Created: {{ run.created_at }}</li>
+  <li>Started: {{ run.started_at }}</li>
+  <li>Completed: {{ run.completed_at }}</li>
+  {% if run.error_message %}<li>Error: <code>{{ run.error_message }}</code></li>{% endif %}
+</ul>
+
+<h3>Node Executions</h3>
+<table class="table" style="width:100%; border-collapse: collapse;">
+  <thead>
+    <tr>
+      <th style="text-align:left;">Node</th>
+      <th style="text-align:left;">Type</th>
+      <th style="text-align:left;">Status</th>
+      <th style="text-align:left;">Started</th>
+      <th style="text-align:left;">Completed</th>
+      <th style="text-align:left;">Output</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for e in execs %}
+    <tr>
+      <td>{{ e.node_key }}</td>
+      <td>{{ e.node_type }}</td>
+      <td>{{ e.status }}</td>
+      <td>{{ e.started_at }}</td>
+      <td>{{ e.completed_at }}</td>
+      <td><pre style="white-space:pre-wrap; max-width:520px;">{{ e.output_summary | tojson(indent=2) }}</pre></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}

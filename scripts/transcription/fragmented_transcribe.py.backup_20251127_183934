@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+"""
+fragmented_transcribe.py - Sequential, single-GPU chunked transcription.
+
+Default-on fragmentation to reduce memory/VRAM for very long files. Splits media
+into duration-based chunks with overlap, transcribes sequentially with one
+Whisper model load, and merges outputs to match the standard VidOps format.
+"""
+
+import argparse
+import os
+import sys
+import math
+import shutil
+import subprocess
+import tempfile
+import signal
+import atexit
+from pathlib import Path
+from typing import List, Optional, Tuple, Set
+
+# Local utilities
+SCRIPT_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+from transcribe_common import (  # noqa: E402
+    get_output_base,
+    ensure_src_json,
+    build_initial_prompt,
+    load_corrections,
+    apply_corrections,
+    write_vtt,
+    write_srt,
+    write_words_tsv_faster,
+    write_retry_manifest,
+    make_tslog,
+    probe_duration_seconds,
+    emit_progress,
+)
+
+
+def maybe_reexec_with_nv_venv():
+    """Re-exec into NV_VENV python if available (default ~/transcribe-nv)."""
+    if os.environ.get("FRAG_VENV_ACTIVATED") == "1":
+        return
+    nv_venv = Path(os.environ.get("NV_VENV", str(Path.home() / "transcribe-nv")))
+    py = nv_venv / "bin" / "python"
+    if py.is_file():
+        env = os.environ.copy()
+        env["FRAG_VENV_ACTIVATED"] = "1"
+        os.execvpe(str(py), [str(py), str(Path(__file__))] + sys.argv[1:], env)
+
+
+def load_faster_whisper():
+    """Import faster_whisper or fail with guidance."""
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+        return WhisperModel
+    except ModuleNotFoundError as e:
+        print("[FRAG][ERROR] faster_whisper not installed. Run: ./workspace.sh transcribe --setup-venvs", file=sys.stderr)
+        raise e
+
+
+maybe_reexec_with_nv_venv()
+
+try:
+    import torch
+    torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "16")))
+    torch.set_num_interop_threads(int(os.environ.get("OMP_NUM_THREADS", "16")))
+except ImportError:
+    torch = None
+
+WhisperModel = load_faster_whisper()
+
+
+# Global state for clean quit handling
+_cleanup_state = {
+    "current_lock": None,
+    "current_temp_dir": None,
+    "current_media": None,
+    "quit_requested": False,
+}
+
+
+def _cleanup_on_exit():
+    """Clean up temp directories and locks on exit."""
+    if _cleanup_state["quit_requested"]:
+        return  # Already cleaned up
+
+    if _cleanup_state["current_temp_dir"]:
+        try:
+            shutil.rmtree(_cleanup_state["current_temp_dir"], ignore_errors=True)
+        except Exception:
+            pass
+
+    if _cleanup_state["current_lock"]:
+        try:
+            os.unlink(_cleanup_state["current_lock"])
+        except Exception:
+            pass
+
+
+def _signal_handler(signum, frame):
+    """Handle SIGINT (Ctrl+C) and SIGTERM (kill) for graceful shutdown."""
+    if _cleanup_state["quit_requested"]:
+        return  # Already quitting
+
+    _cleanup_state["quit_requested"] = True
+
+    signame = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
+    current = _cleanup_state["current_media"]
+    media_str = f" (processing: {current})" if current else ""
+
+    print(f"\n[FRAG][QUIT] Received {signame}{media_str}", flush=True)
+    print("[FRAG][QUIT] Cleaning up temp files and locks...", flush=True)
+
+    _cleanup_on_exit()
+
+    print("[FRAG][QUIT] Clean exit.", flush=True)
+    sys.exit(130 if signum == signal.SIGINT else 143)
+
+
+# Register handlers
+atexit.register(_cleanup_on_exit)
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
+
+
+class LightSegment:
+    __slots__ = ["text", "start", "end", "avg_logprob", "no_speech_prob", "compression_ratio", "words"]
+
+    def __init__(self, text: str, start: float, end: float, avg_logprob: float, no_speech_prob: float,
+                 compression_ratio: float, words: Optional[list]):
+        self.text = text
+        self.start = start
+        self.end = end
+        self.avg_logprob = avg_logprob
+        self.no_speech_prob = no_speech_prob
+        self.compression_ratio = compression_ratio
+        self.words = words
+
+
+def determine_model_tag(raw_model_name: str) -> str:
+    override = os.environ.get("MODEL_TAG")
+    if override:
+        model_tag = override
+    else:
+        n = raw_model_name.lower()
+        if "turbo" in n:
+            model_tag = "turbo"
+        elif "medium" in n:
+            model_tag = "medium"
+        elif "small" in n:
+            model_tag = "small"
+        elif "base" in n:
+            model_tag = "base"
+        elif "tiny" in n:
+            model_tag = "tiny"
+        elif "large" in n:
+            model_tag = "large"
+        else:
+            model_tag = raw_model_name
+
+    model_tag_safe = "".join((c if (c.isalnum() or c in ("-", "_", ".")) else "_") for c in model_tag).strip(".")
+    return model_tag_safe
+
+
+def parse_args():
+    # Match legacy defaults (dual_gpu_transcribe.sh uses MODEL=small)
+    default_model = os.environ.get("MODEL", "small")
+    default_lang = os.environ.get("LANGUAGE", "en")
+    default_outfmt = os.environ.get("OUTFMT", "vtt")
+    default_chunk_len = float(os.environ.get("CHUNK_LEN", "3600"))
+    default_chunk_overlap = float(os.environ.get("CHUNK_OVERLAP", "5"))
+    default_tmp = os.environ.get("FRAG_TMPDIR", "")
+
+    parser = argparse.ArgumentParser(
+        description="Sequential chunked transcription (single GPU, one model load)."
+    )
+    parser.add_argument("--model", default=default_model, help="Whisper model (default: %(default)s)")
+    parser.add_argument("--language", default=default_lang, help="Language code (empty for auto, default: %(default)s)")
+    parser.add_argument("--force", action="store_true", help="Re-transcribe even if outputs exist")
+    parser.add_argument("--outfmt", choices=["vtt", "srt", "both"], default=default_outfmt,
+                        help="Caption format (default: %(default)s)")
+    parser.add_argument("--filelist", help="Path to newline-separated file list")
+    parser.add_argument("--ext", help="Space-separated extensions to scan (default: mp4 mkv mov avi mp3 wav m4a opus webm)")
+    parser.add_argument("--chunk-len", type=float, default=default_chunk_len, help="Chunk length in seconds (default: %(default)s)")
+    parser.add_argument("--chunk-overlap", type=float, default=default_chunk_overlap,
+                        help="Chunk overlap in seconds (default: %(default)s)")
+    parser.add_argument("--tmp-dir", default=default_tmp, help="Temp directory for chunks (default: PROJECT_ROOT/tmp/transcribe_chunks or /tmp/vidops_fragments)")
+    return parser.parse_args()
+
+
+def discover_media(project_root: Path, extensions: List[str], filelist: Optional[Path]) -> List[Path]:
+    paths: List[Path] = []
+
+    if filelist:
+        with open(filelist, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                p = Path(line.replace("~", str(Path.home())))
+                if p.is_file():
+                    paths.append(p)
+    else:
+        search_dir = project_root / "pull"
+        if not search_dir.is_dir():
+            search_dir = project_root
+        for ext in extensions:
+            for p in search_dir.rglob(f"*.{ext}"):
+                if p.is_file():
+                    paths.append(p)
+
+    # De-dupe by inode/size
+    seen = set()
+    deduped: List[Path] = []
+    for p in paths:
+        try:
+            stat = p.stat()
+            key = (stat.st_dev, stat.st_ino, stat.st_size)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+        except FileNotFoundError:
+            continue
+
+    return deduped
+
+
+def ensure_tmp_dir(project_root: Path, user_tmp: str) -> Path:
+    if user_tmp:
+        tmp_root = Path(user_tmp)
+    else:
+        tmp_root = project_root / "tmp" / "transcribe_chunks"
+        if not tmp_root.exists():
+            tmp_root = Path("/tmp/vidops_fragments")
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    return tmp_root
+
+
+def chunk_plan(duration: float, chunk_len: float, overlap: float) -> List[Tuple[int, float, float, float, float]]:
+    """Return list of (idx, keep_start, keep_end, clip_start, clip_end)."""
+    plan = []
+    idx = 0
+    keep_start = 0.0
+    while keep_start < duration - 1e-6:
+        keep_end = min(duration, keep_start + chunk_len)
+        clip_start = keep_start if idx == 0 else max(0.0, keep_start - overlap)
+        clip_end = min(duration, keep_end + overlap if keep_end < duration else keep_end)
+        plan.append((idx, keep_start, keep_end, clip_start, clip_end))
+        keep_start = keep_end
+        idx += 1
+    return plan
+
+
+def extract_chunk(media: Path, chunk_path: Path, clip_start: float, clip_end: float) -> bool:
+    duration = max(0.1, clip_end - clip_start)
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-y",
+        "-ss", f"{clip_start:.3f}",
+        "-i", str(media),
+        "-t", f"{duration:.3f}",
+        "-vn",
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "pcm_s16le",
+        str(chunk_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"[FRAG][FAIL] ffmpeg chunk extraction failed for {media} ({clip_start:.1f}-{clip_end:.1f}s): {e}", flush=True)
+        return False
+
+
+def convert_segment(seg, clip_start: float, keep_start: float, keep_end: float) -> Optional[LightSegment]:
+    g_start = clip_start + float(getattr(seg, "start", 0.0))
+    g_end = clip_start + float(getattr(seg, "end", 0.0))
+    if g_end <= keep_start or g_start >= keep_end:
+        return None
+
+    start = max(g_start, keep_start)
+    end = min(g_end, keep_end)
+
+    seg_words = getattr(seg, "words", None)
+    words = []
+    if seg_words:
+        for w in seg_words:
+            w_start = clip_start + float(getattr(w, "start", 0.0))
+            w_end = clip_start + float(getattr(w, "end", 0.0))
+            if w_end <= keep_start or w_start >= keep_end:
+                continue
+            words.append(type("Word", (), {
+                "word": getattr(w, "word", ""),
+                "start": max(w_start, keep_start),
+                "end": min(w_end, keep_end),
+            })())
+
+    ls = LightSegment(
+        text=getattr(seg, "text", "").strip(),
+        start=start,
+        end=end,
+        avg_logprob=float(getattr(seg, "avg_logprob", 0.0)),
+        no_speech_prob=float(getattr(seg, "no_speech_prob", 0.0)),
+        compression_ratio=float(getattr(seg, "compression_ratio", 0.0)),
+        words=words or None,
+    )
+    return ls
+
+
+def transcribe_chunk(
+    model,
+    chunk_path: Path,
+    clip_start: float,
+    keep_start: float,
+    keep_end: float,
+    initial_prompt: Optional[str],
+    vad_filter: bool,
+    lang: Optional[str],
+) -> Tuple[List[LightSegment], float]:
+    next_mark = [0.10]
+    last_end = 0.0
+
+    kwargs_fast = dict(
+        language=lang,
+        vad_filter=vad_filter,
+        initial_prompt=initial_prompt,
+        condition_on_previous_text=False,
+        temperature=0.0,
+        beam_size=1,
+        word_timestamps=True,
+    )
+
+    segments, _info = model.transcribe(str(chunk_path), **kwargs_fast)
+    out: List[LightSegment] = []
+
+    chunk_total = keep_end - keep_start
+    for s in segments:
+        ls = convert_segment(s, clip_start, keep_start, keep_end)
+        if ls is None:
+            continue
+        out.append(ls)
+
+        # Print transcribed text in real-time
+        text = ls.text.strip()
+        if text:
+            print(f"[FRAG][TEXT] {text}", flush=True)
+
+        last_end = max(last_end, ls.end - keep_start)
+        emit_progress("[FRAG][PROG]", last_end, chunk_total, next_mark)
+
+    return out, chunk_total
+
+
+def inline_retry_segments(
+    model,
+    media: Path,
+    segments: List[LightSegment],
+    indices: List[int],
+    lang: Optional[str],
+    vad_filter: bool,
+    initial_prompt: Optional[str],
+) -> Set[int]:
+    retried = set()
+    for idx in indices:
+        seg = segments[idx]
+        start_time = seg.start
+        end_time = seg.end
+        fd, tmpname = tempfile.mkstemp(prefix="frag_retry_", suffix=".wav")
+        os.close(fd)
+        clip_path = Path(tmpname)
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{start_time:.3f}",
+                    "-i", str(media),
+                    "-to", f"{end_time:.3f}",
+                    "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+                    str(clip_path),
+                ],
+                check=True,
+            )
+            kwargs_quality = dict(
+                language=lang,
+                vad_filter=vad_filter,
+                initial_prompt=initial_prompt,
+                condition_on_previous_text=False,
+                temperature=(0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+                beam_size=5,
+                word_timestamps=True,
+                compression_ratio_threshold=2.4,
+                log_prob_threshold=-1.0,
+            )
+            retry_segs, _ = model.transcribe(str(clip_path), **kwargs_quality)
+            retry_list = list(retry_segs)
+            if retry_list:
+                rs = retry_list[0]
+                new_words = []
+                rs_words = getattr(rs, "words", None)
+                if rs_words:
+                    for w in rs_words:
+                        new_words.append(type("Word", (), {
+                            "word": getattr(w, "word", ""),
+                            "start": start_time + float(getattr(w, "start", 0.0)),
+                            "end": start_time + float(getattr(w, "end", 0.0)),
+                        })())
+                segments[idx] = LightSegment(
+                    text=getattr(rs, "text", "").strip(),
+                    start=start_time + float(getattr(rs, "start", 0.0)),
+                    end=start_time + float(getattr(rs, "end", 0.0)),
+                    avg_logprob=float(getattr(rs, "avg_logprob", 0.0)),
+                    no_speech_prob=float(getattr(rs, "no_speech_prob", 0.0)),
+                    compression_ratio=float(getattr(rs, "compression_ratio", 0.0)),
+                    words=new_words or segments[idx].words,
+                )
+                retried.add(idx)
+        except Exception as e:
+            print(f"[FRAG][RETRY] segment {idx} failed: {e}", flush=True)
+        finally:
+            try:
+                clip_path.unlink()
+            except Exception:
+                pass
+    return retried
+
+
+def process_file(
+    media: Path,
+    model,
+    model_tag: str,
+    lang: Optional[str],
+    force: bool,
+    outfmt: str,
+    chunk_len: float,
+    overlap: float,
+    tmp_root: Path,
+    initial_prompt: Optional[str],
+    corrections,
+) -> None:
+    base = get_output_base(media)
+    # Tagged filenames
+    tag = model_tag
+    txt_suffix = f".{tag}.txt" if tag else ".txt"
+    vtt_suffix = f".{tag}.vtt" if tag else ".vtt"
+    srt_suffix = f".{tag}.srt" if tag else ".srt"
+    tslog_suffix = f".{tag}.tslog.txt" if tag else ".tslog.txt"
+
+    out_txt = base.with_suffix(txt_suffix)
+    do_vtt = outfmt in ("vtt", "both")
+    do_srt = outfmt in ("srt", "both")
+    out_vtt = base.with_suffix(vtt_suffix) if do_vtt else None
+    out_srt = base.with_suffix(srt_suffix) if do_srt else None
+    lock = base.with_suffix(".transcribing.lock")
+    success_marker = base.with_suffix(".transcribed")
+
+    if success_marker.exists() and not force:
+        print(f"[FRAG][SKIP]{media} (already transcribed)", flush=True)
+        return
+    if out_txt.exists() and not force:
+        print(f"[FRAG][SKIP]{media} (txt exists)", flush=True)
+        return
+
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+    except FileExistsError:
+        print(f"[FRAG][LOCK]{media} (held elsewhere) — skipping", flush=True)
+        return
+
+    # Track lock and media for clean quit handling
+    _cleanup_state["current_lock"] = lock
+    _cleanup_state["current_media"] = media
+
+    media_base = media.with_suffix("")
+    ensure_src_json(media, media_base)
+
+    total = probe_duration_seconds(media)
+    if not total or total <= 0:
+        print(f"[FRAG][FAIL]{media} duration not found", flush=True)
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
+        return
+
+    print(f"[FRAG][RUN ]{media} duration={total:.1f}s", flush=True)
+    plan = chunk_plan(total, chunk_len, overlap)
+    if not plan:
+        print(f"[FRAG][WARN]{media} produced no chunk plan", flush=True)
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
+        return
+
+    file_tmp = tmp_root / media.stem
+    file_tmp.mkdir(parents=True, exist_ok=True)
+
+    # Track temp directory for clean quit handling
+    _cleanup_state["current_temp_dir"] = file_tmp
+
+    vad_filter = os.environ.get("NV_VAD_FILTER", "1") == "1"
+    compute = os.environ.get("NV_COMPUTE", "float16")
+    confidence_threshold = float(os.environ.get("NV_CONFIDENCE_THRESHOLD", "-0.7"))
+    inline_retry = int(os.environ.get("INLINE_RETRY", "0"))
+    min_ts_interval = int(os.environ.get("MIN_TS_INTERVAL", "10"))
+
+    all_segments: List[LightSegment] = []
+    low_conf_indices: List[int] = []
+    total_chunks = len(plan)
+
+    for chunk_num, (idx, keep_start, keep_end, clip_start, clip_end) in enumerate(plan, 1):
+        # Check for quit request at start of each chunk
+        if _cleanup_state["quit_requested"]:
+            print(f"[FRAG][QUIT] Stopping at chunk {chunk_num} of {total_chunks}", flush=True)
+            return
+
+        chunk_path = file_tmp / f"{media.stem}.chunk{idx:04d}.wav"
+        if not extract_chunk(media, chunk_path, clip_start, clip_end):
+            continue
+
+        print(f"[FRAG {chunk_num} of {total_chunks}][CHUNK]{idx} {keep_start:.1f}-{keep_end:.1f}s (clip {clip_start:.1f}-{clip_end:.1f}s)", flush=True)
+        segs, _chunk_total = transcribe_chunk(
+            model, chunk_path, clip_start, keep_start, keep_end, initial_prompt, vad_filter, lang
+        )
+
+        # Append and track low confidence
+        for local_idx, seg in enumerate(segs):
+            global_idx = len(all_segments)
+            all_segments.append(seg)
+            if seg.avg_logprob < confidence_threshold:
+                low_conf_indices.append(global_idx)
+
+        if not int(os.environ.get("KEEP_FRAGMENTS", "0")):
+            try:
+                chunk_path.unlink()
+            except Exception:
+                pass
+
+    if not all_segments:
+        print(f"[FRAG][FAIL]{media} produced no segments", flush=True)
+        try:
+            os.unlink(lock)
+        except Exception:
+            pass
+        return
+
+    retried_set: Set[int] = set()
+    if low_conf_indices and inline_retry:
+        retried_set = inline_retry_segments(model, media, all_segments, low_conf_indices, lang, vad_filter, initial_prompt)
+        # Re-evaluate low_conf after inline retry (keep for manifest if still low)
+        low_conf_indices = [i for i, s in enumerate(all_segments) if s.avg_logprob < confidence_threshold]
+
+    # Write outputs
+    with open(out_txt, "w", encoding="utf-8") as f:
+        for s in all_segments:
+            t = s.text.strip()
+            if t:
+                f.write(apply_corrections(t, corrections) + "\n")
+
+    write_words_tsv_faster(base, all_segments, retried_set, "[FRAG]")
+    if tag:
+        try:
+            old_words = base.with_suffix(".words.tsv")
+            new_words = base.with_suffix(f".{tag}.words.tsv")
+            if old_words.exists():
+                old_words.rename(new_words)
+        except Exception as e:
+            print(f"[FRAG][WARN] failed to retag words.tsv with model: {e}", flush=True)
+
+    cap = None
+    if do_vtt:
+        write_vtt(all_segments, out_vtt, retried_set)
+        cap = out_vtt
+    if do_srt:
+        write_srt(all_segments, out_srt)
+        cap = cap or out_srt
+    if cap:
+        make_tslog(cap, base.with_suffix(tslog_suffix), min_ts_interval)
+
+    if low_conf_indices and not inline_retry:
+        write_retry_manifest(base, media, all_segments, low_conf_indices, confidence_threshold, "[FRAG]")
+
+    success_marker.touch()
+    print(f"[FRAG][DONE]{media}", flush=True)
+
+    if not int(os.environ.get("KEEP_FRAGMENTS", "0")):
+        try:
+            shutil.rmtree(file_tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+    try:
+        os.unlink(lock)
+    except Exception:
+        pass
+
+    # Clear cleanup state after successful processing
+    _cleanup_state["current_lock"] = None
+    _cleanup_state["current_temp_dir"] = None
+    _cleanup_state["current_media"] = None
+
+
+def main():
+    args = parse_args()
+    project_root = Path(os.environ.get("PROJECT_ROOT", "."))
+    extensions = args.ext.split() if args.ext else ["mp4", "mkv", "mov", "avi", "mp3", "wav", "m4a", "opus", "webm"]
+
+    lang = args.language or None
+    tmp_root = ensure_tmp_dir(project_root, args.tmp_dir)
+    initial_prompt = build_initial_prompt()
+    corrections = load_corrections()
+    model_tag = determine_model_tag(args.model)
+
+    # Select device
+    # Device selection: default to CUDA; allow opt-out with FORCE_CPU=1
+    device = "cuda"
+    if os.environ.get("FORCE_CPU", "0") == "1":
+        device = "cpu"
+
+    compute = os.environ.get("NV_COMPUTE", "float16" if device == "cuda" else "int8_float32")
+    gpu_threads = int(os.environ.get("GPU_THREADS", os.environ.get("OMP_NUM_THREADS", "16")))
+
+    print(f"[FRAG] Model={args.model} device={device} compute={compute} chunk_len={args.chunk_len}s overlap={args.chunk_overlap}s", flush=True)
+
+    model = WhisperModel(args.model, device=device, compute_type=compute, num_workers=gpu_threads)
+
+    media_list = discover_media(project_root, extensions, Path(args.filelist) if args.filelist else None)
+    if not media_list:
+        print("[FRAG] No media files found.", flush=True)
+        return
+
+    for media in media_list:
+        # Check for quit request before processing next file
+        if _cleanup_state["quit_requested"]:
+            print("[FRAG][QUIT] Stopping batch processing.", flush=True)
+            break
+
+        process_file(
+            media,
+            model,
+            model_tag,
+            lang,
+            args.force,
+            args.outfmt,
+            args.chunk_len,
+            args.chunk_overlap,
+            tmp_root,
+            initial_prompt,
+            corrections,
+        )
+
+
+if __name__ == "__main__":
+    main()

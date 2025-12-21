@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs Browser{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <h1 class="mb-4">Jobs Browser</h1>
+
+    <!-- Filters -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Filters</h5>
+        </div>
+        <div class="card-body">
+            <form method="GET" class="row g-3">
+                <div class="col-md-2">
+                    <label for="status" class="form-label">Status</label>
+                    <select id="status" name="status" class="form-select">
+                        <option value="all" {% if status_filter == 'all' %}selected{% endif %}>All</option>
+                        <option value="PENDING" {% if status_filter == 'PENDING' %}selected{% endif %}>Pending</option>
+                        <option value="CLAIMED" {% if status_filter == 'CLAIMED' %}selected{% endif %}>Claimed</option>
+                        <option value="RUNNING" {% if status_filter == 'RUNNING' %}selected{% endif %}>Running</option>
+                        <option value="COMPLETED" {% if status_filter == 'COMPLETED' %}selected{% endif %}>Completed</option>
+                        <option value="FAILED" {% if status_filter == 'FAILED' %}selected{% endif %}>Failed</option>
+                        <option value="CANCELLED" {% if status_filter == 'CANCELLED' %}selected{% endif %}>Cancelled</option>
+                    </select>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="job_type" class="form-label">Job Type</label>
+                    <select id="job_type" name="job_type" class="form-select">
+                        <option value="all" {% if job_type_filter == 'all' %}selected{% endif %}>All</option>
+                        <option value="download" {% if job_type_filter == 'download' %}selected{% endif %}>Download</option>
+                        <option value="transcription" {% if job_type_filter == 'transcription' %}selected{% endif %}>Transcription</option>
+                        <option value="diarization" {% if job_type_filter == 'diarization' %}selected{% endif %}>Diarization</option>
+                        <option value="clips" {% if job_type_filter == 'clips' %}selected{% endif %}>Clips</option>
+                        <option value="analysis-distributed" {% if job_type_filter == 'analysis-distributed' %}selected{% endif %}>Analysis</option>
+                    </select>
+                </div>
+
+                <div class="col-md-3">
+                    <label for="ytid" class="form-label">Video ID (partial match)</label>
+                    <input type="text" id="ytid" name="ytid" class="form-control" value="{{ ytid_filter }}" placeholder="Enter video ID...">
+                </div>
+
+                <div class="col-md-3">
+                    <label for="q" class="form-label">Search (job id, ytid, worker, error)</label>
+                    <input type="text" id="q" name="q" class="form-control" value="{{ q_filter or '' }}" placeholder="Free text search...">
+                </div>
+
+                <div class="col-md-2">
+                    <label for="sort" class="form-label">Sort By</label>
+                    <select id="sort" name="sort" class="form-select">
+                        <option value="created_at" {% if sort_by == 'created_at' %}selected{% endif %}>Created</option>
+                        <option value="updated_at" {% if sort_by == 'updated_at' %}selected{% endif %}>Updated</option>
+                        <option value="status" {% if sort_by == 'status' %}selected{% endif %}>Status</option>
+                        <option value="priority" {% if sort_by == 'priority' %}selected{% endif %}>Priority</option>
+                        <option value="ytid" {% if sort_by == 'ytid' %}selected{% endif %}>Video</option>
+                        <option value="claimed_by" {% if sort_by == 'claimed_by' %}selected{% endif %}>Worker</option>
+                    </select>
+                </div>
+
+                <div class="col-md-2">
+                    <label for="dir" class="form-label">Direction</label>
+                    <select id="dir" name="dir" class="form-select">
+                        <option value="DESC" {% if sort_dir == 'DESC' %}selected{% endif %}>Descending</option>
+                        <option value="ASC" {% if sort_dir == 'ASC' %}selected{% endif %}>Ascending</option>
+                    </select>
+                </div>
+
+                <div class="col-md-1 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100">Filter</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Results Summary -->
+    <div class="alert alert-info">
+        Showing <strong>{{ jobs|length }}</strong> jobs (Total: <strong>{{ total_count }}</strong>)
+    </div>
+
+    <!-- Jobs Table -->
+    <div class="table-responsive">
+        <table class="table table-striped table-hover align-middle">
+            <thead class="table-dark">
+                <tr>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='job_id', dir='ASC' if sort_by!='job_id' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Job ID</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='job_type', dir='ASC' if sort_by!='job_type' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Type</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='status', dir='ASC' if sort_by!='status' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Status</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='ytid', dir='ASC' if sort_by!='ytid' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Video ID</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='priority', dir='ASC' if sort_by!='priority' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Priority</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='claimed_by', dir='ASC' if sort_by!='claimed_by' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Worker</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='created_at', dir='ASC' if sort_by!='created_at' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Created</a></th>
+                    <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='updated_at', dir='ASC' if sort_by!='updated_at' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Updated</a></th>
+                    <th style="font-size: 0.95rem;">Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if jobs %}
+                    {% for job in jobs %}
+                    <tr style="border-bottom: 1px solid #dee2e6; padding: 0.75rem 0;">
+                        <td>
+                            <code style="font-size: 0.9em; cursor: help;" title="{{ job.job_id }}">
+                                {{ job.job_id[:16] }}
+                            </code>
+                        </td>
+                        <td>
+                            <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ job.job_type }}</span>
+                        </td>
+                        <td>
+                            {% if job.status == 'COMPLETED' %}
+                                <span class="badge bg-success" style="font-size: 0.85rem;">{{ job.status }}</span>
+                            {% elif job.status == 'RUNNING' %}
+                                <span class="badge bg-primary" style="font-size: 0.85rem;">{{ job.status }}</span>
+                            {% elif job.status == 'CLAIMED' %}
+                                <span class="badge bg-info" style="font-size: 0.85rem;">{{ job.status }}</span>
+                            {% elif job.status == 'FAILED' %}
+                                <span class="badge bg-danger" style="font-size: 0.85rem;">{{ job.status }}</span>
+                            {% elif job.status == 'PENDING' %}
+                                <span class="badge bg-warning text-dark" style="font-size: 0.85rem;">{{ job.status }}</span>
+                            {% else %}
+                                <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ job.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if job.ytid %}
+                                <a href="{{ url_for('video_detail_page', ytid=job.ytid) }}" class="text-decoration-none" style="font-weight: 600; display:block;">
+                                    {{ job.ytid }}
+                                </a>
+                                {% if job.title %}
+                                  <div class="text-muted" style="font-size:0.85em;">{{ job.title }}</div>
+                                {% endif %}
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <form method="POST" action="{{ url_for('update_job_priority', job_id=job.job_id) }}" class="d-flex align-items-center" style="gap:6px;">
+                                <input type="number" name="priority" value="{{ job.priority }}" min="-1000" max="1000" class="form-control form-control-sm" style="width:90px;">
+                                <button type="submit" class="btn btn-sm btn-outline-primary">Update</button>
+                            </form>
+                        </td>
+                        <td>
+                            {% if job.claimed_by %}
+                                <span style="font-size: 0.9rem;">{{ job.claimed_by }}</span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-size: 0.9rem;">
+                            {{ job.created_at.strftime('%m-%d %H:%M:%S') if job.created_at else '-' }}
+                        </td>
+                        <td style="font-size: 0.9rem;">
+                            {{ job.updated_at.strftime('%m-%d %H:%M:%S') if job.updated_at else '-' }}
+                        </td>
+                        <td>
+                            {% if job.error_message %}
+                                <span class="text-danger" style="font-size: 0.85rem; cursor: help;" title="{{ job.error_message }}">
+                                    {{ job.error_message[:40] }}{% if job.error_message|length > 40 %}...{% endif %}
+                                </span>
+                            {% else %}
+                                <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                <tr>
+                    <td colspan="9" class="text-center text-muted py-4">
+                        No jobs found
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Pagination Info -->
+    <div class="alert alert-secondary small mt-3">
+        <strong>Limit:</strong> {{ limit }} jobs per page |
+        <strong>Total in database:</strong> {{ total_count }} jobs
+    </div>
+</div>
+
+<style>
+    .text-monospace {
+        font-family: 'Courier New', monospace;
+    }
+
+    .table {
+        font-size: 0.95rem;
+        margin-bottom: 0;
+    }
+
+    .table thead th {
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        vertical-align: middle;
+    }
+
+    .table tbody td {
+        padding: 0.75rem 0.5rem;
+        vertical-align: middle;
+    }
+
+    .table-hover tbody tr:hover {
+        background-color: #f0f7ff;
+    }
+
+    .table-striped > tbody > tr:nth-of-type(odd) {
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+
+    code {
+        background-color: #f5f5f5;
+        padding: 2px 6px;
+        border-radius: 3px;
+        color: #d63384;
+    }
+</style>
+{% endblock %}

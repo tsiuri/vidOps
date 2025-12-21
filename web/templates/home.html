@@ -1,0 +1,250 @@
+{% extends 'base.html' %}
+{% block title %}Transcript Analysis Browser{% endblock %}
+{% block nav_home %}active{% endblock %}
+{% block head %}
+<style>
+  .stats-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-bottom:24px; }
+  .stat-card .label { color:#7f8c8d; }
+  .stat-card .value { font-size:2rem; color:#3498db; font-weight:700; }
+  .search-section { margin-top: 10px; }
+  .tabs { display:flex; gap:8px; border-bottom:2px solid #ecf0f1; margin-bottom:12px; flex-wrap: wrap; }
+  .tab-btn { padding:8px 12px; border:none; background:none; cursor:pointer; color:#7f8c8d; border-bottom:3px solid transparent; }
+  .tab-btn.active { color:#3498db; border-bottom-color:#3498db; }
+  .tab { display:none; }
+  .tab.active { display:block; }
+  .controls { display:flex; gap:8px; margin: 8px 0 14px; }
+  input[type=text], input[type=number] { flex: 1; padding:10px; border:1px solid #ddd; border-radius:4px; }
+  button.primary { padding:10px 14px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  button.primary:hover { background:#2980b9; }
+  .result { background:#fff; padding:16px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,.08); border-left:4px solid #3498db; margin-bottom:12px; }
+  .muted { color:#7f8c8d; }
+  .top { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+  .top .card h3 { margin-top:0; }
+  .badge { display:inline-block; padding:4px 10px; background:#eef5fd; color:#1976d2; border-radius:12px; font-size:.85rem; }
+  .hotlinks { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+  .hotlinks a { padding:10px 14px; background:#2c3e50; color:#ecf0f1; border-radius:999px; font-weight:600; display:inline-flex; align-items:center; gap:8px; text-decoration:none; }
+  .hotlinks a.secondary { background:#455a64; }
+  .hotlinks a:hover { opacity:0.9; text-decoration:none; }
+  .no-results { text-align:center; color:#95a5a6; padding:20px; }
+  .loading { text-align:center; color:#95a5a6; padding:20px; }
+  code.k { background:#f0f3f7; padding:2px 6px; border-radius:4px; }
+</style>
+<script>
+  function switchTab(id){
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.getElementById('btn-'+id).classList.add('active');
+    document.getElementById('tab-'+id).classList.add('active');
+    document.getElementById('results').innerHTML='';
+  }
+  function showLoading(){ document.getElementById('results').innerHTML = '<div class="loading">Loading…</div>'; }
+  function truncate(s, n){ if (!s) return ''; const t = String(s); return t.length>n ? t.slice(0,n).trim()+"…" : t; }
+  function showResults(data){
+    const el = document.getElementById('results');
+    if (!data || data.length === 0){ el.innerHTML = '<div class="no-results">No results</div>'; return; }
+    let html = `<div class="muted" style="margin:6px 0 12px">Found ${data.length} result(s)</div>`;
+    data.forEach(item => {
+      const date = item.video_date || '';
+      // Video-level card if TLDR present; else segment-level card
+      if (typeof item.tldr_one_sentence !== 'undefined' || typeof item.summary_paragraph !== 'undefined') {
+        const dsent = item.dominant_sentiment ? `<span class=\"badge\">${escapeHtml(item.dominant_sentiment)}</span>` : '';
+        html += `
+          <div class="result">
+            <div style="display:flex; justify-content:space-between; gap:12px;">
+              <div style="font-weight:600; color:#2c3e50;"><a href="/video/${item.ytid}">${escapeHtml(item.video_title || 'Untitled')}</a></div>
+              <div class="muted">${date}</div>
+            </div>
+            <div class="muted" style="margin:6px 0 8px">Video ID: ${item.ytid} ${dsent} • Batch ${item.batch_id ?? ''} • Type ${escapeHtml(item.analysis_type || 'normal')}</div>
+            ${item.tldr_one_sentence ? `<div><strong>TLDR:</strong> ${escapeHtml(truncate(item.tldr_one_sentence, 220))}</div>` : ''}
+            ${item.summary_paragraph ? `<div style=\"margin-top:6px;\"><strong>Summary:</strong> ${escapeHtml(truncate(item.summary_paragraph, 600))}</div>` : ''}
+            ${item.political_overview ? `<div style=\"margin-top:6px;\"><strong>Political:</strong> ${escapeHtml(truncate(item.political_overview, 600))}</div>` : ''}
+            ${item.controversies ? `<div style=\"margin-top:6px;\"><strong>Controversies:</strong> ${escapeHtml(truncate(item.controversies, 600))}</div>` : ''}
+            ${Array.isArray(item.issues) && item.issues.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Issues:</strong> ${escapeHtml(item.issues.join(', '))}</div>` : ''}
+            ${Array.isArray(item.noteworthy_statements) && item.noteworthy_statements.length ? `<div style=\"margin-top:6px;\"><strong>Noteworthy:</strong> ${escapeHtml(truncate(item.noteworthy_statements.join(' | '), 600))}</div>` : ''}
+            ${Array.isArray(item.personal_conflicts) && item.personal_conflicts.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Conflicts:</strong> ${escapeHtml(item.personal_conflicts.join(', '))}</div>` : ''}
+            ${item.speaker_overview ? `<div style=\"margin-top:6px;\"><strong>Speaker:</strong> ${escapeHtml(truncate(item.speaker_overview, 600))}</div>` : ''}
+            ${Array.isArray(item.personal_themes) && item.personal_themes.length ? `<div class=\"muted\" style=\"margin-top:6px;\"><strong>Themes:</strong> ${escapeHtml(item.personal_themes.join(', '))}</div>` : ''}
+          </div>`;
+      } else {
+        const sentiment = item.sentiment ? `<span class="badge">${escapeHtml(item.sentiment)}</span>` : '';
+        html += `
+          <div class="result">
+            <div style="display:flex; justify-content:space-between; gap:12px;">
+              <div style="font-weight:600; color:#2c3e50;">${escapeHtml(item.video_title || 'Untitled')}</div>
+              <div class="muted">${date}</div>
+            </div>
+            <div class="muted" style="margin:6px 0 8px">Video ID: ${item.ytid} · Chunk ${item.chunk_id ?? ''} ${sentiment}</div>
+            <div>${escapeHtml(item.summary || '')}</div>
+          </div>`;
+      }
+    });
+    el.innerHTML = html;
+  }
+  async function searchFulltext(){
+    const q = document.getElementById('fulltext-q').value.trim();
+    const limit = document.getElementById('fulltext-limit').value || 50;
+    if (!q) { alert('Enter a query'); return; }
+    showLoading();
+    const res = await fetch(`/api/search/fulltext?q=${encodeURIComponent(q)}&limit=${limit}`);
+    const data = await res.json();
+    showResults(data);
+  }
+  async function searchTopic(){
+    const q = document.getElementById('topic-q').value.trim();
+    const limit = document.getElementById('topic-limit').value || 50;
+    if (!q) { alert('Enter a topic'); return; }
+    showLoading();
+    const res = await fetch(`/api/search/topic?q=${encodeURIComponent(q)}&limit=${limit}`);
+    const data = await res.json();
+    showResults(data);
+  }
+  async function searchPerson(){
+    const q = document.getElementById('person-q').value.trim();
+    const limit = document.getElementById('person-limit').value || 50;
+    if (!q) { alert('Enter a name'); return; }
+    showLoading();
+    const res = await fetch(`/api/search/person?q=${encodeURIComponent(q)}&limit=${limit}`);
+    const data = await res.json();
+    showResults(data);
+  }
+  function showError(err){
+    const msg = (err && err.message) ? err.message : String(err || 'Unknown error');
+    document.getElementById('results').innerHTML = `<div class="no-results">Error: ${escapeHtml(msg)}</div>`;
+  }
+  async function browseRecent(){
+    const limit = document.getElementById('browse-limit').value || 20;
+    showLoading();
+    try {
+      const res = await fetch(`/api/browse/recent?limit=${limit}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      showResults(data);
+    } catch (e){ showError(e); }
+  }
+  async function browseVideos(){
+    const limit = document.getElementById('videos-limit').value || 20;
+    showLoading();
+    try {
+      const res = await fetch(`/api/browse/videos?limit=${limit}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      showResults(data);
+    } catch (e){ showError(e); }
+  }
+  // Auto-load recent results on first load
+  window.addEventListener('DOMContentLoaded', () => {
+    try { switchTab('videos'); } catch (e) {}
+    try { browseVideos(); } catch (e) {}
+  });
+</script>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="margin-bottom:18px;">
+    <div style="display:flex; justify-content:space-between; align-items:end; gap:12px;">
+      <div>
+        <h2 style="margin:0 0 4px 0;">Transcript Analysis Browser</h2>
+        <div class="muted">Search AI summaries, topics, and people</div>
+      </div>
+      <div class="muted">DB: {{ (config.DB_NAME or 'transcripts') if config else '' }}</div>
+    </div>
+    <div class="hotlinks">
+      <a href="/analysis-configs">Analysis Configs →</a>
+      <a class="secondary" href="/dbsearch">DB Search →</a>
+      <a class="secondary" href="/videos">Videos Table →</a>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="card stat-card"><div class="label">Videos (analyzed)</div><div class="value">{{ stats.total_videos }}</div></div>
+    <div class="card stat-card"><div class="label">Segments</div><div class="value">{{ stats.total_segments }}</div></div>
+    <div class="card stat-card"><div class="label">Unique People</div><div class="value">{{ stats.unique_people }}</div></div>
+    <div class="card stat-card"><div class="label">Unique Topics</div><div class="value">{{ stats.unique_topics }}</div></div>
+  </div>
+
+  <div class="card search-section">
+    <div class="tabs">
+      <button id="btn-fulltext" class="tab-btn active" onclick="switchTab('fulltext')">Full‑text</button>
+      <button id="btn-topic" class="tab-btn" onclick="switchTab('topic')">Topic</button>
+      <button id="btn-person" class="tab-btn" onclick="switchTab('person')">Person</button>
+      <button id="btn-videos" class="tab-btn" onclick="switchTab('videos')">Videos</button>
+      <button id="btn-browse" class="tab-btn" onclick="switchTab('browse')">Segments</button>
+    </div>
+
+    <div id="tab-fulltext" class="tab active">
+      <div class="controls">
+        <input id="fulltext-q" type="text" placeholder="Search summaries (e.g., ukraine)" />
+        <input id="fulltext-limit" type="number" value="50" min="1" max="200" />
+        <button class="primary" onclick="searchFulltext()">Search</button>
+      </div>
+    </div>
+
+    <div id="tab-topic" class="tab">
+      <div class="controls">
+        <input id="topic-q" type="text" placeholder="Topic (e.g., palestine)" />
+        <input id="topic-limit" type="number" value="50" min="1" max="200" />
+        <button class="primary" onclick="searchTopic()">Search</button>
+      </div>
+    </div>
+
+    <div id="tab-person" class="tab">
+      <div class="controls">
+        <input id="person-q" type="text" placeholder="Person (e.g., trump)" />
+        <input id="person-limit" type="number" value="50" min="1" max="200" />
+        <button class="primary" onclick="searchPerson()">Search</button>
+      </div>
+    </div>
+
+    <div id="tab-videos" class="tab">
+      <div class="controls">
+        <label class="muted" for="videos-limit">Limit</label>
+        <input id="videos-limit" type="number" value="20" min="1" max="100" />
+        <button class="primary" onclick="browseVideos()">Browse analyzed videos</button>
+      </div>
+    </div>
+
+    <div id="tab-browse" class="tab">
+      <div class="controls">
+        <label class="muted" for="browse-limit">Limit</label>
+        <input id="browse-limit" type="number" value="20" min="1" max="100" />
+        <button class="primary" onclick="browseRecent()">Browse recent</button>
+      </div>
+    </div>
+
+    <div id="results" style="margin-top:10px"></div>
+  </div>
+
+  <div class="top" style="margin-top:16px;">
+    <div class="card">
+      <h3>Top People</h3>
+      <div class="muted" style="margin-bottom:8px;">Across analyzed videos</div>
+      <div>
+        {% if top_people %}
+          <ul style="margin:0; padding-left:18px;">
+          {% for p in top_people %}
+            <li><strong>{{ p.person }}</strong> — {{ p.total_mentions }} mentions ({{ p.videos_mentioned }} videos)</li>
+          {% endfor %}
+          </ul>
+        {% else %}
+          <div class="muted">No data yet.</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Top Topics</h3>
+      <div class="muted" style="margin-bottom:8px;">Across analyzed videos</div>
+      <div>
+        {% if top_topics %}
+          <ul style="margin:0; padding-left:18px;">
+          {% for t in top_topics %}
+            <li><strong>{{ t.topic }}</strong> — {{ t.total_occurrences }} occurrences ({{ t.videos_discussed }} videos)</li>
+          {% endfor %}
+          </ul>
+        {% else %}
+          <div class="muted">No data yet.</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

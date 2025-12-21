@@ -1,0 +1,18 @@
+{
+  "targets": [
+    {
+      "name": "conflict",
+      "prompt": "Identify disputes/conflicts: parties, nature, stakes, sentiment/polarity toward each, start/end anchor text or timing hints.",
+      "type": "span",
+      "category": "conflict",
+      "keywords": ["argue", "disagree", "fight", "conflict", "tension"]
+    },
+    {
+      "name": "politics",
+      "prompt": "Identify political topics/issues, related names/orgs, stance/polarity, start/end anchor text or timing hints, and overall mood.",
+      "type": "span",
+      "category": "politics",
+      "keywords": ["election", "policy", "government", "senate", "congress", "gaza", "war"]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# Example worker-side config for VidOps using HTTPS storage broker
+
+paths:
+  # Local temp/cache; worker writes working files here
+  local_temp_dir: "tmp"
+
+workers:
+  # Unique per machine; used for logs and optional per-worker tokens
+  machine_alias: "worker-gpu-01"
+
+storage_broker:
+  enabled: true
+  # Use a hostname that matches the proxy cert's SAN, e.g. broker.internal
+  base_url: https://broker.internal:8443
+  shared_token: "worker-gpu-01-secret"
+  request_timeout: 60
+  # Trust chain for HTTPS (no -k). For self-signed, point to the server's cert or your internal CA bundle.
+  # mtls_ca_cert:     "/etc/vidops/certs/broker-ca.pem"
+  # Optional mTLS (if proxy requires client certs)
+  # mtls_client_cert: "/etc/vidops/certs/worker-gpu-01.crt"
+  # mtls_client_key:  "/etc/vidops/certs/worker-gpu-01.key"

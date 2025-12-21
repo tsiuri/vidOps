@@ -1,0 +1,26 @@
+# Example server-side config for VidOps with storage broker over HTTPS via reverse proxy
+
+database:
+  host: "192.168.0.187"
+  port: 5432
+  name: "transcripts"
+  user: "billie"
+  password: "z"
+
+paths:
+  central_storage_root: "/mnt/13tb_sas/vidops/storage"
+  local_temp_dir: "tmp"
+
+workers:
+  machine_alias: "mothership-arch"
+
+storage_broker:
+  enabled: true
+  # Broker binds to localhost; reverse proxy terminates TLS on internal IP
+  listen_host: 127.0.0.1
+  listen_port: 8443
+  # Server process does not need base_url; left here for completeness
+  base_url: https://broker.internal:8443
+  # Single shared token (or map); rotate periodically
+  shared_token: "choose-a-random-secret"
+  request_timeout: 60

@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}HC Clip Detail{% endblock %}
+{% block nav_hc %}active{% endblock %}
+
+{% block head %}
+<style>
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; }
+  .muted { color:#666; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.85rem; }
+  .pill.green { background:#dff3e3; }
+  .pill.red { background:#f7d7d7; }
+  .pill.gray { background:#eee; }
+  code { background:#f2f2f2; padding:1px 4px; border-radius:4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+    <div>
+      <h2 style="margin:0 0 6px 0;">Clip</h2>
+      <div class="muted"><a href="/hc/projects/{{ project.project_id }}">{{ project.name }}</a> / <a href="/hc/projects/{{ project.project_id }}/clips">clips</a></div>
+    </div>
+    <div style="text-align:right;">
+      {% if clip.validity_status == 'invalid' %}
+        <span class="pill red">invalid</span>
+      {% else %}
+        <span class="pill green">valid</span>
+      {% endif %}
+      <span class="pill gray">{{ clip.status }}</span>
+    </div>
+  </div>
+
+  <div style="margin-top:12px;">
+    <table>
+      <tr><th style="width:220px;">clip_id</th><td><code>{{ clip.clip_id }}</code></td></tr>
+      <tr><th>logical_id</th><td><code>{{ clip.clip_logical_id }}</code></td></tr>
+      <tr><th>version</th><td>{{ clip.clip_version }}</td></tr>
+      <tr><th>label</th><td>{{ clip.label or '' }}</td></tr>
+      <tr><th>ytid</th><td>{{ clip.ytid or '' }}</td></tr>
+      <tr><th>range</th><td>{{ "%.3f"|format(clip.start_sec|float) }} → {{ "%.3f"|format(clip.end_sec|float) }}</td></tr>
+      <tr><th>profile</th><td>{{ clip.profile_name or '' }} v{{ clip.profile_version or '' }}</td></tr>
+      <tr><th>hit_id</th>
+          <td>
+            {% if clip.hit_id %}
+              <a href="/hc/hits/{{ clip.hit_id }}"><code>{{ clip.hit_id }}</code></a>
+            {% else %}
+              <span class="muted">(none)</span>
+            {% endif %}
+          </td></tr>
+      <tr><th>asset_path</th><td><code>{{ clip.asset_path or '' }}</code></td></tr>
+      <tr><th>render_error</th><td><pre style="white-space:pre-wrap; margin:0;">{{ clip.render_error or '' }}</pre></td></tr>
+      <tr><th>created_at</th><td>{{ clip.created_at }}</td></tr>
+      <tr><th>updated_at</th><td>{{ clip.updated_at }}</td></tr>
+      <tr><th>invalidated_at</th><td>{{ clip.invalidated_at or '' }}</td></tr>
+      <tr><th>invalidation_reason</th><td>{{ clip.invalidation_reason or '' }}</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0;">Clip version lineage</h3>
+  <table>
+    <tr>
+      <th>version</th>
+      <th>clip_id</th>
+      <th>status</th>
+      <th>validity</th>
+      <th>created_at</th>
+      <th>asset_path</th>
+    </tr>
+    {% for v in versions %}
+    <tr>
+      <td>{{ v.clip_version }}</td>
+      <td>
+        {% if v.clip_id == clip.clip_id %}
+          <strong><code>{{ v.clip_id }}</code></strong>
+        {% else %}
+          <a href="/hc/clips/{{ v.clip_id }}"><code>{{ v.clip_id }}</code></a>
+        {% endif %}
+      </td>
+      <td>{{ v.status }}</td>
+      <td>{{ v.validity_status }}</td>
+      <td>{{ v.created_at }}</td>
+      <td><code>{{ v.asset_path or '' }}</code></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0;">Audit events</h3>
+  <table>
+    <tr>
+      <th>created_at</th>
+      <th>event_type</th>
+      <th>from</th>
+      <th>to</th>
+      <th>actor</th>
+      <th>reason</th>
+    </tr>
+    {% for e in events %}
+    <tr>
+      <td>{{ e.created_at }}</td>
+      <td>{{ e.event_type }}</td>
+      <td>{{ e.from_state or '' }}</td>
+      <td>{{ e.to_state or '' }}</td>
+      <td>{{ e.actor or '' }}</td>
+      <td style="white-space:pre-wrap;">{{ e.reason or '' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not events %}
+    <tr><td colspan="6" class="muted">No events.</td></tr>
+    {% endif %}
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px;">
+  <h3 style="margin-top:0;">Dependents</h3>
+  <div class="muted" style="margin-bottom:8px;">(Downstream objects that directly reference this clip version)</div>
+  <table>
+    <tr><th>type</th><th>id</th><th>note</th></tr>
+    {% for d in dependents %}
+    <tr>
+      <td>{{ d.type }}</td>
+      <td><code>{{ d.id }}</code></td>
+      <td class="muted">{{ d.note or '' }}</td>
+    </tr>
+    {% endfor %}
+    {% if not dependents %}
+    <tr><td colspan="3" class="muted">No direct dependents recorded.</td></tr>
+    {% endif %}
+  </table>
+</div>
+{% endblock %}

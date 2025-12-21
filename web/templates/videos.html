@@ -1,0 +1,84 @@
+{% extends 'base.html' %}
+{% block title %}Videos Browser{% endblock %}
+{% block nav_videos %}active{% endblock %}
+{% block head %}
+<style>
+  .controls { display:flex; gap:8px; margin-bottom:12px; }
+  input[type=text] { flex:1; padding:10px; border:1px solid #ddd; border-radius:4px; }
+  input[type=number] { width:110px; padding:10px; border:1px solid #ddd; border-radius:4px; }
+  button { padding:10px 14px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  button:hover { background:#2980b9; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:10px; border-bottom:1px solid #eee; text-align:left; }
+  th { background:#fafafa; }
+  .muted { color:#7f8c8d; }
+</style>
+<script>
+  async function listVideos(){
+    const limit = document.getElementById('limit').value || 50;
+    const res = await fetch(`/api/videos/list?limit=${limit}`);
+    const data = await res.json();
+    render(data);
+  }
+  async function searchVideos(){
+    const q = document.getElementById('q').value.trim();
+    const limit = document.getElementById('limit').value || 50;
+    if (!q) return listVideos();
+    const res = await fetch(`/api/videos/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+    const data = await res.json();
+    render(data);
+  }
+  function render(rows){
+    const tbody = document.getElementById('rows');
+    tbody.innerHTML = '';
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      const url = `https://youtube.com/watch?v=${r.ytid}`;
+      tr.innerHTML = `
+        <td><a href="${url}" target="_blank" rel="noopener">${r.ytid}</a></td>
+        <td>${escapeHtml(r.title || '')}</td>
+        <td class="muted">${r.title_date || ''}</td>
+        <td class="muted">${r.upload_date || ''}</td>
+        <td class="muted">${r.duration_sec ?? ''}</td>
+        <td class="muted">${escapeHtml(r.channel || '')}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    document.getElementById('count').textContent = rows.length;
+  }
+  window.addEventListener('DOMContentLoaded', listVideos);
+</script>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="margin-bottom:16px;">
+    <h2 style="margin:0 0 6px 0;">Videos</h2>
+    <div class="muted">Browse/search core <code class="k">videos</code> table</div>
+  </div>
+
+  <div class="card">
+    <div class="controls">
+      <input id="q" type="text" placeholder="Search by title or ytid" />
+      <input id="limit" type="number" value="50" min="1" max="500" />
+      <button onclick="searchVideos()">Search</button>
+      <button onclick="listVideos()">List Recent</button>
+    </div>
+    <div class="muted" style="margin-bottom:8px">Showing <span id="count">0</span> row(s)</div>
+    <div style="overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>ytid</th>
+            <th>title</th>
+            <th>title_date</th>
+            <th>upload_date</th>
+            <th>duration_sec</th>
+            <th>channel</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
+

@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}{{ session.session_id }} - QuickClip Browser{% endblock %}
+{% block nav_quickclip %}active{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('quickclip_index') }}">All Videos</a></li>
+        <li class="breadcrumb-item"><a href="{{ url_for('quickclip_video_detail', ytid=session.ytid) }}">{{ video.title if video else session.ytid }}</a></li>
+        <li class="breadcrumb-item active">{{ session.session_id }}</li>
+    </ol>
+</nav>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <h2 class="card-title">{{ session.session_id }}</h2>
+
+        {% if session.description %}
+        <p class="lead">{{ session.description }}</p>
+        {% endif %}
+
+        <div class="row mt-3">
+            <div class="col-md-6">
+                <p class="mb-1"><strong>Video:</strong> {{ video.title if video else session.ytid }}</p>
+                <p class="mb-1"><strong>Video ID:</strong> <code>{{ session.ytid }}</code></p>
+                <p class="mb-1"><strong>Created:</strong> {{ session.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</p>
+                <p class="mb-1"><strong>Quality:</strong> {{ session.quality_profile }}</p>
+            </div>
+            <div class="col-md-6">
+                {% if session.tags %}
+                <p class="mb-1"><strong>Tags:</strong></p>
+                <div>
+                    {% for tag in session.tags.split(',') %}
+                    <span class="badge bg-secondary tag-badge">{{ tag.strip() }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+                <p class="mt-2 mb-1"><strong>Directory:</strong></p>
+                <code class="small">{{ session.session_dir }}</code>
+            </div>
+        </div>
+
+        {% if video and video.url %}
+        <div class="mt-3">
+            <a href="{{ video.url }}" target="_blank" class="btn btn-primary btn-sm">
+                Watch Original on YouTube ↗
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if full_video %}
+<div class="card mb-4">
+    <div class="card-body">
+        <h4>Full Video</h4>
+        <p class="text-muted small mb-2">
+            {% if full_video.bytes %}
+            Size: {{ (full_video.bytes / (1024*1024))|round(1) }} MB
+            {% endif %}
+        </p>
+        <div class="mb-3" style="max-height: 70vh; overflow: hidden;">
+            <video controls preload="metadata" style="width: 100%; height: 100%; object-fit: contain;">
+                <source src="{{ full_video.url }}" type="video/mp4">
+                Your browser does not support video playback.
+            </video>
+        </div>
+        <a href="{{ full_video.url }}" class="btn btn-sm btn-outline-primary" download>Download full video</a>
+    </div>
+</div>
+{% elif session.full_video_saved %}
+<div class="alert alert-warning">
+    Full video is marked as saved, but the media asset is not yet available.
+</div>
+{% endif %}
+
+<h3 class="mb-3">Clips ({{ clips|length }})</h3>
+
+{% if clips %}
+<div class="row">
+    {% for clip in clips %}
+    <div class="col-md-6 mb-4">
+        <div class="card clip-card">
+            <div class="card-body">
+                <h5 class="card-title">
+                    Clip {{ clip.clip_index }}
+                    {% if clip.label %}
+                    <span class="badge bg-info">{{ clip.label }}</span>
+                    {% endif %}
+                </h5>
+
+                <p class="clip-timestamp mb-3">
+                    {{ clip.start_sec|round(2) }}s - {{ clip.end_sec|round(2) }}s
+                    ({{ clip.duration_sec|round(2) }}s)
+                </p>
+
+                {% if clip.file_exists and clip.file %}
+                <div class="mb-3" style="width: 100%; height: 50vh; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                    <video controls preload="metadata" style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                        <source src="{{ url_for('quickclip_play_clip', clip_path=clip.file) }}" type="video/mp4">
+                        Your browser does not support video playback.
+                    </video>
+                </div>
+                <a href="{{ url_for('quickclip_play_clip', clip_path=clip.file) }}" class="btn btn-sm btn-outline-primary" download>
+                    Download Clip
+                </a>
+
+                <!-- Clip Transcripts Section -->
+                <div class="mt-4">
+                  <h5 style="margin-bottom: 12px;">Transcripts</h5>
+                  {% if clip.transcripts and clip.transcripts|length > 0 %}
+                    {% for model, trans_data in clip.transcripts.items() %}
+                    <div style="background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; margin-bottom: 8px;">
+                      <div style="display: grid; grid-template-columns: auto 1fr; gap: 12px; font-size: 0.95em;">
+                        <strong style="color: #0969da;">Model:</strong>
+                        <span>{{ model }}</span>
+
+                        <strong style="color: #0969da;">Language:</strong>
+                        <span>{{ trans_data.language }}</span>
+
+                        <strong style="color: #0969da;">Status:</strong>
+                        <span style="padding: 2px 6px; border-radius: 4px;
+                          {% if trans_data.status == 'completed' %}background: #d1f4d1; color: #238636;
+                          {% elif trans_data.status == 'pending' %}background: #fff8c5; color: #9e6a03;
+                          {% elif trans_data.status == 'running' %}background: #ddf4ff; color: #0969da;
+                          {% else %}background: #f0f0f0; color: #666;
+                          {% endif %}">
+                          {{ trans_data.status|capitalize }}
+                        </span>
+
+                        <strong style="color: #0969da;">Job ID:</strong>
+                        <span style="font-family: monospace; font-size: 0.9em;">{{ trans_data.job_id[:12] }}...</span>
+
+                        <strong style="color: #0969da;">Created:</strong>
+                        <span>{{ trans_data.created_at }}</span>
+
+                        {% if trans_data.status == 'completed' %}
+                        <strong style="color: #0969da;">Transcript:</strong>
+                        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                          {% if trans_data.vtt_path %}
+                          {# Prepend 'generated/' if path doesn't already start with it #}
+                          {% set vtt_path_full = trans_data.vtt_path if trans_data.vtt_path.startswith('generated/') else 'generated/' + trans_data.vtt_path.replace('transcripts/', '') %}
+                          <a href="{{ url_for('quickclip_play_clip', clip_path=vtt_path_full) }}" class="btn btn-xs btn-sm btn-outline-secondary" target="_blank" style="padding: 4px 8px; font-size: 0.85em;">
+                            📄 View VTT
+                          </a>
+                          {% else %}
+                          <span style="padding: 4px 8px; font-size: 0.85em; color: #666;">VTT file path not available</span>
+                          {% endif %}
+                          {% if trans_data.words_path %}
+                          {# Prepend 'generated/' if path doesn't already start with it #}
+                          {% set words_path_full = trans_data.words_path if trans_data.words_path.startswith('generated/') else 'generated/' + trans_data.words_path.replace('transcripts/', '') %}
+                          <a href="{{ url_for('quickclip_play_clip', clip_path=words_path_full) }}" class="btn btn-xs btn-sm btn-outline-secondary" download style="padding: 4px 8px; font-size: 0.85em;">
+                            📊 Download Words
+                          </a>
+                          {% else %}
+                          <span style="padding: 4px 8px; font-size: 0.85em; color: #666;">Words file path not available</span>
+                          {% endif %}
+                        </div>
+                        {% endif %}
+                      </div>
+                    </div>
+                    {% endfor %}
+                  {% else %}
+                    <p class="text-muted small mb-0">No transcripts available yet. Transcription jobs will appear here as they progress.</p>
+                  {% endif %}
+                </div>
+                {% else %}
+                <div class="alert {% if job_statuses %}alert-info{% else %}alert-danger{% endif %} small mb-0">
+                    <strong>Clip file not found.</strong>
+                    {% if job_statuses %}
+                    Worker is processing this clip.
+                    <div class="mt-2">
+                        <small><strong>Processing Jobs:</strong></small>
+                        <ul class="list-unstyled small mb-0">
+                            {% for job in job_statuses %}
+                            <li>
+                                <span class="badge {% if job.status == 'COMPLETED' %}bg-success{% elif job.status == 'RUNNING' %}bg-primary{% elif job.status == 'CLAIMED' %}bg-info{% elif job.status == 'FAILED' %}bg-danger{% else %}bg-warning{% endif %}">{{ job.status }}</span>
+                                <strong>{{ job.job_type }}</strong>
+                                ({{ job.job_id }})
+                                {% if job.claimed_by %}
+                                <br><small>Worker: {{ job.claimed_by }} | Updated: {{ job.updated_at.strftime('%H:%M:%S') if job.updated_at else 'N/A' }}</small>
+                                {% endif %}
+                            </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    {% else %}
+                    <br>No active jobs found for this session. Check if processing completed or if an error occurred.
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info">
+    No clips found for this session.
+</div>
+{% endif %}
+{% endblock %}

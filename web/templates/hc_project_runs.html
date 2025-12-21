@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}HC Project Runs{% endblock %}
+{% block nav_hc %}active{% endblock %}
+
+{% block head %}
+<style>
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; }
+  .muted { color:#666; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:0.85rem; background:#eef; }
+  .pill.ok { background:#e8f6ee; }
+  .pill.bad { background:#fdecea; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+  <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+    <div style="flex:1;">
+      <h2 style="margin:0;">Runs</h2>
+      <div class="muted">Project: <a href="/hc/projects/{{ project.project_id }}">{{ project.name }}</a></div>
+    </div>
+    <div>
+      <a class="pill" href="/hc/projects/{{ project.project_id }}/audit">Audit overview</a>
+      <a class="pill" href="/hc/projects/{{ project.project_id }}/clips">Clips</a>
+    </div>
+  </div>
+
+  <div style="margin-top:16px;">
+    <table>
+      <thead>
+        <tr>
+          <th>Created</th>
+          <th>Run</th>
+          <th>Status</th>
+          <th>Mode</th>
+          <th>Created by</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="muted">{{ r.created_at }}</td>
+          <td><a href="/hc/projects/{{ project.project_id }}/runs/{{ r.run_id }}">{{ r.run_id }}</a></td>
+          <td>
+            {% if r.status == 'completed' %}<span class="pill ok">completed</span>
+            {% elif r.status == 'failed' %}<span class="pill bad">failed</span>
+            {% else %}<span class="pill">{{ r.status }}</span>
+            {% endif %}
+            {% if r.error_message %}<div class="muted" style="margin-top:4px;">{{ r.error_message }}</div>{% endif %}
+          </td>
+          <td class="muted">{{ r.run_mode or 'normal' }}</td>
+          <td class="muted">{{ r.created_by }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

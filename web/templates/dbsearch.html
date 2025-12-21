@@ -1,0 +1,138 @@
+{% extends 'base.html' %}
+{% block title %}DB Search{% endblock %}
+{% block nav_dbsearch %}active{% endblock %}
+{% block head %}
+<style>
+  .grid { display:grid; grid-template-columns: 280px 1fr; gap:16px; }
+  .card h3 { margin-top:0; }
+  .muted { color:#7f8c8d; }
+  .list { max-height: 360px; overflow:auto; border:1px solid #eee; border-radius:6px; }
+  .list-item { padding:8px 10px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+  .list-item:hover { background:#fafafa; }
+  .list-item.active { background:#eef5fd; }
+  .cols { columns: 2 240px; column-gap: 12px; }
+  .controls { display:flex; gap:8px; margin-bottom:10px; }
+  input[type=text], input[type=number] { padding:10px; border:1px solid #ddd; border-radius:4px; }
+  input[type=text] { flex: 1; }
+  button { padding:10px 14px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  button:hover { background:#2980b9; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; }
+  th { background:#fafafa; }
+  .pill { display:inline-block; padding:2px 8px; background:#f0f3f7; border-radius:999px; font-size:.85rem; }
+</style>
+<script>
+  let schema = null;
+  let current = null;
+
+  async function loadSchema(){
+    const res = await fetch('/api/db/schema?include_views=true');
+    const data = await res.json();
+    schema = data.tables || [];
+    renderTables();
+    if (schema.length){ selectTable(schema[0].name); }
+  }
+  function renderTables(){
+    const list = document.getElementById('tables');
+    list.innerHTML = '';
+    schema.forEach(t => {
+      const div = document.createElement('div');
+      div.className = 'list-item' + (current===t.name ? ' active': '');
+      div.textContent = `${t.name}`;
+      div.onclick = () => selectTable(t.name);
+      list.appendChild(div);
+    });
+  }
+  function selectTable(name){
+    current = name;
+    renderTables();
+    const table = schema.find(x => x.name === name);
+    const colsDiv = document.getElementById('columns');
+    colsDiv.innerHTML = '';
+    if (!table){ return; }
+    table.columns.forEach(c => {
+      const id = `col-${c.name}`;
+      const wrap = document.createElement('label');
+      wrap.style.display='block'; wrap.style.breakInside='avoid';
+      wrap.innerHTML = `<input type="checkbox" id="${id}" value="${c.name}" checked> ${c.name} <span class="pill">${c.data_type}</span>`;
+      colsDiv.appendChild(wrap);
+    });
+    document.getElementById('selected-table').textContent = name;
+  }
+  async function runQuery(){
+    if (!current) return;
+    const limit = document.getElementById('limit').value || 50;
+    const search = document.getElementById('search').value.trim();
+    const cols = Array.from(document.querySelectorAll('#columns input[type=checkbox]:checked')).map(i=>i.value);
+    const url = new URL(location.origin + '/api/db/query');
+    url.searchParams.set('table', current);
+    if (cols.length) url.searchParams.set('columns', cols.join(','));
+    if (search) url.searchParams.set('search', search);
+    url.searchParams.set('limit', limit);
+    const res = await fetch(url);
+    const data = await res.json();
+    renderResults(cols, data);
+  }
+  function renderResults(cols, rows){
+    const thead = document.getElementById('res-head');
+    const tbody = document.getElementById('res-body');
+    thead.innerHTML = '';
+    tbody.innerHTML = '';
+    if (!rows || rows.length === 0){
+      tbody.innerHTML = '<tr><td class="muted">No results</td></tr>';
+      return;
+    }
+    const colsOrdered = cols && cols.length ? cols : Object.keys(rows[0]);
+    const trh = document.createElement('tr');
+    colsOrdered.forEach(c => { const th=document.createElement('th'); th.textContent=c; trh.appendChild(th); });
+    thead.appendChild(trh);
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      colsOrdered.forEach(c => {
+        const td = document.createElement('td');
+        const v = r[c];
+        td.textContent = v === null || v === undefined ? '' : String(v);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    document.getElementById('rowcount').textContent = rows.length;
+  }
+  window.addEventListener('DOMContentLoaded', loadSchema);
+</script>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="margin-bottom:16px;">
+    <h2 style="margin:0 0 6px 0;">DB Search</h2>
+    <div class="muted">Browse tables, pick columns, search text, and preview rows.</div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Tables</h3>
+      <div id="tables" class="list"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">Columns: <span id="selected-table" class="muted"></span></h3>
+        <div class="controls">
+          <input id="search" type="text" placeholder="Text search across text columns" />
+          <input id="limit" type="number" value="50" min="1" max="500" />
+          <button onclick="runQuery()">Run</button>
+        </div>
+      </div>
+      <div id="columns" class="cols" style="margin-top:6px; margin-bottom:8px;"></div>
+
+      <div class="muted" style="margin:6px 0;">Showing <span id="rowcount">0</span> row(s)</div>
+      <div style="overflow:auto;">
+        <table>
+          <thead id="res-head"></thead>
+          <tbody id="res-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

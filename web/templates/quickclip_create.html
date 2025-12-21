@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Create QuickClip Session{% endblock %}
+{% block nav_quickclip %}active{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;">Create QuickClip Session</h2>
+  <p class="muted">Provide a video URL or ID and timestamp spans (one per line, e.g., <code>120-145:intro</code>). All CLI options are available here.</p>
+
+  <div style="background:#e7f3ff; border:1px solid #b1d7ff; color:#0969da; padding:10px 14px; border-radius:6px; margin-bottom:16px;">
+    <strong>Required:</strong> Provide at least one clip span or enable the full video download option.
+  </div>
+
+  {% if error %}
+  <div style="background:#fdecea; border:1px solid #f5c2c7; color:#842029; padding:10px 14px; border-radius:6px; margin-bottom:16px;">
+    {{ error }}
+  </div>
+  {% endif %}
+
+  <form method="post" class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px;">
+    <div style="grid-column: 1 / -1;">
+      <label for="url"><strong>Video URL or ID *</strong></label>
+      <input type="text" id="url" name="url" value="{{ form.url }}" required style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+    </div>
+
+    <div style="grid-column: 1 / -1;">
+      <label for="spans"><strong>Timestamp spans</strong></label>
+      <textarea id="spans" name="spans" rows="6" placeholder="120-145:intro&#10;300-320:main discussion" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">{{ form.spans }}</textarea>
+      <small class="muted">One span per line. Use optional labels with <code>:label</code>. Placeholders <code>(start)</code> and <code>(end)</code> are allowed. Leave blank if using full video download option.</small>
+    </div>
+
+    <div>
+      <label for="description"><strong>Description</strong></label>
+      <textarea id="description" name="description" rows="3" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">{{ form.description }}</textarea>
+    </div>
+
+    <div>
+      <label for="tags"><strong>Tags (comma-separated)</strong></label>
+      <input type="text" id="tags" name="tags" value="{{ form.tags }}" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+    </div>
+
+    <div>
+      <label for="session_name"><strong>Session name</strong></label>
+      <input type="text" id="session_name" name="session_name" value="{{ form.session_name }}" placeholder="Auto-generated if blank" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+    </div>
+
+    <div>
+      <label for="output_dir"><strong>Output directory</strong></label>
+      <input type="text" id="output_dir" name="output_dir" value="{{ form.output_dir }}" placeholder="generated/quickclips/&lt;ytid&gt;" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+    </div>
+
+    <div>
+      <label for="quality"><strong>Quality profile</strong></label>
+      <select id="quality" name="quality" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+        {% for opt in quality_options %}
+        <option value="{{ opt }}" {% if form.quality == opt %}selected{% endif %}>{{ opt }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label for="priority"><strong>Priority</strong></label>
+      <input type="number" id="priority" name="priority" value="{{ form.priority }}" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <label><input type="checkbox" name="full_video" {% if form.full_video %}checked{% endif %}> Download full video (use regular download, no clipping)</label>
+      <label><input type="checkbox" name="clips_only" {% if form.clips_only %}checked{% endif %}> Clips-only (skip full download, only extract clips)</label>
+      <label><input type="checkbox" name="force" {% if form.force %}checked{% endif %}> Force re-download</label>
+      <label><input type="checkbox" name="transcribe_clips" {% if form.transcribe_clips %}checked{% endif %}> Transcribe clips (enqueue transcription jobs for extracted clips)</label>
+    </div>
+
+    <div>
+      <label for="transcription_model"><strong>Transcription model (optional)</strong></label>
+      <input type="text" id="transcription_model" name="transcription_model" value="{{ form.transcription_model }}" placeholder="Leave blank to use config default (large-v3-turbo)" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+      <small class="muted">Whisper model for transcription. Common options: tiny, base, small, medium, large-v3-turbo</small>
+    </div>
+
+    <div>
+      <label for="transcription_language"><strong>Transcription language (optional)</strong></label>
+      <input type="text" id="transcription_language" name="transcription_language" value="{{ form.transcription_language }}" placeholder="Leave blank to use config default (en)" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">
+      <small class="muted">Language code (e.g., en, es, fr). Leave blank for auto-detect.</small>
+    </div>
+
+    <div style="grid-column: 1 / -1;">
+      <button type="submit" style="padding:12px 18px; border:none; border-radius:6px; background:#2d7ff9; color:#fff; font-weight:600;">Create session</button>
+      <a href="{{ url_for('quickclip_index') }}" style="margin-left:12px;">Back to QuickClips</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

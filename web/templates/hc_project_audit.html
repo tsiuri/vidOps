@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}HC Project Audit{% endblock %}
+{% block nav_hc %}active{% endblock %}
+
+{% block head %}
+<style>
+  table { width:100%; border-collapse: collapse; }
+  th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; vertical-align:top; }
+  th { background:#fafafa; font-weight:600; }
+  .muted { color:#666; font-size: 0.95rem; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; background:#eee; font-size:0.85rem; }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="card" style="margin-bottom:16px;">
+    <div style="display:flex; align-items:flex-start; gap:16px;">
+      <div style="flex:1;">
+        <h2 style="margin:0 0 6px 0;">Audit Overview</h2>
+        <div class="muted">Project: <a href="/hc/projects/{{ project.project_id }}">{{ project.name }}</a> ({{ project.project_id }})</div>
+        <div class="muted">Status: <span class="pill">{{ project.status }}</span></div>
+      </div>
+      <div>
+        <a class="pill" href="/hc/projects/{{ project.project_id }}/runs">Runs</a>
+        <a class="pill" href="/hc/projects/{{ project.project_id }}/clips">Clips</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h3 style="margin-top:0;">Latest Version Counts</h3>
+      <table>
+        <thead>
+          <tr><th>Artifact</th><th>Total</th><th>Valid</th><th>Invalid</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Suggestions (latest)</td><td>{{ counts.suggestions.total }}</td><td>{{ counts.suggestions.valid }}</td><td>{{ counts.suggestions.invalid }}</td></tr>
+          <tr><td>Hits (latest per logical)</td><td>{{ counts.hits.total }}</td><td>{{ counts.hits.valid }}</td><td>{{ counts.hits.invalid }}</td></tr>
+          <tr><td>Clips (latest per logical)</td><td>{{ counts.clips.total }}</td><td>{{ counts.clips.valid }}</td><td>{{ counts.clips.invalid }}</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="margin:10px 0 0 0;">
+        Note: counts are observational only. Nothing recomputed.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">Renders</h3>
+      <table>
+        <thead><tr><th>Status</th><th>Count</th></tr></thead>
+        <tbody>
+          <tr><td>ready</td><td>{{ render_counts.ready }}</td></tr>
+          <tr><td>failed</td><td>{{ render_counts.failed }}</td></tr>
+          <tr><td>rendering</td><td>{{ render_counts.rendering }}</td></tr>
+          <tr><td>planned</td><td>{{ render_counts.planned }}</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:10px;" class="muted">
+        Last run: {% if last_run %}<a href="/hc/projects/{{ project.project_id }}/runs/{{ last_run.run_id }}">{{ last_run.run_id }}</a>{% else %}None{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h3 style="margin-top:0;">Recent Invalid Artifacts (latest versions)</h3>
+    <table>
+      <thead><tr><th>Type</th><th>ID</th><th>Reason</th><th>When</th></tr></thead>
+      <tbody>
+        {% for row in recent_invalids %}
+          <tr>
+            <td>{{ row.kind }}</td>
+            <td>
+              {% if row.kind == 'hit' %}
+                <a href="/hc/hits/{{ row.id }}">{{ row.id }}</a>
+              {% elif row.kind == 'clip' %}
+                <a href="/hc/clips/{{ row.id }}">{{ row.id }}</a>
+              {% else %}
+                {{ row.id }}
+              {% endif %}
+            </td>
+            <td class="muted">{{ row.reason }}</td>
+            <td class="muted">{{ row.when }}</td>
+          </tr>
+        {% endfor %}
+        {% if recent_invalids|length == 0 %}
+          <tr><td colspan="4" class="muted">None</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

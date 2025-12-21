@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>HC Project Clips: {{ project.name }}</h2>
+
+<p>
+  <a href="{{ url_for('hc_project_detail', project_id=project.project_id) }}">← Project</a>
+</p>
+
+<p style="opacity:0.8;">
+  Rendering and rebuilds are explicit actions. No clip files are overwritten; rebuilds create new versions.
+</p>
+
+<table class="table" style="width:100%; border-collapse: collapse;">
+  <thead>
+    <tr>
+      <th style="text-align:left;">Label</th>
+      <th style="text-align:left;">YTID</th>
+      <th style="text-align:left;">Range</th>
+      <th style="text-align:left;">Status</th>
+      <th style="text-align:left;">Version</th>
+      <th style="text-align:left;">Asset</th>
+      <th style="text-align:left;">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for c in clips %}
+    <tr>
+      <td><a href="{{ url_for('hc_clip_detail_page', clip_id=c.clip_id) }}">{{ c.label }}</a></td>
+      <td>{{ c.ytid }}</td>
+      <td>{{ "%.3f"|format(c.start_sec) }} → {{ "%.3f"|format(c.end_sec) }}</td>
+      <td><b>{{ c.status }}</b>{% if c.validity_status == 'invalid' %} (invalid){% endif %}</td>
+      <td>{{ c.clip_version }}</td>
+      <td>
+        {% if c.asset_path %}
+          <div style="max-width: 320px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ c.asset_path }}</div>
+        {% else %}
+          —
+        {% endif %}
+        <div style="font-size:0.85em; opacity:0.8;">
+          <a href="{{ url_for('api_hc_clip_versions', clip_id=c.clip_id) }}" target="_blank">versions</a> ·
+          <a href="{{ url_for('api_hc_clip_provenance', clip_id=c.clip_id) }}" target="_blank">provenance</a>
+        </div>
+      </td>
+      <td>
+        <div style="display:flex; flex-direction:column; gap:0.25rem;">
+          <form method="POST" action="{{ url_for('hc_clip_render_action', clip_id=c.clip_id) }}" style="display:flex; gap:0.25rem; flex-wrap:wrap;">
+            <input name="output_root" placeholder="output_root (optional)" style="min-width: 240px;">
+            <select name="mode">
+              <option value="copy">copy</option>
+              <option value="reencode">reencode</option>
+            </select>
+            <input name="format" value="mp4" style="width:70px;">
+            <button type="submit">Render</button>
+          </form>
+          <form method="POST" action="{{ url_for('hc_clip_rebuild_action', clip_id=c.clip_id) }}" style="display:flex; gap:0.25rem; flex-wrap:wrap;">
+            <input name="reason" placeholder="reason" style="min-width: 180px;">
+            <input name="output_root" placeholder="output_root (optional)" style="min-width: 240px;">
+            <select name="mode">
+              <option value="copy">copy</option>
+              <option value="reencode">reencode</option>
+            </select>
+            <input name="format" value="mp4" style="width:70px;">
+            <label style="display:flex; align-items:center; gap:0.25rem;">
+              <input type="checkbox" name="render_now" value="1" checked> render
+            </label>
+            <button type="submit">Rebuild</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}
