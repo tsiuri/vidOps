@@ -18,12 +18,20 @@ from workers import (
     ExtraUtilsWorker,
 )
 from workers.analysis_distributed import AnalysisWorker as DistributedAnalysisWorker
-from configuration import load_config
+from configuration import load_config, OLLAMA_BASE_PORT
 import logging
+from typing import Optional
 
 RUN_WEBUI_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_webui.py"
+DEFAULT_ANALYSIS_PORT = 5000
+DEFAULT_MONITORING_PORT = 8000
 
 logger = logging.getLogger(__name__)
+
+
+def _get_gpu_flag() -> Optional[str]:
+    """Get the --gpu flag value that was parsed early in vo_cli.py."""
+    return os.environ.get("_VIDOPS_GPU_FLAG") or None
 
 
 def ensure_webui_running(host: str = "127.0.0.1", port: int = 5000) -> None:
@@ -115,7 +123,20 @@ def worker():
     "--web-port",
     type=int,
     default=5000,
-    help="Port for web UI server (analysis config & drills; default: 5000, set to 0 to disable)."
+    help="Port for web UI server when --web-services is enabled (default: 5000)."
+)
+@click.option(
+    "--web-services",
+    is_flag=True,
+    default=False,
+    help="Start web UI services (analysis config & drills) alongside the worker."
+)
+@click.option(
+    "--gpu",
+    "gpu_flag",
+    default=None,
+    help="GPU index to use (0, 1, 2...), 'cpu' for CPU-only, or 'auto' (default). "
+         "Sets CUDA_VISIBLE_DEVICES and loads per-GPU config (capabilities, ollama URL)."
 )
 def start_worker(
     worker_type: str,
@@ -127,6 +148,8 @@ def start_worker(
     lease_minutes: int,
     metrics_port: int,
     web_port: int,
+    web_services: bool,
+    gpu_flag: str,
 ):
     """Start a worker process."""
     click.echo(f"Starting {worker_type} worker...")
@@ -135,7 +158,46 @@ def start_worker(
     os.environ.setdefault("VIDOPS_PROJECT_ROOT", str(Path.cwd()))
     click.echo(f"Using project root: {os.environ['VIDOPS_PROJECT_ROOT']}")
 
-    if web_port > 0:
+    # Load config and resolve GPU settings
+    config = load_config()
+
+    # Resolve GPU flag (CLI overrides early-parsed value)
+    effective_gpu = gpu_flag or _get_gpu_flag()
+    gpu_index: Optional[int] = None
+    gpu_profile = None
+
+    if effective_gpu is not None:
+        if effective_gpu.lower() == "cpu":
+            click.echo("  GPU: CPU-only mode (CUDA disabled)")
+            click.echo("  NOTE: CPU-only worker not fully implemented yet")
+        elif effective_gpu.lower() == "auto":
+            click.echo("  GPU: auto (CUDA will select)")
+        elif effective_gpu.isdigit():
+            gpu_index = int(effective_gpu)
+            gpu_profile = config.gpus.get_profile(gpu_index)
+            gpu_name = gpu_profile.name or f"GPU {gpu_index}"
+            click.echo(f"  GPU: {gpu_index} ({gpu_name})")
+            click.echo(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
+            if gpu_profile.capabilities:
+                click.echo(f"  Configured capabilities: {', '.join(gpu_profile.capabilities)}")
+            if gpu_profile.ollama_url:
+                click.echo(f"  Ollama URL: {gpu_profile.ollama_url}")
+            if gpu_profile.model_name:
+                click.echo(f"  Model: {gpu_profile.model_name}")
+        else:
+            click.echo(click.style(f"  Warning: Invalid --gpu value '{effective_gpu}', using auto", fg="yellow"))
+    else:
+        click.echo("  GPU: auto (use --gpu N to select specific GPU)")
+
+    # Show available services
+    click.echo("")
+    click.echo("Available services:")
+    click.echo(f"  Analysis UI:   http://127.0.0.1:{DEFAULT_ANALYSIS_PORT}/")
+    click.echo(f"  Monitoring:    http://127.0.0.1:{DEFAULT_MONITORING_PORT}/")
+    click.echo(f"  Job Monitor:   vo monitor  (curses TUI)")
+    click.echo("")
+
+    if web_services:
         ensure_webui_running(port=web_port)
 
     # This is a basic way to start. In a production system,
@@ -144,8 +206,8 @@ def start_worker(
 
     web_status_msg = (
         f"http://127.0.0.1:{web_port}/ (managed by run_webui.py)"
-        if web_port > 0
-        else "disabled"
+        if web_services
+        else "disabled (use --web-services to enable)"
     )
 
     if worker_type == "general":
@@ -164,14 +226,30 @@ def start_worker(
         worker_instance.run()
     elif worker_type in ("analysis", "analysis-distributed"):
         try:
-            config = load_config()
-
-            # Use provided values or fall back to config
+            # Use provided values, then GPU profile, then base config
             _machine_alias = machine_alias or os.uname().nodename
-            _model_url = model_url or config.analysis.ollama.url
-            _model_name = model_name or config.analysis.ollama.model
+
+            # Model URL precedence: CLI > GPU profile > base config
+            if model_url:
+                _model_url = model_url
+            elif gpu_profile and gpu_profile.ollama_url:
+                _model_url = gpu_profile.ollama_url
+            else:
+                _model_url = config.analysis.ollama.url
+
+            # Model name precedence: CLI > GPU profile > base config
+            if model_name:
+                _model_name = model_name
+            elif gpu_profile and gpu_profile.model_name:
+                _model_name = gpu_profile.model_name
+            else:
+                _model_name = config.analysis.ollama.model
+
+            # Capabilities precedence: CLI > GPU profile > base config > default
             if capabilities:
                 _capabilities = list(capabilities)
+            elif gpu_profile and gpu_profile.capabilities:
+                _capabilities = list(gpu_profile.capabilities)
             elif config.analysis.default_capabilities:
                 _capabilities = list(config.analysis.default_capabilities)
             else:

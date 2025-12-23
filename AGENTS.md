@@ -29,12 +29,11 @@ VidOps started as a purely “workspace.sh” driven toolkit:
   the current state document; deprecated plans, phase logs, and
   old queue docs live under docs/deprecated/.
   
-Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/JOB_CLEANUP.md for resetting failed diarization jobs to pending when asked. Keep AGENTS.md, this document, and the SOURCE_OF_TRUTH.md up-to-date as you make changes.  There could be scripts and functions not documented currently in this evolving workspace.  Please document those as you locate them.
+Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGENTS.md, this document, and the SOURCE_OF_TRUTH.md up-to-date as you make changes.  There could be scripts and functions not documented currently in this evolving workspace.  Please document those as you locate them.
 
 ## Project Structure & Modules
 - Core code lives under `scripts/`, `services/`, `workers/`, and `cli/` (entrypoint `vo_cli.py`). Worker configs and web bits sit in `web/`. Shared utilities are in `utils/` and `wrappers/`.  ASK THE USER BEFORE CREATING ANY FOLDERS IN THE ROOTDIR OF THE PROJECT.  IDEALLY, USE EXISTING FOLDER STRUCTURE WITH SUBDIRS.
 - Data and run artifacts stay out of the repo; the workspace pattern uses `pull/`, `generated/`, `tmp/`, and `logs/` in your project root. Repo-level `tmp/` is safe for scratch.
-- `.gitignore` excludes runtime and local config (`pull/`, `generated/`, `logs/`, `tmp/`, `media/`, `results/`, `.venv/`, `config.yaml`, `config.local.*`, `db.cfg`, `.vidops_*` markers); recreate via `./workspace.sh` (accept init prompt), `bash scripts/setup_diarization_venv.sh`, and copying `config/config.yaml.example` to `config.yaml`.
 - Tests are in `tests/` plus a few top-level smoke helpers (e.g., `TEST_METRICS_INTEGRATION.sh`, `docs/SMOKE_TESTS.md`).
 
 ## Build, Test, and Dev Commands
@@ -42,6 +41,7 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/
 - Run workers: `python vo_cli.py worker start <role> ...` (e.g., `analysis-distributed`, `worker start diarization`).
 - Workspace wrapper (from a project dir): `./workspace.sh download|transcribe|hits|diarize ...`.
 - Launch web UIs: `python scripts/run_webui.py` or `python vo_cli.py webui` (starts the combined analysis/QuickClip UI on :5000 and, if configured, the monitoring UI on :8000; use `--skip`/`--only` or `--monitoring-cmd` to customize)
+- After any web UI or template changes, restart the web services. Easiest: `.venv/bin/python scripts/run_webui.py --skip monitoring --detach` (or `vo webui --skip monitoring --detach` from `.venv`), which restarts the analysis UI on :5000. Add/remove `--skip monitoring` as needed. If your host uses a custom systemd unit for the web UI, restart that instead; the repo doesn’t ship one by default.
 - Tests: `pytest` (with `.venv` active). Smoke: `bash docs/SMOKE_TESTS.md` commands as written.
 
 ## Coding Style & Naming
@@ -65,6 +65,10 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/
 - GPU/CPU: diarization pins `torch/torchaudio` 2.8.0+cu128; rerun the setup script if the venv drifts. For CPU runs, use `--cpu` flag.
 - Paths: honor `TOOL_ROOT` (repo) vs `PROJECT_ROOT` (data). Don’t write under repo except `tmp/` and generated logs/tests.***
 
+## System Notes
+- Ollama runs via systemd with separate services: `ollama-nvidia.service` on `0.0.0.0:11434` and `ollama-amd.service` on `127.0.0.1:11435`.
+- Current Ollama settings live in the unit files under `/etc/systemd/system/`; NVIDIA unit sets `OLLAMA_KEEP_ALIVE=5m` and `OLLAMA_GPU_LAYERS=-1`, AMD unit sets `OLLAMA_KEEP_ALIVE=5m`, `OLLAMA_MAX_LOADED_MODELS=1`, and `OLLAMA_NUM_GPU=1`.
+
 ## Active Pipeline CLI Updates (2025-12-11)
 - New `vo pipeline enqueue` command creates a full processing pipeline (download → transcription → diarization → analysis) with automatic dependency management
 - Usage: `vo pipeline enqueue <YTID_or_URL> [--skip-diarization] [--transcription-model large-v3]`
@@ -85,7 +89,6 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/
 - CLI commands (`vo diarize enqueue`, `enqueue-file`) continue to work unchanged; they explicitly pass parameters to override config defaults.
 - Configuration precedence: `config.yaml` defaults → environment variables (`DIARIZATION_*`) → CLI arguments → hardcoded fallbacks.
 - This pattern should be applied to other services (transcription, analysis) to centralize configuration management.
-- `DiarizeWorker` now treats SIGINT/SIGTERM as immediate shutdown: it releases the current job back to `PENDING`, terminates spawned diarization subprocesses, and exits to avoid leaving chunked jobs running after Ctrl+C.
 
 ## Active Analysis Updates (2025-12-11)
 - GenericWorker now claims distributed analysis work through `services/distributed_analysis.py`, so `vo worker start general` covers download, transcription, clips, diarization, stitching, and `analysis-distributed` in one process. See `tests/workers/test_generic_worker_distributed_analysis.py` for the handoff coverage.
@@ -98,7 +101,7 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/
 - Topic/person spans are now built in the distributed worker (parity with legacy pipeline) by grouping chunk topics/people during `_store_full_analysis`.
 - Data inspector includes a regenerated transcript download (`/api/video/<ytid>/transcript.txt`), built on-demand from the words table with a warning header.
 - GenericWorker now releases the current job back to `PENDING` on KeyboardInterrupt, worker-local failures, or shutdown signals (SIGINT/SIGTERM) instead of logging it as completed.
-- Chunk-analysis editor allows specifying a per-config model override; enqueue-distributed respects it when setting job config `model_name`.
+- Chunk-analysis editor model override is honored by web UI job creation, pipeline enqueue, and `vo analyze enqueue-distributed` when setting job config `model_name`.
 - Hot targets now have an explicit mode toggle (pattern vs LLM); LLM mode drives HotTargetRunner, pattern mode stays keyword/regex.
 - Analysis worker and GenericWorker now empty CUDA cache after jobs to avoid VRAM carryover between tasks.
 - Jobs browser supports free-text search (job id/ytid/worker/error) and extra sort fields.
@@ -111,5 +114,4 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  See docs/
 - Clip-level transcript metadata is stored in `quickclip_clips.transcripts` JSONB field with structure: `{model: {model, language, job_id, status, created_at}}`
 - Database migrations added: `db/migrations/006_clip_transcription.sql` adds `transcripts` JSONB to `quickclip_clips` and `clip_id` nullable column to `assets` table
 - ClippingService flow: QuickClipService passes `session_id`, `transcribe_clips`, and transcription params → ClippingService.enqueue_manifest_job() stores them in job config → process_job() calls `_enqueue_clip_transcriptions()` after clip extraction
-- ClippingService now updates `quickclip_clips.asset_path` after registering clip outputs so the QuickClip UI can render clip media
 - Transcription jobs inherit video's ytid and clip metadata for proper isolation (clip transcripts stored separately from full-video transcripts, preventing housekeeping confusion)

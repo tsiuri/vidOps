@@ -176,6 +176,7 @@ class AnalysisConfig(BaseModel):
     version: int = 1
     description: str = ""
     analysis_type: str = "normal"
+    model: Optional[str] = None
     transcription_machine: Optional[str] = None
     diarized: bool = False
 
@@ -275,4 +276,3 @@ def default_config(config_id: str = "default_normal") -> AnalysisConfig:
         strict_pass_validation=False,
         backend_params={},
     )
-

@@ -147,3 +147,29 @@ analysis:
   default_capabilities:
     - qwen2.5:7b-instruct
     - gpu_8gb
+
+# --- Per-GPU Configuration ---
+# Define per-GPU profiles for multi-GPU setups. Each GPU can have its own
+# capabilities, Ollama endpoint, and model preferences.
+#
+# Usage: vo worker start general --gpu 0   (uses gpus.0 config)
+#        vo worker start general --gpu 1   (uses gpus.1 config)
+#
+# Ollama URL defaults to http://localhost:{11434 + gpu_index} if not specified.
+# Run separate Ollama instances per GPU: ollama serve on 11434, 11435, etc.
+gpus:
+  0:
+    name: "Primary GPU"                    # Display name (optional)
+    capabilities:
+      - gpu_24gb
+      - qwen2.5:32b
+    # ollama_url: "http://localhost:11434" # Default: 11434 + gpu_index
+    model_name: "qwen2.5:32b"
+
+  1:
+    name: "Secondary GPU"
+    capabilities:
+      - gpu_8gb
+      - qwen2.5:7b
+    # ollama_url: "http://localhost:11435" # Default: 11434 + gpu_index
+    model_name: "qwen2.5:7b"

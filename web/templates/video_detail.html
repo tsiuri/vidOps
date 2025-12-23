@@ -346,6 +346,10 @@
   function renderInspector(detail){
     const box = document.getElementById('inspector');
     const run = detail.analysis_run;
+    const ytid = (detail.video && detail.video.ytid) || '{{ ytid }}';
+    const detailUrl = `/api/video/${encodeURIComponent(ytid)}/detail`;
+    const segmentsUrl = `/api/video/${encodeURIComponent(ytid)}/segments?limit=${SEGMENT_LIMIT}`;
+    const analysesUrl = `/api/analyses/${encodeURIComponent(ytid)}`;
     const info = run ? `
       <div class="muted">Run ${escapeHtml(run.job_id || '')} (${escapeHtml(run.status || '')})</div>
       <div>Config: <strong>${escapeHtml(run.config_id || 'n/a')}</strong></div>
@@ -357,9 +361,12 @@
       ${info}
       <div class="actions" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
         <a class="secondary" href="/analyses/{{ ytid }}" target="_blank" rel="noopener">Open JSON viewer ↗</a>
-        <a class="primary" href="/api/analyses/{{ ytid }}" target="_blank" rel="noopener">Download raw JSON</a>
+        <a class="primary" href="${analysesUrl}" target="_blank" rel="noopener">Download raw JSON</a>
+        <a class="secondary" href="${detailUrl}" target="_blank" rel="noopener">Detail API (full payload) ↗</a>
+        <a class="secondary" href="${segmentsUrl}" target="_blank" rel="noopener">Segments JSON ↗</a>
         <a class="secondary" href="/api/video/{{ ytid }}/transcript.txt" target="_blank" rel="noopener">Regenerated transcript ↗</a>
       </div>
+      <div class="muted" style="margin-top:4px;">Detail API includes spans, topics, key points, analysis metadata, and analysis_run info.</div>
     `;
   }
 

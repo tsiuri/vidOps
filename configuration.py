@@ -245,6 +245,46 @@ class HousekeepingConfig:
     tasks: List[str] = field(default_factory=lambda: ["transcribe_default"])
 
 
+# Default Ollama base port - GPU N uses port BASE + N
+OLLAMA_BASE_PORT = 11434
+
+
+@dataclass
+class GpuProfileConfig:
+    """Per-GPU configuration profile.
+
+    Each GPU can have its own capabilities, Ollama endpoint, and model preferences.
+    Ollama URL defaults to localhost:{OLLAMA_BASE_PORT + gpu_index} if not specified.
+    """
+    # Display name for this GPU (optional, e.g., "RTX 4090")
+    name: Optional[str] = None
+    # Capabilities to advertise for this GPU (e.g., ["gpu_24gb", "qwen2.5:32b"])
+    capabilities: List[str] = field(default_factory=list)
+    # Ollama URL override for this GPU (default: http://localhost:{11434 + gpu_index})
+    ollama_url: Optional[str] = None
+    # Model name override for analysis on this GPU
+    model_name: Optional[str] = None
+
+
+@dataclass
+class GpusConfig:
+    """Container for per-GPU profile configurations.
+
+    Maps GPU index (0, 1, 2...) to GpuProfileConfig.
+    Access via gpus.profiles[gpu_index] or get_gpu_profile(gpu_index).
+    """
+    profiles: Dict[int, GpuProfileConfig] = field(default_factory=dict)
+
+    def get_profile(self, gpu_index: int) -> GpuProfileConfig:
+        """Get profile for a GPU, creating a default if not configured."""
+        if gpu_index in self.profiles:
+            return self.profiles[gpu_index]
+        # Return default profile with computed Ollama URL
+        return GpuProfileConfig(
+            ollama_url=f"http://localhost:{OLLAMA_BASE_PORT + gpu_index}"
+        )
+
+
 @dataclass
 class Config:
     """Root configuration object for the VidOps application."""
@@ -259,6 +299,7 @@ class Config:
     download: DownloadConfig = field(default_factory=DownloadConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     housekeeping: HousekeepingConfig = field(default_factory=HousekeepingConfig)
+    gpus: GpusConfig = field(default_factory=GpusConfig)
 
 
 # --- Loading Logic ---
@@ -459,6 +500,25 @@ def load_config(config_path: str = "config.yaml") -> Config:
                         config.analysis.log_mode = analysis_data.get('log_mode', config.analysis.log_mode)
                         if 'default_capabilities' in analysis_data:
                             config.analysis.default_capabilities = list(analysis_data.get('default_capabilities') or config.analysis.default_capabilities)
+
+                    # Parse per-GPU profiles
+                    if 'gpus' in yaml_data:
+                        gpus_data = yaml_data['gpus']
+                        for gpu_key, gpu_data in gpus_data.items():
+                            try:
+                                gpu_index = int(gpu_key)
+                                profile = GpuProfileConfig(
+                                    name=gpu_data.get('name'),
+                                    capabilities=list(gpu_data.get('capabilities', [])),
+                                    ollama_url=gpu_data.get('ollama_url'),
+                                    model_name=gpu_data.get('model_name'),
+                                )
+                                # Default ollama_url if not specified
+                                if profile.ollama_url is None:
+                                    profile.ollama_url = f"http://localhost:{OLLAMA_BASE_PORT + gpu_index}"
+                                config.gpus.profiles[gpu_index] = profile
+                            except (ValueError, TypeError) as e:
+                                _logger.warning(f"Invalid GPU key '{gpu_key}' in config (expected integer): {e}")
 
             except yaml.YAMLError as e:
                 _logger.warning(f"Could not parse '{config_path}': {e}") # <--- MODIFIED: Use _logger

@@ -197,7 +197,7 @@ Pipeline stages respect `config.yaml` defaults for all job types:
 - Download: Uses `download.*` section defaults
 - Transcription: Uses `transcription.*` section (model, language)
 - Diarization: Uses `diarization.*` section (device, chunk_seconds, thresholds)
-- Analysis: Uses `analysis.*` section (config_id, model overrides)
+- Analysis: Uses `analysis.*` defaults, but honors per-config model overrides stored in `analysis_configs.config_json` when present.
 
 CLI options override config defaults: `--transcription-model large-v3` overrides config default.
 

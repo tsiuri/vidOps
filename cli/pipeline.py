@@ -15,6 +15,7 @@ from dal.analysis_task_repository import AnalysisDatabase
 from dal import JobRepository, VideoRepository
 from models import Video, Job, JobStatus
 from configuration import load_config
+from scripts.analysis.analysis_config import AnalysisConfig
 from db import get_connection
 
 
@@ -311,12 +312,27 @@ def enqueue_pipeline(
     # Stage 4: Analysis
     if not skip_analysis:
         analysis_dep = prev_job_id if not skip_diarization else (prev_job_id if prev_job_id else None)
+        analysis_model_name = cfg.analysis.ollama.model if cfg.analysis else "llama3"
+        if analysis_config_id:
+            analysis_db = AnalysisDatabase()
+            analysis_db.connect()
+            try:
+                config_row = analysis_db.get_analysis_config(analysis_config_id)
+                if config_row:
+                    config_obj = AnalysisConfig.model_validate(config_row.get("config_json", {}))
+                    config_model = getattr(config_obj, "model", None)
+                    if config_model:
+                        analysis_model_name = config_model
+            except Exception as exc:  # noqa: BLE001
+                click.echo(click.style(f"  ⚠ Failed to read analysis model override: {exc}", fg="yellow"))
+            finally:
+                analysis_db.disconnect()
         analysis_job_config = {
             "ytid": ytid,
             "config_id": analysis_config_id,
             "transcript_kind": transcript_kind,
             "model_url": cfg.analysis.ollama.url,
-            "model_name": cfg.analysis.ollama.model,
+            "model_name": analysis_model_name,
         }
         analysis_job = job_repo.create(
             Job(

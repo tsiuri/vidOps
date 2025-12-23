@@ -21,6 +21,7 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - `overlord` — `cli/overlord.py`
 - `quickclip` — `cli/quickclip.py`
 - `webui` — `cli/webui.py`
+- `monitor` — `cli/monitor.py`
 - Monitoring/ops scripts (non-Click)
   - `scripts/management/watch_jobs.py` — curses TUI to watch `jobs` table (q to quit)
   - Prometheus/Grafana: `docker-compose.monitoring.yml`; metrics emitted from workers via `monitoring/metrics.py` and exposed by `monitoring/exporter.py` (see `docs/MONITORING_QUICK_REFERENCE.md`)
@@ -48,6 +49,13 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
     - `voice` — VoiceFilterWorker: voice filter jobs only
     - `dates` — DatesWorker: dates helper jobs only
     - `extra_utils` — ExtraUtilsWorker: extra utility jobs only
+  - Key options for `start`:
+    - `--gpu N` — Select GPU index (0, 1, 2...). Sets `CUDA_VISIBLE_DEVICES` and loads per-GPU config (capabilities, Ollama URL, model). Use `--gpu cpu` for CPU-only (stub). Use `--gpu auto` or omit for auto-detection.
+    - `--capabilities` — Override worker capabilities (repeatable)
+    - `--model-url` — Override Ollama URL
+    - `--model-name` — Override model name
+    - `--metrics-port` — Prometheus metrics port (default 8888, 0 to disable)
+    - `--web-services` — Start web UI alongside worker
 - `download` (`cli/download.py`)
   - `enqueue` (enqueue download job; `--force` to re-download even if media/archive exists)
 - `transcribe` (`cli/transcribe.py`)
@@ -97,9 +105,13 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
   - `browse-web`
 - `webui` (`cli/webui.py`)
   - Wraps `scripts/run_webui.py` to launch or inspect the combined Analysis/QuickClip UI (port 5000) and optional monitoring UI (default port 8000). Supports `--skip`, `--only`, `--status-only`, custom commands, and host/port overrides.
+- `monitor` (`cli/monitor.py`)
+  - Live curses-based jobs queue monitor. Shows status counts, jobs by type, active/pending/running jobs, and recent failures. Controls: q quit, arrows move, x cancels pending jobs.
+  - `--interval` / `-i` — refresh interval in seconds (default 1.0)
+  - `--limit` / `-l` — max rows per section (default 10)
 
 ## Monitoring & Utilities (manual)
-- `scripts/management/watch_jobs.py` — Live DB queue TUI; run with `PYTHONPATH=. python scripts/management/watch_jobs.py`
+- `vo monitor` — Live DB queue TUI (preferred); or run directly: `PYTHONPATH=. python scripts/management/watch_jobs.py`
 - Metrics: start Prometheus/Grafana via `docker-compose -f docker-compose.monitoring.yml up -d`; workers expose metrics on `--metrics-port` (default 8888) using `monitoring/exporter.py` + `monitoring/metrics.py`.
 - Deploy/ops: storage broker & worker trust scripts under `scripts/deploy/` (nginx TLS, cert reissue, broker diagnostics).
 - Analysis/UI: `scripts/analysis/analysis_tui.py`, `scripts/web_app/` (drill APIs/views)
