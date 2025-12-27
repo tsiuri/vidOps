@@ -227,6 +227,13 @@ worker_capabilities_gauge = Gauge(
     registry=WORKER_REGISTRY,
 )
 
+worker_vram_gb_gauge = Gauge(
+    name="analysis_worker_vram_gb",
+    documentation="Advertised available VRAM in GB",
+    labelnames=["worker_id"],
+    registry=WORKER_REGISTRY,
+)
+
 # =====================================================================
 # Lease Management Metrics
 # =====================================================================

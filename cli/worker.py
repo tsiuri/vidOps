@@ -103,9 +103,21 @@ def worker():
     help="Ollama model name (defaults to config value)."
 )
 @click.option(
+    "--model-profile-id",
+    type=int,
+    default=None,
+    help="Analysis model profile id (defaults to config/gpu profile)."
+)
+@click.option(
     "--capabilities",
     multiple=True,
     help="Worker capabilities (repeatable, e.g., --capabilities gpu_8gb --capabilities qwen2.5:7b)."
+)
+@click.option(
+    "--vram-gb",
+    type=float,
+    default=None,
+    help="Available VRAM in GB for analysis scheduling (overrides config)."
 )
 @click.option(
     "--lease-minutes",
@@ -144,14 +156,21 @@ def start_worker(
     worker_id: str,
     model_url: str,
     model_name: str,
+    model_profile_id: Optional[int],
     capabilities: tuple,
+    vram_gb: Optional[float],
     lease_minutes: int,
     metrics_port: int,
     web_port: int,
     web_services: bool,
     gpu_flag: str,
 ):
-    """Start a worker process."""
+    """Start a worker process.
+
+    GPU REMINDER: Each GPU needs its own Ollama service on a separate port.
+    Use --gpu N to target GPU N (Ollama defaults to http://localhost:11434+N).
+    Example: --gpu 0 → :11434, --gpu 1 → :11435, etc.
+    See config.yaml gpus.N.ollama_url to override defaults per GPU."""
     click.echo(f"Starting {worker_type} worker...")
 
     # Default project root to where the worker is launched (unless explicitly set)
@@ -180,10 +199,14 @@ def start_worker(
             click.echo(f"  CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')}")
             if gpu_profile.capabilities:
                 click.echo(f"  Configured capabilities: {', '.join(gpu_profile.capabilities)}")
+            if gpu_profile.vram_gb is not None:
+                click.echo(f"  Configured VRAM: {gpu_profile.vram_gb} GB")
             if gpu_profile.ollama_url:
                 click.echo(f"  Ollama URL: {gpu_profile.ollama_url}")
             if gpu_profile.model_name:
                 click.echo(f"  Model: {gpu_profile.model_name}")
+            if gpu_profile.model_profile_id:
+                click.echo(f"  Model Profile ID: {gpu_profile.model_profile_id}")
         else:
             click.echo(click.style(f"  Warning: Invalid --gpu value '{effective_gpu}', using auto", fg="yellow"))
     else:
@@ -209,6 +232,21 @@ def start_worker(
         if web_services
         else "disabled (use --web-services to enable)"
     )
+
+    resolved_vram_gb = float(config.analysis.default_vram_gb or 0)
+    if vram_gb is not None:
+        resolved_vram_gb = float(vram_gb)
+    elif gpu_profile and gpu_profile.vram_gb is not None:
+        resolved_vram_gb = float(gpu_profile.vram_gb)
+    if effective_gpu and effective_gpu.lower() == "cpu":
+        resolved_vram_gb = 0.0
+    config.analysis.default_vram_gb = resolved_vram_gb
+
+    resolved_model_profile_id = config.analysis.default_model_profile_id
+    if model_profile_id is not None:
+        resolved_model_profile_id = int(model_profile_id)
+    elif gpu_profile and gpu_profile.model_profile_id is not None:
+        resolved_model_profile_id = int(gpu_profile.model_profile_id)
 
     if worker_type == "general":
         click.echo(f"  Metrics: {'enabled on port ' + str(metrics_port) if metrics_port > 0 else 'disabled'}")
@@ -259,7 +297,10 @@ def start_worker(
 
             click.echo(f"  Machine: {_machine_alias}")
             click.echo(f"  Model: {_model_name} @ {_model_url}")
-            click.echo(f"  Capabilities: {', '.join(_capabilities)}")
+            click.echo(f"  Capabilities (legacy): {', '.join(_capabilities)}")
+            click.echo(f"  Available VRAM (GB): {resolved_vram_gb}")
+            if resolved_model_profile_id:
+                click.echo(f"  Model Profile ID: {resolved_model_profile_id}")
             click.echo(f"  Lease duration: {lease_minutes} minutes")
             if metrics_port > 0:
                 click.echo(f"  Metrics: http://0.0.0.0:{metrics_port}/metrics")
@@ -271,10 +312,12 @@ def start_worker(
 
             worker_instance = DistributedAnalysisWorker(
                 machine_alias=_machine_alias,
-                worker_type="analysis_gpu" if "gpu" in _capabilities else "analysis_cpu",
+                worker_type="analysis_gpu" if resolved_vram_gb > 0 else "analysis_cpu",
                 model_url=_model_url,
                 model_name=_model_name,
                 capabilities=_capabilities,
+                available_vram_gb=resolved_vram_gb,
+                model_profile_id=resolved_model_profile_id,
                 db_host=config.database.host,
                 db_name=config.database.name,
                 db_user=config.database.user,

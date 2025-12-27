@@ -48,6 +48,8 @@ class AnalysisWorker:
         model_url: str,
         model_name: str,
         capabilities: List[str],
+        available_vram_gb: float = 0.0,
+        model_profile_id: Optional[int] = None,
         db_host: str = "localhost",
         db_name: str = "transcripts",
         db_user: Optional[str] = None,
@@ -59,6 +61,8 @@ class AnalysisWorker:
         self.model_url = model_url
         self.model_name = model_name
         self.capabilities = capabilities
+        self.available_vram_gb = max(float(available_vram_gb or 0), 0.0)
+        self.model_profile_id = model_profile_id
         self.lease_duration = timedelta(minutes=lease_duration_minutes)
 
         self.worker_id = f"{machine_alias}:{worker_type}:{model_name}:{os.getpid()}"
@@ -81,11 +85,17 @@ class AnalysisWorker:
             log_mode="quiet",
         )
 
+        profile_options: Dict[str, Any] = {}
+        if self.model_profile_id:
+            profile = self.db.get_analysis_model_profile(self.model_profile_id)
+            if profile and isinstance(profile.get("options"), dict):
+                profile_options = profile.get("options") or {}
+
         # Single OllamaAnalyzer instance for chunk_analysis
         self.analyzer = OllamaAnalyzer(
             model=model_name,
             base_url=model_url,
-            options={},
+            options=profile_options,
             custom_request="",
             log_mode="quiet",
             category_suggestions=[],
@@ -98,7 +108,10 @@ class AnalysisWorker:
         logger.info("Worker initialized: %s", self.worker_id)
         logger.info("  Type: %s", worker_type)
         logger.info("  Model: %s @ %s", model_name, model_url)
-        logger.info("  Capabilities: %s", ", ".join(capabilities))
+        logger.info("  Capabilities (legacy): %s", ", ".join(capabilities))
+        logger.info("  Available VRAM (GB): %s", self.available_vram_gb)
+        if self.model_profile_id:
+            logger.info("  Model profile id: %s", self.model_profile_id)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -118,7 +131,8 @@ class AnalysisWorker:
                 try:
                     task = self.task_repo.claim_next(
                         worker_id=self.worker_id,
-                        worker_capabilities=self.capabilities,
+                        worker_vram_gb=self.available_vram_gb,
+                        worker_model_profile_id=self.model_profile_id,
                         lease_duration=self.lease_duration,
                     )
 
@@ -423,6 +437,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="capabilities",
         help="Capability tag for this worker (repeatable)",
     )
+    parser.add_argument(
+        "--vram-gb",
+        type=float,
+        default=0.0,
+        help="Available VRAM in GB for scheduling (default: 0).",
+    )
+    parser.add_argument(
+        "--model-profile-id",
+        type=int,
+        default=None,
+        help="Analysis model profile id (used for task matching).",
+    )
     parser.add_argument("--db-host", default="localhost")
     parser.add_argument("--db-name", default="transcripts")
     parser.add_argument("--db-user", default=None)
@@ -439,6 +465,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         model_url=args.model_url,
         model_name=args.model_name,
         capabilities=caps,
+        available_vram_gb=args.vram_gb,
+        model_profile_id=args.model_profile_id,
         db_host=args.db_host,
         db_name=args.db_name,
         db_user=args.db_user,

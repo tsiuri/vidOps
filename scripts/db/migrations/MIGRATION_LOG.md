@@ -73,3 +73,9 @@
 - Adds `analysis_configs`, `drills`, `drill_dependencies`, `analysis_tasks`, and `analysis_results`.
 - Ports distributed analysis queue schema from the legacy db-and-analysis repository.
 - File: `005_add_analysis_tables.sql`
+
+## [2025-12-23] Migration 006 — Analysis Model Profiles (VRAM)
+- Adds `analysis_model_profiles` registry table (model + options + VRAM).
+- Adds `analysis_tasks.required_vram_gb` + `analysis_tasks.model_profile_id` for VRAM-aware task claiming.
+- Adds `workers.vram_gb` for worker-advertised VRAM tracking.
+- File: `006_add_analysis_model_vram.sql`

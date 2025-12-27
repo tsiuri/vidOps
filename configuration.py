@@ -224,6 +224,10 @@ class AnalysisConfig:
     log_mode: str = "quiet"  # 'quiet', 'info', 'debug'
     # Capabilities to advertise when analysis-distributed worker starts (if CLI flag omitted)
     default_capabilities: List[str] = field(default_factory=list)
+    # Default available VRAM for analysis workers (GB)
+    default_vram_gb: float = 0.0
+    # Default model profile id for analysis workers
+    default_model_profile_id: Optional[int] = None
 
 
 @dataclass
@@ -258,12 +262,16 @@ class GpuProfileConfig:
     """
     # Display name for this GPU (optional, e.g., "RTX 4090")
     name: Optional[str] = None
+    # Available VRAM for this GPU (GB)
+    vram_gb: Optional[float] = None
     # Capabilities to advertise for this GPU (e.g., ["gpu_24gb", "qwen2.5:32b"])
     capabilities: List[str] = field(default_factory=list)
     # Ollama URL override for this GPU (default: http://localhost:{11434 + gpu_index})
     ollama_url: Optional[str] = None
     # Model name override for analysis on this GPU
     model_name: Optional[str] = None
+    # Model profile id override for analysis on this GPU
+    model_profile_id: Optional[int] = None
 
 
 @dataclass
@@ -389,6 +397,8 @@ def _apply_env_overrides(config_obj):
         "analysis.chunk_size_words": ["ANALYSIS_CHUNK_SIZE"],
         "analysis.chunk_overlap_words": ["ANALYSIS_CHUNK_OVERLAP"],
         "analysis.log_mode": ["ANALYSIS_LOG_MODE"],
+        "analysis.default_vram_gb": ["ANALYSIS_VRAM_GB", "VIDOPS_ANALYSIS_VRAM_GB"],
+        "analysis.default_model_profile_id": ["ANALYSIS_MODEL_PROFILE_ID"],
     }
 
     for path, env_vars in ENV_MAP.items():
@@ -498,6 +508,11 @@ def load_config(config_path: str = "config.yaml") -> Config:
                         config.analysis.chunk_size_words = analysis_data.get('chunk_size_words', config.analysis.chunk_size_words)
                         config.analysis.chunk_overlap_words = analysis_data.get('chunk_overlap_words', config.analysis.chunk_overlap_words)
                         config.analysis.log_mode = analysis_data.get('log_mode', config.analysis.log_mode)
+                        config.analysis.default_vram_gb = analysis_data.get('default_vram_gb', config.analysis.default_vram_gb)
+                        config.analysis.default_model_profile_id = analysis_data.get(
+                            'default_model_profile_id',
+                            config.analysis.default_model_profile_id,
+                        )
                         if 'default_capabilities' in analysis_data:
                             config.analysis.default_capabilities = list(analysis_data.get('default_capabilities') or config.analysis.default_capabilities)
 
@@ -509,9 +524,11 @@ def load_config(config_path: str = "config.yaml") -> Config:
                                 gpu_index = int(gpu_key)
                                 profile = GpuProfileConfig(
                                     name=gpu_data.get('name'),
+                                    vram_gb=gpu_data.get('vram_gb'),
                                     capabilities=list(gpu_data.get('capabilities', [])),
                                     ollama_url=gpu_data.get('ollama_url'),
                                     model_name=gpu_data.get('model_name'),
+                                    model_profile_id=gpu_data.get('model_profile_id'),
                                 )
                                 # Default ollama_url if not specified
                                 if profile.ollama_url is None:

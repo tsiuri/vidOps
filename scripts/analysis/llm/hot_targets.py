@@ -24,11 +24,33 @@ class HotTargetRunner:
         output_shapes: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.model = model
-        self.base_url = base_url
-        self.api_url = f"{base_url.rstrip('/')}/api/generate"
+        self.base_url = base_url.rstrip("/")
+        self.api_url = f"{self.base_url}/api/generate"
         self.options = options or {}
         self.log_mode = log_mode
         self.output_shapes = output_shapes or {}
+        self._ensured_models: set[str] = set()
+
+    def _ensure_model_available(self) -> None:
+        if self.model in self._ensured_models:
+            return
+        tags_url = f"{self.base_url}/api/tags"
+        pull_url = f"{self.base_url}/api/pull"
+        try:
+            resp = requests.get(tags_url, timeout=30)
+            if resp.status_code == 200:
+                names = [m.get("name") for m in resp.json().get("models", []) if m.get("name")]
+                if self.model in names:
+                    self._ensured_models.add(self.model)
+                    return
+        except Exception:
+            pass
+        try:
+            pull = requests.post(pull_url, json={"name": self.model, "stream": False}, timeout=600)
+            if pull.status_code == 200:
+                self._ensured_models.add(self.model)
+        except Exception:
+            pass
 
     def _get_schema_for_shape(self, shape_name: str) -> Dict[str, Any]:
         """Get the schema for a shape name, checking custom shapes first, then built-ins."""
@@ -112,6 +134,7 @@ Transcript chunk:
 Return only the JSON object."""
 
     def _call_model(self, prompt: str, chunk_id: int) -> Dict[str, Any]:
+        self._ensure_model_available()
         payload = {
             "model": self.model,
             "prompt": prompt,

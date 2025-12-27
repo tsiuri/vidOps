@@ -164,17 +164,40 @@ class OllamaAnalyzer:
                  log_mode: str = "quiet", category_suggestions: List[str] | None = None,
                  category_map: Dict[str, str] | None = None):
         self.model = model
-        self.base_url = base_url
-        self.api_url = f"{base_url}/api/generate"
+        self.base_url = base_url.rstrip("/")
+        self.api_url = f"{self.base_url}/api/generate"
         self.options = options or {}
         self.custom_request = (custom_request or '').strip()
         self.log_mode = log_mode
         self.category_suggestions = category_suggestions or []
         # Lowercase map for safety
         self.category_map = {k.lower(): v for k, v in (category_map or {}).items()}
+        self._ensured_models: set[str] = set()
+
+    def _ensure_model_available(self) -> None:
+        if self.model in self._ensured_models:
+            return
+        tags_url = f"{self.base_url}/api/tags"
+        pull_url = f"{self.base_url}/api/pull"
+        try:
+            resp = requests.get(tags_url, timeout=30)
+            if resp.status_code == 200:
+                names = [m.get("name") for m in resp.json().get("models", []) if m.get("name")]
+                if self.model in names:
+                    self._ensured_models.add(self.model)
+                    return
+        except Exception:
+            pass
+        try:
+            pull = requests.post(pull_url, json={"name": self.model, "stream": False}, timeout=600)
+            if pull.status_code == 200:
+                self._ensured_models.add(self.model)
+        except Exception:
+            pass
 
     def analyze_chunk(self, chunk_text: str, chunk_id: int) -> Dict[str, Any]:
         """Analyze a single chunk"""
+        self._ensure_model_available()
         extra = f"\nAdditional instruction for this run: {self.custom_request}\n" if self.custom_request else "\n"
         cat_hint = ""
         if self.category_suggestions:
@@ -254,6 +277,7 @@ Return only the JSON object."""
 
     def summarize(self, final_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Generate multiple summary variants from aggregated analysis"""
+        self._ensure_model_available()
         meta = final_analysis.get('metadata', {})
         data = final_analysis.get('analysis', {})
 
@@ -338,6 +362,7 @@ Return only the JSON object.
 
     def summarize_speaker(self, final_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Second pass focusing on the speaker: persona, themes, conflicts, noteworthy claims."""
+        self._ensure_model_available()
         meta = final_analysis.get('metadata', {})
         data = final_analysis.get('analysis', {})
         # Build a compact digest emphasizing first-person and named callouts

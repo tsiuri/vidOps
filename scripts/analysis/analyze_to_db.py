@@ -785,46 +785,105 @@ if __name__ == "__main__":
 # Distributed analysis helpers (job + task creation)
 # ---------------------------------------------------------------------------
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Iterable
 
 from .analysis_task import AnalysisTask
 from .analysis_task_repository import AnalysisTaskRepository
 from .analysis_config import AnalysisConfig
 
 
-def _get_pass_capabilities(pass_id: str, config: AnalysisConfig) -> List[str]:
-    """
-    Determine the capability tags required for a given pass.
+def _resolve_base_model(config: AnalysisConfig, model_name: Optional[str]) -> str:
+    base_model = model_name or getattr(config, "model", None)
+    backend = getattr(config, "backend_params", {}) or {}
+    base_model = base_model or backend.get("model") or backend.get("model_name")
+    if not base_model:
+        raise ValueError("Analysis config missing model; set config.model or pass model_name")
+    return str(base_model)
 
-    This is intentionally simple and can be refined over time.
-    """
-    # Look up the pass in the config if possible
-    target = None
-    for p in getattr(config, "passes", []):
-        if p.id == pass_id:
-            target = p
-            break
+def _resolve_profile_options(config: AnalysisConfig) -> Dict[str, Any]:
+    backend = getattr(config, "backend_params", {}) or {}
+    options = backend.get("ollama_options") or backend.get("ollama") or {}
+    return options if isinstance(options, dict) else {}
 
-    # If the pass declares a preferred_worker_type in params, use that
-    pref = None
-    if target is not None:
-        params = getattr(target, "params", None)
-        if params is not None:
-            pref = getattr(params, "preferred_worker_type", None)
+def _iter_hot_target_profile_ids(config: AnalysisConfig) -> Iterable[int]:
+    for spec in getattr(config, "hot_targets", []) or []:
+        if isinstance(spec, dict):
+            profile_id = spec.get("model_profile_id")
+        else:
+            profile_id = getattr(spec, "model_profile_id", None)
+        if profile_id:
+            yield int(profile_id)
 
-    # Heuristic mapping
-    if pref == "gpu":
-        return ["qwen2.5:7b-instruct", "gpu_8gb"]
-    if pref == "cpu":
-        return ["phi:2.2b", "cpu"]
+def _iter_drill_profile_ids(
+    db: AnalysisDatabase,
+    config_id: str,
+) -> Iterable[str]:
+    try:
+        drills = db.list_drills_for_config(config_id) or []
+    except Exception:
+        drills = []
+    for drill in drills:
+        detail = drill.get("detail_pass") or {}
+        profile_id = detail.get("model_profile_id")
+        if profile_id:
+            yield int(profile_id)
 
-    if pass_id in ("chunk_analysis", "hot_targets", "drills", "subchunks"):
-        return ["qwen2.5:7b-instruct", "gpu_8gb"]
-    if pass_id in ("sentiment_pass", "categories_pass"):
-        return ["phi:2.2b", "cpu"]
 
-    # Default: assume GPU
-    return ["qwen2.5:7b-instruct", "gpu_8gb"]
+def _resolve_model_profile(
+    db: AnalysisDatabase,
+    config: AnalysisConfig,
+    model_profile_id: Optional[int],
+    model_name: Optional[str],
+) -> Dict[str, Any]:
+    backend = getattr(config, "backend_params", {}) or {}
+    profile_id = model_profile_id or getattr(config, "model_profile_id", None) or backend.get("model_profile_id")
+    if profile_id:
+        profile = db.get_analysis_model_profile(int(profile_id))
+        if not profile:
+            raise ValueError(f"Model profile id '{profile_id}' not found in analysis_model_profiles")
+        return profile
+
+    base_model = _resolve_base_model(config, model_name)
+    options = _resolve_profile_options(config)
+    profile = db.get_analysis_model_profile_by_name_options(base_model, options)
+    if not profile:
+        raise ValueError(
+            f"No model profile registered for model '{base_model}' with options {options}. "
+            "Add a profile or set model_profile_id in the analysis config."
+        )
+    return profile
+
+
+def _get_pass_required_vram_gb(
+    pass_id: str,
+    config: AnalysisConfig,
+    config_id: str,
+    base_profile: Dict[str, Any],
+    db: AnalysisDatabase,
+) -> float:
+    llm_passes = {
+        "chunk_analysis",
+        "sentiment_pass",
+        "aggregate_results",
+        "hot_targets",
+        "drills",
+    }
+    if pass_id not in llm_passes:
+        return 0.0
+
+    vram_values = [float(base_profile.get("required_vram_gb") or 0)]
+    if pass_id == "hot_targets":
+        for profile_id in _iter_hot_target_profile_ids(config):
+            profile = db.get_analysis_model_profile(profile_id)
+            if profile:
+                vram_values.append(float(profile.get("required_vram_gb") or 0))
+    elif pass_id == "drills":
+        for profile_id in _iter_drill_profile_ids(db, config_id):
+            profile = db.get_analysis_model_profile(profile_id)
+            if profile:
+                vram_values.append(float(profile.get("required_vram_gb") or 0))
+
+    return max(vram_values) if vram_values else 0.0
 
 
 def create_analysis_job(
@@ -833,6 +892,8 @@ def create_analysis_job(
     config: AnalysisConfig,
     chunks: List[Dict[str, Any]],
     db: AnalysisDatabase,
+    model_name: Optional[str] = None,
+    model_profile_id: Optional[int] = None,
 ) -> str:
     """
     Create a new analysis job and enqueue tasks for all enabled passes/chunks.
@@ -849,6 +910,18 @@ def create_analysis_job(
     ]
 
     total_chunks = len(chunks)
+    base_profile = _resolve_model_profile(db, config, model_profile_id, model_name)
+
+    pass_requirements = {
+        pass_id: _get_pass_required_vram_gb(
+            pass_id=pass_id,
+            config=config,
+            config_id=config_id,
+            base_profile=base_profile,
+            db=db,
+        )
+        for pass_id in enabled_passes
+    }
 
     for chunk_id, chunk_obj in enumerate(chunks):
         # Extract text from chunk object
@@ -865,7 +938,7 @@ def create_analysis_job(
         chunk_metadata.setdefault("config_id", config_id)
 
         for pass_id in enabled_passes:
-            required_capabilities = _get_pass_capabilities(pass_id, config)
+            required_vram_gb = pass_requirements.get(pass_id, 0.0)
             task = AnalysisTask(
                 task_id=0,
                 job_id=job_id,
@@ -874,7 +947,9 @@ def create_analysis_job(
                 pass_id=pass_id,
                 chunk_text=chunk_text,
                 chunk_metadata=chunk_metadata,
-                required_capabilities=required_capabilities,
+                required_capabilities=[],
+                required_vram_gb=required_vram_gb,
+                model_profile_id=int(base_profile.get("id") or 0) or None,
             )
             repo.create_task(task)
 

@@ -45,6 +45,8 @@ class DistributedAnalysisService:
         model_url: str = "http://localhost:11434",
         model_name: str = "llama3",
         capabilities: Optional[List[str]] = None,
+        available_vram_gb: float = 0.0,
+        model_profile_id: Optional[int] = None,
         machine_alias: Optional[str] = None,
     ):
         self.job_repo = job_repo
@@ -55,6 +57,8 @@ class DistributedAnalysisService:
         self.model_url = model_url
         self.model_name = model_name
         self.capabilities = capabilities or []
+        self.available_vram_gb = max(float(available_vram_gb or 0), 0.0)
+        self.model_profile_id = model_profile_id
         self.machine_alias = machine_alias
 
     def _build_capabilities(self, model_name: str) -> List[str]:
@@ -91,8 +95,27 @@ class DistributedAnalysisService:
 
             model_url = job.config.get("model_url") or self.model_url
             model_name = job.config.get("model_name") or self.model_name
+            model_profile_id = job.config.get("model_profile_id") or self.model_profile_id
             capabilities = self._build_capabilities(model_name)
             machine_alias = self.machine_alias or job.claimed_by or self.db_host
+            required_vram_gb = self._get_required_vram_for_job(analysis_job_id)
+            if required_vram_gb > self.available_vram_gb:
+                msg = (
+                    f"Insufficient VRAM for analysis job {analysis_job_id}: "
+                    f"requires {required_vram_gb} GB, worker has {self.available_vram_gb} GB."
+                )
+                self.job_repo.update_status(job.job_id, JobStatus.FAILED, msg)
+                logger.error(msg)
+                return
+            task_profile_id = self._get_model_profile_for_job(analysis_job_id)
+            if task_profile_id and model_profile_id and task_profile_id != model_profile_id:
+                msg = (
+                    f"Model profile mismatch for analysis job {analysis_job_id}: "
+                    f"tasks use profile {task_profile_id}, worker configured for {model_profile_id}."
+                )
+                self.job_repo.update_status(job.job_id, JobStatus.FAILED, msg)
+                logger.error(msg)
+                return
 
             worker = AnalysisWorker(
                 machine_alias=machine_alias,
@@ -100,6 +123,8 @@ class DistributedAnalysisService:
                 model_url=model_url,
                 model_name=model_name,
                 capabilities=capabilities,
+                available_vram_gb=self.available_vram_gb,
+                model_profile_id=model_profile_id or task_profile_id,
                 db_host=self.db_host,
                 db_name=self.db_name,
                 db_user=self.db_user,
@@ -208,6 +233,8 @@ class DistributedAnalysisService:
                 config=config_obj,
                 chunks=chunk_payload,
                 db=db,
+                model_name=job.config.get("model_name") or self.model_name,
+                model_profile_id=job.config.get("model_profile_id") or getattr(config_obj, "model_profile_id", None),
             )
         finally:
             if db:
@@ -225,6 +252,44 @@ class DistributedAnalysisService:
         )
         db.connect()
         return db
+
+    def _get_required_vram_for_job(self, analysis_job_id: str) -> float:
+        db = self._connect_analysis_db()
+        try:
+            cur = db.cursor
+            cur.execute(
+                "SELECT COALESCE(MAX(required_vram_gb), 0) FROM analysis_tasks WHERE job_id = %s",
+                (analysis_job_id,),
+            )
+            row = cur.fetchone()
+            return float(row[0] or 0)
+        except Exception:
+            return 0.0
+        finally:
+            try:
+                db.disconnect()
+            except Exception:
+                pass
+
+    def _get_model_profile_for_job(self, analysis_job_id: str) -> Optional[int]:
+        db = self._connect_analysis_db()
+        try:
+            cur = db.cursor
+            cur.execute(
+                "SELECT DISTINCT model_profile_id FROM analysis_tasks WHERE job_id = %s",
+                (analysis_job_id,),
+            )
+            rows = [r[0] for r in cur.fetchall() if r and r[0] is not None]
+            if not rows:
+                return None
+            return int(rows[0])
+        except Exception:
+            return None
+        finally:
+            try:
+                db.disconnect()
+            except Exception:
+                pass
 
     def _resolve_transcript_path(self, path: Path, cfg) -> Path:
         if path.is_absolute():

@@ -128,6 +128,8 @@ def enqueue_distributed_analysis(
             payload["vtt_path"] = str(transcript_path)
         chunk_payload.append(payload)
 
+    config_model = getattr(config_obj, "model", None) or cfg.analysis.ollama.model
+    config_model_profile_id = getattr(config_obj, "model_profile_id", None)
     db = AnalysisDatabase()
     db.connect()
     try:
@@ -137,6 +139,8 @@ def enqueue_distributed_analysis(
             config=config_obj,
             chunks=chunk_payload,
             db=db,
+            model_name=config_model,
+            model_profile_id=config_model_profile_id,
         )
     finally:
         db.disconnect()
@@ -144,8 +148,6 @@ def enqueue_distributed_analysis(
     # Also create a job entry in the generic jobs table for GenericWorker
     try:
         job_repo = JobRepository()
-        # if config has a model override, honor it
-        config_model = getattr(config_obj, "model", None) or cfg.analysis.ollama.model
         job_config = {
             "analysis_job_id": job_id,
             "config_id": config_id,
@@ -153,6 +155,7 @@ def enqueue_distributed_analysis(
             "transcript_kind": transcript.kind or "unknown",
             "model_url": cfg.analysis.ollama.url,
             "model_name": config_model,
+            "model_profile_id": config_model_profile_id,
         }
         generic_job = Job(
             job_type="analysis-distributed",

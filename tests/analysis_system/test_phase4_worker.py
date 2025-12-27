@@ -67,6 +67,21 @@ def ensure_video_row(db: AnalysisDatabase, ytid: str) -> None:
         db.conn.commit()
 
 
+def ensure_model_profile(db: AnalysisDatabase, model_name: str, required_vram_gb: float) -> int:
+    try:
+        profile_id = db.upsert_analysis_model_profile(
+            model_name=model_name,
+            options={},
+            required_vram_gb=required_vram_gb,
+            notes="test fixture",
+        )
+        if db.conn:
+            db.conn.commit()
+        return int(profile_id)
+    except Exception:
+        return 0
+
+
 def connect_db(
     db_name: Optional[str] = None,
     db_host: Optional[str] = None,
@@ -115,8 +130,11 @@ def test_phase4_integration():
         print("\n[Step 1] Creating analysis job with tasks...")
         config_id = "test_phase4_worker"
         config = default_config(config_id=config_id)
+        config.model = "qwen2.5:7b-instruct"
         chunks = build_synthetic_chunks("test_phase4", num_chunks=2)
 
+        profile_id = ensure_model_profile(db, config.model, required_vram_gb=8)
+        config.model_profile_id = profile_id
         ensure_analysis_config(db, config_id, config)
         ensure_video_row(db, "AxtuJ-IVOGA")
 
@@ -126,6 +144,8 @@ def test_phase4_integration():
             config=config,
             chunks=chunks,
             db=db,
+            model_name=config.model,
+            model_profile_id=config.model_profile_id,
         )
         print(f"✓ Created job_id: {job_id}")
 
@@ -147,6 +167,8 @@ def test_phase4_integration():
             model_url="http://localhost:11434",
             model_name="qwen2.5:7b-instruct",
             capabilities=["qwen2.5:7b-instruct", "gpu_8gb"],
+            available_vram_gb=8,
+            model_profile_id=config.model_profile_id,
             db_host=db.conn_params["host"],
             db_name=db.conn_params["dbname"],
             db_user=db.conn_params.get("user"),
@@ -160,7 +182,8 @@ def test_phase4_integration():
         while tasks_processed < max_tasks_to_process:
             task = repo.claim_next(
                 worker_id=worker.worker_id,
-                worker_capabilities=worker.capabilities,
+                worker_vram_gb=worker.available_vram_gb,
+                worker_model_profile_id=worker.model_profile_id,
                 lease_duration=worker.lease_duration,
             )
 

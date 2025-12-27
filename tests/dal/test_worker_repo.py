@@ -28,7 +28,8 @@ def sample_worker() -> Worker:
         machine_alias="atlas-test-machine",
         worker_type="transcription",
         hostname="atlas-host",
-        capabilities=["cpu"]
+        capabilities=["cpu"],
+        vram_gb=0,
     )
 
 
@@ -63,14 +64,16 @@ class TestWorkerRepository:
             machine_alias="atlas-fresh",
             worker_type="download",
             hostname="atlas-host",
-            capabilities=[]
+            capabilities=[],
+            vram_gb=0,
         )
         stale_worker = Worker(
             worker_id="worker-stale",
             machine_alias="atlas-stale",
             worker_type="download",
             hostname="atlas-host",
-            capabilities=[]
+            capabilities=[],
+            vram_gb=0,
         )
 
         worker_repo.register(fresh_worker)

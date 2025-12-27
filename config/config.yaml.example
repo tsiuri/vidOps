@@ -143,10 +143,14 @@ download:
 # --- Analysis Defaults ---
 analysis:
   # Default capabilities advertised when starting analysis-distributed workers.
-  # Override per-machine via --capabilities if needed.
+  # Legacy only (scheduling now uses VRAM); keep empty unless needed for debugging.
   default_capabilities:
     - qwen2.5:7b-instruct
     - gpu_8gb
+  # Default available VRAM (GB) for analysis workers if not overridden.
+  default_vram_gb: 8
+  # Default model profile id (analysis_model_profiles.id)
+  default_model_profile_id: 1
 
 # --- Per-GPU Configuration ---
 # Define per-GPU profiles for multi-GPU setups. Each GPU can have its own
@@ -160,16 +164,20 @@ analysis:
 gpus:
   0:
     name: "Primary GPU"                    # Display name (optional)
+    vram_gb: 24
     capabilities:
       - gpu_24gb
       - qwen2.5:32b
     # ollama_url: "http://localhost:11434" # Default: 11434 + gpu_index
     model_name: "qwen2.5:32b"
+    model_profile_id: 2
 
   1:
     name: "Secondary GPU"
+    vram_gb: 8
     capabilities:
       - gpu_8gb
       - qwen2.5:7b
     # ollama_url: "http://localhost:11435" # Default: 11434 + gpu_index
     model_name: "qwen2.5:7b"
+    model_profile_id: 1

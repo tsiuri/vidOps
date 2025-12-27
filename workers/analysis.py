@@ -45,6 +45,7 @@ class AnalysisWorker:
             status=WorkerStatus.IDLE,
             pid=self.pid,
             hostname=self.hostname,
+            vram_gb=self.config.analysis.default_vram_gb,
             capabilities=["llm_access"] # Placeholder
         )
         self.worker_repo.register(worker_model)
@@ -92,6 +93,7 @@ class AnalysisWorker:
             worker_type=self.worker_type,
             pid=self.pid,
             hostname=self.hostname,
+            vram_gb=self.config.analysis.default_vram_gb,
             capabilities=["llm_access"] # Dummy capabilities for now
         )
 

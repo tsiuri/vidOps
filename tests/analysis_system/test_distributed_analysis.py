@@ -73,6 +73,21 @@ def ensure_video_row(db: AnalysisDatabase, ytid: str) -> None:
         db.conn.commit()
 
 
+def ensure_model_profile(db: AnalysisDatabase, model_name: str, required_vram_gb: float) -> int:
+    try:
+        profile_id = db.upsert_analysis_model_profile(
+            model_name=model_name,
+            options={},
+            required_vram_gb=required_vram_gb,
+            notes="test fixture",
+        )
+        if db.conn:
+            db.conn.commit()
+        return int(profile_id)
+    except Exception:
+        return 0
+
+
 def connect_db(
     db_name: Optional[str] = None,
     db_host: Optional[str] = None,
@@ -94,7 +109,9 @@ def connect_db(
 
 
 def build_test_config(config_id: str) -> AnalysisConfig:
-    return default_config(config_id=config_id)
+    config = default_config(config_id=config_id)
+    config.model = "qwen2.5:7b-instruct"
+    return config
 
 
 def build_synthetic_chunks(ytid: str, num_chunks: int) -> List[Dict[str, Any]]:
@@ -140,6 +157,8 @@ def run_distributed_test(
         print(f"- Synthetic chunks: {len(chunks)}")
 
         ensure_video_row(db, ytid)
+        profile_id = ensure_model_profile(db, config.model, required_vram_gb=8)
+        config.model_profile_id = profile_id
         ensure_analysis_config(db, config)
 
         job_id = create_analysis_job(
@@ -148,6 +167,8 @@ def run_distributed_test(
             config=config,
             chunks=chunks,
             db=db,
+            model_name=config.model,
+            model_profile_id=config.model_profile_id,
         )
         print(f"\n✓ Created job_id: {job_id}")
 
@@ -157,7 +178,7 @@ def run_distributed_test(
 
         worker_a = "test_worker_a"
         worker_b = "test_worker_b"
-        caps: List[str] = ["qwen2.5:7b-instruct", "gpu_8gb", "phi:2.2b", "cpu"]
+        vram_gb = 8
         lease = timedelta(minutes=30)
 
         current_worker = worker_a
@@ -166,7 +187,8 @@ def run_distributed_test(
         while True:
             task = repo.claim_next(
                 worker_id=current_worker,
-                worker_capabilities=caps,
+                worker_vram_gb=vram_gb,
+                worker_model_profile_id=config.model_profile_id,
                 lease_duration=lease,
             )
 

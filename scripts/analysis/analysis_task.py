@@ -30,6 +30,8 @@ class AnalysisTask:
 
     chunk_metadata: Dict[str, Any] = field(default_factory=dict)
     required_capabilities: List[str] = field(default_factory=list)
+    required_vram_gb: float = 0.0
+    model_profile_id: Optional[int] = None
 
     status: TaskStatus = TaskStatus.PENDING
     result_json: Optional[Dict[str, Any]] = None
@@ -77,6 +79,8 @@ class AnalysisTask:
             chunk_text=row["chunk_text"],
             chunk_metadata=row.get("chunk_metadata") or {},
             required_capabilities=row.get("required_capabilities") or [],
+            required_vram_gb=float(row.get("required_vram_gb") or 0.0),
+            model_profile_id=row.get("model_profile_id"),
             status=status,
             result_json=row.get("result_json"),
             claimed_by=row.get("claimed_by"),

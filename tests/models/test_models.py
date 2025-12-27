@@ -49,6 +49,7 @@ def sample_worker_data():
         'worker_type': 'transcription',
         'status': WorkerStatus.IDLE.value,
         'capabilities': ['gpu', 'cuda'],
+        'vram_gb': 8,
         'pid': 1234,
         'hostname': 'test-host',
         'registered_at': datetime.now(UTC),
@@ -118,6 +119,7 @@ def test_worker_model(sample_worker_data):
     """Test Worker model instantiation and serialization."""
     worker = Worker.from_row(sample_worker_data)
     assert worker.worker_id == sample_worker_data['worker_id']
+    assert worker.vram_gb == sample_worker_data['vram_gb']
     assert worker.worker_type == sample_worker_data['worker_type']
     assert worker.status == WorkerStatus.IDLE # Check enum conversion
     

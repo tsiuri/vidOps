@@ -40,12 +40,12 @@ class WorkerRepository:
                 cur.execute(
                     f"""
                     INSERT INTO {self.table_name} (
-                        worker_id, machine_alias, worker_type, status, capabilities,
+                        worker_id, machine_alias, worker_type, status, capabilities, vram_gb,
                         pid, hostname, registered_at, last_heartbeat
                     )
                     VALUES (
                         %(worker_id)s, %(machine_alias)s, %(worker_type)s, %(status)s,
-                        %(capabilities)s, %(pid)s, %(hostname)s, %(registered_at)s,
+                        %(capabilities)s, %(vram_gb)s, %(pid)s, %(hostname)s, %(registered_at)s,
                         %(last_heartbeat)s
                     )
                     ON CONFLICT (worker_id) DO UPDATE SET
@@ -53,6 +53,7 @@ class WorkerRepository:
                         worker_type = EXCLUDED.worker_type,
                         status = EXCLUDED.status,
                         capabilities = EXCLUDED.capabilities,
+                        vram_gb = EXCLUDED.vram_gb,
                         pid = EXCLUDED.pid,
                         hostname = EXCLUDED.hostname,
                         last_heartbeat = NOW()

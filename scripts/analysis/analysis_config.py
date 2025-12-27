@@ -177,6 +177,7 @@ class AnalysisConfig(BaseModel):
     description: str = ""
     analysis_type: str = "normal"
     model: Optional[str] = None
+    model_profile_id: Optional[int] = None
     transcription_machine: Optional[str] = None
     diarized: bool = False
 

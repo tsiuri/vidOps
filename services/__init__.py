@@ -219,5 +219,7 @@ def get_distributed_analysis_service() -> DistributedAnalysisService:
         model_url=config.analysis.ollama.url,
         model_name=config.analysis.ollama.model,
         capabilities=list(config.analysis.default_capabilities or []),
+        available_vram_gb=config.analysis.default_vram_gb,
+        model_profile_id=config.analysis.default_model_profile_id,
         machine_alias=config.workers.machine_alias,
     )

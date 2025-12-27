@@ -55,6 +55,7 @@ class GenericWorker:
             worker_type=self.base_worker_type,
             machine_alias=self.machine_alias,
             status=WorkerStatus.REGISTERING,
+            vram_gb=self.config.analysis.default_vram_gb,
             pid=os.getpid(),
             hostname=os.uname().nodename,
         )

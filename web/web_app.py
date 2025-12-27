@@ -1681,6 +1681,10 @@ def new_analysis_job():
                                         }
                                         chunk_payload.append(payload)
 
+                                    config_model = getattr(config_obj, "model", None) or (
+                                        cfg.analysis.ollama.model if cfg.analysis else "llama3"
+                                    )
+                                    config_model_profile_id = getattr(config_obj, "model_profile_id", None)
                                     # Create analysis job (this enqueues all tasks)
                                     analysis_job_id = create_analysis_job(
                                         ytid=ytid,
@@ -1688,13 +1692,12 @@ def new_analysis_job():
                                         config=config_obj,
                                         chunks=chunk_payload,
                                         db=analysis_db,
+                                        model_name=config_model,
+                                        model_profile_id=config_model_profile_id,
                                     )
 
                                     # Create generic job entry for GenericWorker
                                     job_repo = JobRepository()
-                                    config_model = getattr(config_obj, "model", None) or (
-                                        cfg.analysis.ollama.model if cfg.analysis else "llama3"
-                                    )
                                     job_config = {
                                         'analysis_job_id': analysis_job_id,
                                         'ytid': ytid,
@@ -1702,6 +1705,7 @@ def new_analysis_job():
                                         'transcript_kind': transcript.kind or 'unknown',
                                         'model_url': cfg.analysis.ollama.url if cfg.analysis else 'http://localhost:11434',
                                         'model_name': config_model,
+                                        'model_profile_id': config_model_profile_id,
                                     }
                                     generic_job = Job(
                                         job_type='analysis-distributed',

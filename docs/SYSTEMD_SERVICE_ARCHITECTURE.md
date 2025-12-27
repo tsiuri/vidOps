@@ -59,7 +59,7 @@ Infinite loop:
 - Routes to: `from vidops.cli.worker import worker`
 
 **CLI Handler:** `/home/billie/tools/vidops/cli/worker.py`
-- Parses CLI arguments (machine-alias, model-url, capabilities, etc.)
+- Parses CLI arguments (machine-alias, model-url, model-profile-id, vram, legacy capabilities, etc.)
 - Loads vidops config via `load_config()`
 - Instantiates `AnalysisWorker` class
 - Calls `worker.run_forever()`
@@ -87,7 +87,7 @@ Infinite loop:
   - Completes current task before exiting
 
 **Data Access:** `/home/billie/tools/vidops/dal/analysis_task_repository.py`
-- `claim_next()` - Atomic task claiming via PostgreSQL SELECT FOR UPDATE
+- `claim_next()` - Atomic task claiming via PostgreSQL SELECT FOR UPDATE (VRAM-gated)
 - `mark_completed()` - Update task with results
 - `mark_failed()` - Mark task as failed
 - `is_job_complete()` - Check if all tasks done

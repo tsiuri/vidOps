@@ -10,7 +10,7 @@ from datetime import datetime
 
 try:
     import psycopg2
-    from psycopg2.extras import execute_values
+    from psycopg2.extras import execute_values, Json
     from psycopg2 import sql as _sql
 except ImportError:
     print("Error: 'psycopg2' library not found. Install with: pip install psycopg2-binary", file=sys.stderr)
@@ -937,6 +937,99 @@ class AnalysisDatabase:
     # ------------------------------------------------------------------
     # Analysis configuration helpers
     # ------------------------------------------------------------------
+
+    def list_analysis_model_profiles(self) -> list[dict[str, Any]]:
+        """Return all registered analysis model profiles."""
+        try:
+            self.cursor.execute(
+                """SELECT id, model_name, options, required_vram_gb, notes, created_at, updated_at
+                   FROM analysis_model_profiles
+                   ORDER BY model_name, id"""
+            )
+        except Exception:
+            return []
+        rows = self.cursor.fetchall()
+        cols = [desc[0] for desc in self.cursor.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def get_analysis_model_profile(self, profile_id: int) -> dict[str, Any] | None:
+        """Fetch a single model profile row by id."""
+        try:
+            self.cursor.execute(
+                """SELECT id, model_name, options, required_vram_gb, notes, created_at, updated_at
+                   FROM analysis_model_profiles
+                   WHERE id = %s""",
+                (profile_id,),
+            )
+        except Exception:
+            return None
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in self.cursor.description]
+        return dict(zip(cols, row))
+
+    def get_analysis_model_profile_by_name_options(
+        self,
+        model_name: str,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch a model profile matching model name + options."""
+        opts = options or {}
+        try:
+            self.cursor.execute(
+                """SELECT id, model_name, options, required_vram_gb, notes, created_at, updated_at
+                   FROM analysis_model_profiles
+                   WHERE model_name = %s AND options = %s::jsonb
+                   ORDER BY id
+                   LIMIT 1""",
+                (model_name, Json(opts)),
+            )
+        except Exception:
+            return None
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        cols = [desc[0] for desc in self.cursor.description]
+        return dict(zip(cols, row))
+
+    def upsert_analysis_model_profile(
+        self,
+        model_name: str,
+        options: dict[str, Any] | None,
+        required_vram_gb: float,
+        notes: str | None = None,
+        profile_id: int | None = None,
+    ) -> int:
+        """Insert or update an analysis model profile; returns profile id."""
+        opts = options or {}
+        if profile_id is not None:
+            self.cursor.execute(
+                """UPDATE analysis_model_profiles
+                   SET model_name = %s,
+                       options = %s::jsonb,
+                       required_vram_gb = %s,
+                       notes = %s,
+                       updated_at = NOW()
+                   WHERE id = %s
+                   RETURNING id""",
+                (model_name, Json(opts), required_vram_gb, notes, profile_id),
+            )
+            row = self.cursor.fetchone()
+            return int(row[0]) if row else int(profile_id)
+
+        self.cursor.execute(
+            """INSERT INTO analysis_model_profiles (model_name, options, required_vram_gb, notes, created_at, updated_at)
+               VALUES (%s, %s::jsonb, %s, %s, NOW(), NOW())
+               ON CONFLICT (model_name, options) DO UPDATE
+                  SET required_vram_gb = EXCLUDED.required_vram_gb,
+                      notes = EXCLUDED.notes,
+                      updated_at = NOW()
+               RETURNING id""",
+            (model_name, Json(opts), required_vram_gb, notes),
+        )
+        row = self.cursor.fetchone()
+        return int(row[0]) if row else 0
 
     def list_analysis_configs(self) -> list[dict[str, Any]]:
         """Return a list of analysis configs."""

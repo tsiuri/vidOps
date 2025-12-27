@@ -52,6 +52,8 @@ class AnalysisTaskRepository:
                 chunk_text,
                 chunk_metadata,
                 required_capabilities,
+                required_vram_gb,
+                model_profile_id,
                 status,
                 result_json,
                 claimed_by,
@@ -71,6 +73,8 @@ class AnalysisTaskRepository:
                 %(chunk_text)s,
                 %(chunk_metadata)s,
                 %(required_capabilities)s,
+                %(required_vram_gb)s,
+                %(model_profile_id)s,
                 %(status)s,
                 %(result_json)s,
                 %(claimed_by)s,
@@ -93,6 +97,8 @@ class AnalysisTaskRepository:
             "chunk_text": data["chunk_text"],
             "chunk_metadata": Json(data.get("chunk_metadata") or {}),
             "required_capabilities": data.get("required_capabilities") or [],
+            "required_vram_gb": data.get("required_vram_gb", 0) or 0,
+            "model_profile_id": data.get("model_profile_id"),
             "status": data["status"],
             "result_json": Json(data["result_json"]) if data.get("result_json") is not None else None,
             "claimed_by": data.get("claimed_by"),
@@ -119,28 +125,33 @@ class AnalysisTaskRepository:
     def claim_next(
         self,
         worker_id: str,
-        worker_capabilities: List[str],
+        worker_vram_gb: float,
+        worker_model_profile_id: Optional[int],
         lease_duration: timedelta,
     ) -> Optional[AnalysisTask]:
         """
-        Atomically claim the next available task compatible with the worker's capabilities.
+        Atomically claim the next available task compatible with the worker's VRAM.
 
         Uses SELECT ... FOR UPDATE SKIP LOCKED to avoid contention between workers.
         """
         now = datetime.now(timezone.utc)
         lease_expires = now + lease_duration
+        vram_gb = max(float(worker_vram_gb or 0), 0.0)
+        profile_id = int(worker_model_profile_id) if worker_model_profile_id is not None else None
 
-        # Note: required_capabilities is ARRAY(TEXT). We use <@ to mean "subset of".
-        # If required_capabilities is NULL or empty, any worker can take the task.
+        # VRAM gating is the active scheduler. Legacy capability tags are ignored.
         select_sql = """
             SELECT *
             FROM analysis_tasks
             WHERE status IN ('pending', 'failed')
               AND (claimed_by IS NULL OR lease_expires_at < %(now)s)
               AND (
-                    required_capabilities IS NULL
-                 OR required_capabilities = '{}'
-                 OR required_capabilities <@ %(caps)s
+                    required_vram_gb IS NULL
+                 OR required_vram_gb <= %(vram_gb)s
+              )
+              AND (
+                    model_profile_id IS NULL
+                 OR model_profile_id = %(profile_id)s
               )
             ORDER BY created_at ASC
             FOR UPDATE SKIP LOCKED
@@ -148,7 +159,7 @@ class AnalysisTaskRepository:
         """
 
         cur = self.db.cursor
-        cur.execute(select_sql, {"now": now, "caps": worker_capabilities})
+        cur.execute(select_sql, {"now": now, "vram_gb": vram_gb, "profile_id": profile_id})
         row = _row_to_dict(cur.fetchone(), cur)
         if not row:
             if self.db.conn:

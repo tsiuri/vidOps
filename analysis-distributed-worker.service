@@ -22,6 +22,8 @@ Environment="OLLAMA_URL=http://localhost:11434"
 Environment="OLLAMA_MODEL=qwen2.5:7b-instruct"
 Environment="ANALYSIS_WORKER_TYPE=analysis_gpu"
 Environment="ANALYSIS_CAPABILITIES=qwen2.5:7b-instruct,gpu_8gb"
+Environment="ANALYSIS_VRAM_GB=8"
+Environment="ANALYSIS_MODEL_PROFILE_ID=1"
 Environment="ANALYSIS_LEASE_MINUTES=60"
 
 # Main command - customize machine-alias and capabilities per instance
@@ -31,6 +33,8 @@ ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start anal
     --model-name ${OLLAMA_MODEL} \
     --capabilities gpu_8gb \
     --capabilities ${OLLAMA_MODEL} \
+    --vram-gb ${ANALYSIS_VRAM_GB} \
+    --model-profile-id ${ANALYSIS_MODEL_PROFILE_ID} \
     --lease-minutes ${ANALYSIS_LEASE_MINUTES}
 
 # Restart policy

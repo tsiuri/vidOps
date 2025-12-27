@@ -28,6 +28,7 @@ class Worker:
     
     # Capabilities & State
     capabilities: List[str] = field(default_factory=list) # e.g., ['gpu_0', 'model_medium']
+    vram_gb: Optional[float] = None
     current_job_id: Optional[str] = None
     
     # Tracking
@@ -56,6 +57,7 @@ class Worker:
             worker_type=row['worker_type'],
             status=status,
             capabilities=row.get('capabilities') or [],
+            vram_gb=row.get('vram_gb'),
             current_job_id=row.get('current_job_id'),
             registered_at=row.get('registered_at', datetime.now(UTC)),
             last_heartbeat=row.get('last_heartbeat', datetime.now(UTC)),
