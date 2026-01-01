@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+
+{% block title %}Job {{ job.job_id[:8] }}... Details{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Job Details</h1>
+        <a href="{{ url_for('jobs_browser') }}" class="btn btn-secondary">← Back to Jobs</a>
+    </div>
+
+    <!-- Job ID and Status -->
+    <div class="card mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">Basic Information</h5>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <table class="table table-sm">
+                        <tr>
+                            <th style="width: 200px;">Job ID:</th>
+                            <td><code>{{ job.job_id }}</code></td>
+                        </tr>
+                        <tr>
+                            <th>Job Type:</th>
+                            <td><span class="badge bg-secondary">{{ job.job_type }}</span></td>
+                        </tr>
+                        <tr>
+                            <th>Status:</th>
+                            <td>
+                                {% if job.status == 'COMPLETED' %}
+                                    <span class="badge bg-success">{{ job.status }}</span>
+                                {% elif job.status == 'RUNNING' %}
+                                    <span class="badge bg-primary">{{ job.status }}</span>
+                                {% elif job.status == 'CLAIMED' %}
+                                    <span class="badge bg-info">{{ job.status }}</span>
+                                {% elif job.status == 'FAILED' %}
+                                    <span class="badge bg-danger">{{ job.status }}</span>
+                                {% elif job.status == 'PENDING' %}
+                                    <span class="badge bg-warning text-dark">{{ job.status }}</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ job.status }}</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>Priority:</th>
+                            <td>{{ job.priority }}</td>
+                        </tr>
+                        <tr>
+                            <th>Required VRAM:</th>
+                            <td>
+                                {% if job.required_vram_gb %}
+                                    <span class="badge bg-info">{{ job.required_vram_gb }} GB</span>
+                                {% else %}
+                                    <span class="text-muted">N/A</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+                <div class="col-md-6">
+                    <table class="table table-sm">
+                        <tr>
+                            <th style="width: 200px;">Created:</th>
+                            <td>{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th>Updated:</th>
+                            <td>{{ job.updated_at.strftime('%Y-%m-%d %H:%M:%S') if job.updated_at else '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th>Claimed At:</th>
+                            <td>{{ job.claimed_at.strftime('%Y-%m-%d %H:%M:%S') if job.claimed_at else '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th>Started At:</th>
+                            <td>{{ job.started_at.strftime('%Y-%m-%d %H:%M:%S') if job.started_at else '-' }}</td>
+                        </tr>
+                        <tr>
+                            <th>Completed At:</th>
+                            <td>{{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else '-' }}</td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Video Information -->
+    {% if job.ytid %}
+    <div class="card mb-4">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0">Video Information</h5>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm">
+                <tr>
+                    <th style="width: 200px;">Video ID:</th>
+                    <td>
+                        <a href="{{ url_for('video_detail_page', ytid=job.ytid) }}" class="text-decoration-none">
+                            {{ job.ytid }}
+                        </a>
+                    </td>
+                </tr>
+                {% if job.title %}
+                <tr>
+                    <th>Title:</th>
+                    <td>{{ job.title }}</td>
+                </tr>
+                {% endif %}
+                {% if job.channel %}
+                <tr>
+                    <th>Channel:</th>
+                    <td>{{ job.channel }}</td>
+                </tr>
+                {% endif %}
+                {% if job.upload_date %}
+                <tr>
+                    <th>Upload Date:</th>
+                    <td>{{ job.upload_date.strftime('%Y-%m-%d') if job.upload_date else '-' }}</td>
+                </tr>
+                {% endif %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Worker Information -->
+    {% if job.claimed_by %}
+    <div class="card mb-4">
+        <div class="card-header bg-secondary text-white">
+            <h5 class="mb-0">Worker Information</h5>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm">
+                <tr>
+                    <th style="width: 200px;">Claimed By:</th>
+                    <td><code>{{ job.claimed_by }}</code></td>
+                </tr>
+                {% if job.lease_expires_at %}
+                <tr>
+                    <th>Lease Expires:</th>
+                    <td>{{ job.lease_expires_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                </tr>
+                {% endif %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Analysis Configuration (for analysis jobs) -->
+    {% if job.config and job.config.get('config_id') %}
+    <div class="card mb-4">
+        <div class="card-header bg-success text-white">
+            <h5 class="mb-0">Analysis Configuration</h5>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm">
+                <tr>
+                    <th style="width: 200px;">Config ID:</th>
+                    <td>
+                        <a href="{{ url_for('edit_analysis_config', config_id=job.config.get('config_id')) }}" class="text-decoration-none">
+                            <code class="text-primary fw-bold" style="font-size: 1.1em;">
+                                {{ job.config.get('config_id') }}
+                            </code>
+                        </a>
+                    </td>
+                </tr>
+                {% if job.config.get('analysis_job_id') %}
+                <tr>
+                    <th>Analysis Job ID:</th>
+                    <td><code>{{ job.config.get('analysis_job_id') }}</code></td>
+                </tr>
+                {% endif %}
+                {% if job.config.get('model_name') %}
+                <tr>
+                    <th>Model:</th>
+                    <td><code>{{ job.config.get('model_name') }}</code></td>
+                </tr>
+                {% endif %}
+                {% if job.config.get('model_url') %}
+                <tr>
+                    <th>Model URL:</th>
+                    <td><code>{{ job.config.get('model_url') }}</code></td>
+                </tr>
+                {% endif %}
+                {% if job.config.get('model_profile_id') %}
+                <tr>
+                    <th>Model Profile ID:</th>
+                    <td><code>{{ job.config.get('model_profile_id') }}</code></td>
+                </tr>
+                {% endif %}
+                {% if job.config.get('transcript_kind') %}
+                <tr>
+                    <th>Transcript Kind:</th>
+                    <td><code>{{ job.config.get('transcript_kind') }}</code></td>
+                </tr>
+                {% endif %}
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Job Configuration (full) -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Full Configuration</h5>
+        </div>
+        <div class="card-body">
+            <pre class="mb-0" style="background-color: #f8f9fa; padding: 1rem; border-radius: 4px; max-height: 400px; overflow-y: auto;"><code>{{ job.config | tojson(indent=2) if job.config else '{}' }}</code></pre>
+        </div>
+    </div>
+
+    <!-- Job Result -->
+    {% if job.result %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Job Result</h5>
+        </div>
+        <div class="card-body">
+            <pre class="mb-0" style="background-color: #f8f9fa; padding: 1rem; border-radius: 4px; max-height: 400px; overflow-y: auto;"><code>{{ job.result | tojson(indent=2) }}</code></pre>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Error Message -->
+    {% if job.error_message %}
+    <div class="card mb-4 border-danger">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0">Error Message</h5>
+        </div>
+        <div class="card-body">
+            <pre class="mb-0 text-danger">{{ job.error_message }}</pre>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Media Path -->
+    {% if job.media_path %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0">Media Path</h5>
+        </div>
+        <div class="card-body">
+            <code>{{ job.media_path }}</code>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
