@@ -35,8 +35,13 @@ if _EARLY_GPU is not None:
         # TODO: CPU-only worker not fully implemented yet
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
     elif _EARLY_GPU.isdigit():
-        # Specific GPU index
-        os.environ["CUDA_VISIBLE_DEVICES"] = _EARLY_GPU
+        # GPU index swap: CUDA device numbering is reversed from nvidia-smi
+        # When CUDA_VISIBLE_DEVICES=0, PyTorch sees the 3090 (nvidia-smi GPU 1)
+        # When CUDA_VISIBLE_DEVICES=1, PyTorch sees the 3060 (nvidia-smi GPU 0)
+        # Swap so --gpu 0 → 3060, --gpu 1 → 3090 (matching nvidia-smi)
+        gpu_map = {"0": "1", "1": "0"}
+        cuda_device = gpu_map.get(_EARLY_GPU, _EARLY_GPU)
+        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_device
     # "auto" or invalid values: don't set CUDA_VISIBLE_DEVICES, let CUDA decide
 
 # Store for later use by worker CLI
