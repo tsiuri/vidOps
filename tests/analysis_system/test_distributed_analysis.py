@@ -188,7 +188,6 @@ def run_distributed_test(
             task = repo.claim_next(
                 worker_id=current_worker,
                 worker_vram_gb=vram_gb,
-                worker_model_profile_id=config.model_profile_id,
                 lease_duration=lease,
             )
 

@@ -29,6 +29,7 @@ from services import (
     get_extra_utils_service,
     get_hc_project_service,
 )
+from workers.heartbeat import WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,13 @@ class GenericWorker:
             vram_gb=self.config.analysis.default_vram_gb,
             pid=os.getpid(),
             hostname=os.uname().nodename,
+        )
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            job_repo=self.job_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.config.workers.heartbeat_interval,
+            logger=logger,
         )
         self.service_factories: Dict[str, Callable] = {
             "download": get_download_service,
@@ -110,6 +118,7 @@ class GenericWorker:
         self._start_background_servers()
 
         self._register()
+        self.heartbeat.start()
         jobs_processed = 0
 
         while not self._shutdown_requested:
@@ -139,9 +148,6 @@ class GenericWorker:
                     self._run_housekeeping()
                     self.idle_claim_failures = 0  # Reset after housekeeping
 
-                # Heartbeat + sleep
-                self._heartbeat()
-
                 # Check workspace size (only checks every N heartbeats)
                 if not self._check_workspace_size():
                     logger.error("Workspace size limit exceeded. Shutting down worker.")
@@ -155,6 +161,7 @@ class GenericWorker:
                 break
 
         logger.info("Generic worker %s shutting down", self.worker_id)
+        self.heartbeat.stop()
         self._update_state(WorkerStatus.STOPPING)
 
     # ------------------------------------------------------------------ internals
@@ -162,10 +169,6 @@ class GenericWorker:
         self.worker_repo.register(self.worker_obj)
         logger.info("Registered worker %s (%s); waiting for jobs", self.worker_id, self.machine_alias)
         self._update_state(WorkerStatus.IDLE, worker_type=self.base_worker_type)
-
-    def _heartbeat(self):
-        self.worker_repo.heartbeat(self.worker_id)
-        logger.info("Heartbeat for worker %s", self.worker_id)
 
     def _run_housekeeping(self):
         """Run housekeeping tasks (maintenance while idle)."""
@@ -283,11 +286,13 @@ class GenericWorker:
         job = self.job_repo.claim_next(
             worker=self.worker_obj,
             lease_duration=timedelta(seconds=self.config.workers.heartbeat_interval * 4),
+            worker_vram_gb=self.worker_obj.vram_gb,
         )
         if not job:
             return False
 
         self.current_job_id = job.job_id
+        self.heartbeat.set_current_job(job.job_id)
         claimed_type = job.job_type or self.base_worker_type
         self._update_state(WorkerStatus.BUSY, job.job_id, worker_type=claimed_type)
         job_released = False
@@ -341,6 +346,7 @@ class GenericWorker:
 
         finally:
             self.current_job_id = None
+            self.heartbeat.set_current_job(None)
             self._update_state(
                 WorkerStatus.IDLE,
                 job_id=None,

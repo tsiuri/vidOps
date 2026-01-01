@@ -48,7 +48,6 @@ def sample_worker_data():
         'machine_alias': 'test-machine',
         'worker_type': 'transcription',
         'status': WorkerStatus.IDLE.value,
-        'capabilities': ['gpu', 'cuda'],
         'vram_gb': 8,
         'pid': 1234,
         'hostname': 'test-host',

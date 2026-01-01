@@ -11,6 +11,7 @@ from configuration import load_config
 from dal import JobRepository, WorkerRepository
 from models import Worker, WorkerStatus, JobStatus
 from services import get_subtitle_service
+from workers.heartbeat import WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,13 @@ class SubtitleWorker:
         self.job_types: Sequence[str] = ("dl_subs", "convert_captions")
         self.running = False
         self.current_job_id: Optional[str] = None
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            job_repo=self.job_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.config.workers.heartbeat_interval,
+            logger=logger,
+        )
 
         logging.basicConfig(
             level=logging.INFO,
@@ -52,10 +60,6 @@ class SubtitleWorker:
         self.worker_repo.register(worker_model)
         logger.info("SubtitleWorker %s registered (%s)", self.worker_id, WorkerStatus.IDLE.value)
 
-    def _heartbeat(self):
-        self.worker_repo.heartbeat(self.worker_id)
-        logger.info("Heartbeat for %s", self.worker_id)
-
     def _update_status(self, status: WorkerStatus, job_id: Optional[str] = None):
         self.worker_repo.update_status(self.worker_id, status, current_job_id=job_id, worker_type=self.worker_type)
 
@@ -69,6 +73,7 @@ class SubtitleWorker:
             return False
 
         self.current_job_id = job.job_id
+        self.heartbeat.set_current_job(job.job_id)
         self._update_status(WorkerStatus.BUSY, job.job_id)
         try:
             self.subtitle_service.process_job(job)
@@ -77,6 +82,7 @@ class SubtitleWorker:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_message=str(exc))
         finally:
             self.current_job_id = None
+            self.heartbeat.set_current_job(None)
             self._update_status(WorkerStatus.IDLE)
         return True
 
@@ -98,6 +104,7 @@ class SubtitleWorker:
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
 
         self._register_worker()
+        self.heartbeat.start()
 
         processed = 0
         while self.running:
@@ -108,7 +115,6 @@ class SubtitleWorker:
                         logger.info("Processed %s jobs (max=%s); stopping", processed, self.config.workers.max_jobs)
                         break
                 else:
-                    self._heartbeat()
                     time.sleep(self.config.workers.heartbeat_interval)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("Unhandled error in subtitle worker loop: %s", exc, exc_info=True)
@@ -116,6 +122,7 @@ class SubtitleWorker:
                 break
 
         logger.info("SubtitleWorker %s shutting down", self.worker_id)
+        self.heartbeat.stop()
         self._update_status(WorkerStatus.STOPPING)
         time.sleep(1)
 

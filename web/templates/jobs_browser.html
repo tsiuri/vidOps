@@ -101,9 +101,11 @@
                     {% for job in jobs %}
                     <tr style="border-bottom: 1px solid #dee2e6; padding: 0.75rem 0;">
                         <td>
-                            <code style="font-size: 0.9em; cursor: help;" title="{{ job.job_id }}">
-                                {{ job.job_id[:16] }}
-                            </code>
+                            <a href="{{ url_for('job_detail', job_id=job.job_id) }}" class="text-decoration-none">
+                                <code style="font-size: 0.9em; cursor: pointer;" title="{{ job.job_id }}">
+                                    {{ job.job_id[:16] }}
+                                </code>
+                            </a>
                         </td>
                         <td>
                             <span class="badge bg-secondary" style="font-size: 0.85rem;">{{ job.job_type }}</span>

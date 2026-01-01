@@ -30,9 +30,10 @@ except Exception:
 
 from configuration import load_config
 from dal.analysis_task_repository import AnalysisDatabase, AnalysisTaskRepository
-from models import AnalysisTask
-from dal import AnalysisResultsRepository
+from models import AnalysisTask, Worker, WorkerStatus
+from dal import AnalysisResultsRepository, WorkerRepository
 from scripts.analysis.analyze_transcript import OllamaAnalyzer, AnalysisAggregator, VTTParser, TranscriptChunker
+from workers.heartbeat import WorkerHeartbeat
 from scripts.analysis.analysis_config import AnalysisConfig, HotTargetRule, Drill
 from scripts.analysis.drills import DrillExecutor
 from scripts.analysis.llm.hot_targets import HotTargetRunner
@@ -106,7 +107,6 @@ class AnalysisWorker:
         worker_type: str,
         model_url: str,
         model_name: str,
-        capabilities: List[str],
         available_vram_gb: float = 0.0,
         model_profile_id: Optional[int] = None,
         db_host: str = "localhost",
@@ -120,13 +120,39 @@ class AnalysisWorker:
         self.worker_type = worker_type
         self.model_url = model_url
         self.model_name = model_name
-        self.capabilities = capabilities
         self.available_vram_gb = max(float(available_vram_gb or 0), 0.0)
         self.model_profile_id = model_profile_id
         self.lease_duration = timedelta(minutes=lease_duration_minutes)
         self.metrics_port = metrics_port
 
         self.worker_id = f"{machine_alias}:{worker_type}:{model_name}:{os.getpid()}"
+        self.config = load_config()
+        self.is_bridge_mode = worker_type == "analysis_bridge"
+
+        # Only create worker registration if not running as bridge
+        # (Bridge mode = running within GenericWorker, which handles worker registration)
+        if not self.is_bridge_mode:
+            self.worker_repo = WorkerRepository()
+            self.worker_obj = Worker(
+                worker_id=self.worker_id,
+                machine_alias=self.machine_alias,
+                worker_type=self.worker_type,
+                status=WorkerStatus.REGISTERING,
+                vram_gb=self.available_vram_gb,
+                pid=os.getpid(),
+                hostname=os.uname().nodename,
+            )
+            self.heartbeat = WorkerHeartbeat(
+                worker_repo=self.worker_repo,
+                worker_id=self.worker_id,
+                interval_seconds=self.config.workers.heartbeat_interval,
+                job_repo=None,
+                logger=logger,
+            )
+        else:
+            self.worker_repo = None
+            self.worker_obj = None
+            self.heartbeat = None
 
         # DB + repos
         self.db = AnalysisDatabase(
@@ -191,6 +217,26 @@ class AnalysisWorker:
         worker_uptime_seconds.labels(worker_id=self.worker_id).set(0)
         worker_vram_gb_gauge.labels(worker_id=self.worker_id).set(self.available_vram_gb)
 
+        self._register_worker()
+        if self.heartbeat:
+            self.heartbeat.start()
+
+    def _register_worker(self) -> None:
+        if not self.is_bridge_mode:
+            self.worker_repo.register(self.worker_obj)
+            self._update_worker_status(WorkerStatus.IDLE)
+
+    def _update_worker_status(self, status: WorkerStatus, current_job_id: Optional[str] = None) -> None:
+        if not self.is_bridge_mode:
+            self.worker_obj.status = status
+            self.worker_obj.current_job_id = current_job_id
+            self.worker_repo.update_status(
+                self.worker_id,
+                status,
+                current_job_id=current_job_id,
+                worker_type=self.worker_type,
+            )
+
     # ------------------------------------------------------------------
     # Single-job execution (for GenericWorker bridge)
     # ------------------------------------------------------------------
@@ -206,6 +252,9 @@ class AnalysisWorker:
         if not tasks:
             logger.warning("No analysis_tasks found for job %s", analysis_job_id)
             return False
+        if self.heartbeat:
+            self.heartbeat.set_current_job(analysis_job_id)
+        self._update_worker_status(WorkerStatus.BUSY, analysis_job_id)
 
         # Prime contexts using any completed chunk_analysis tasks so job-level passes can run
         for task in tasks:
@@ -274,10 +323,16 @@ class AnalysisWorker:
             return False
         finally:
             self.current_task = None
+            if self.heartbeat:
+                self.heartbeat.set_current_job(None)
+            self._update_worker_status(WorkerStatus.IDLE)
             self._cleanup_vram()
 
     def shutdown(self) -> None:
         """Clean up resources when used outside the long-running loop."""
+        if self.heartbeat:
+            self.heartbeat.stop()
+        self._update_worker_status(WorkerStatus.STOPPING)
         if self.metrics_server:
             try:
                 stop_metrics_server()
@@ -410,18 +465,21 @@ class AnalysisWorker:
                     task = self.task_repo.claim_next(
                         worker_id=self.worker_id,
                         worker_vram_gb=self.available_vram_gb,
-                        worker_model_profile_id=self.model_profile_id,
                         lease_duration=self.lease_duration,
                     )
 
                     if not task:
                         # No tasks available – back off briefly
+                        self._update_worker_status(WorkerStatus.IDLE)
                         # Update all gauges periodically
                         self._update_health_metrics()
                         time.sleep(5)
                         continue
 
                     self.current_task = task
+                    if self.heartbeat:
+                        self.heartbeat.set_current_job(task.job_id)
+                    self._update_worker_status(WorkerStatus.BUSY, task.job_id)
 
                     # Record task claim in metrics
                     tasks_claimed_total.labels(
@@ -521,6 +579,9 @@ class AnalysisWorker:
                         ).set(datetime.now(timezone.utc).timestamp())
 
                     self.current_task = None
+                    if self.heartbeat:
+                        self.heartbeat.set_current_job(None)
+                    self._update_worker_status(WorkerStatus.IDLE)
                     worker_current_task_gauge.labels(worker_id=self.worker_id).set(0)
 
                 except KeyboardInterrupt:
@@ -539,6 +600,9 @@ class AnalysisWorker:
                     time.sleep(5)
         finally:
             logger.info("Worker %s shutting down", self.worker_id)
+            if self.heartbeat:
+                self.heartbeat.stop()
+            self._update_worker_status(WorkerStatus.STOPPING)
             if self.metrics_server:
                 try:
                     stop_metrics_server()
@@ -1460,14 +1524,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     args = parser.parse_args(argv)
 
-    caps = args.capabilities or [args.model_name, "gpu_8gb"]
-
     worker = AnalysisWorker(
         machine_alias=args.machine_alias,
         worker_type=args.worker_type,
         model_url=args.model_url,
         model_name=args.model_name,
-        capabilities=caps,
         available_vram_gb=args.vram_gb,
         model_profile_id=args.model_profile_id,
         db_host=args.db_host,

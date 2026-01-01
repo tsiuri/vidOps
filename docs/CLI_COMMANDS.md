@@ -50,8 +50,8 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
     - `dates` — DatesWorker: dates helper jobs only
     - `extra_utils` — ExtraUtilsWorker: extra utility jobs only
   - Key options for `start`:
-    - `--gpu N` — Select GPU index (0, 1, 2...). Sets `CUDA_VISIBLE_DEVICES` and loads per-GPU config (capabilities, Ollama URL, model, VRAM). Use `--gpu cpu` for CPU-only (stub). Use `--gpu auto` or omit for auto-detection.
-    - `--capabilities` — Legacy worker capabilities (repeatable; not used for analysis scheduling)
+    - `--gpu N` — Select GPU index (0, 1, 2...). Sets `CUDA_VISIBLE_DEVICES` and loads per-GPU config (legacy capability tags, Ollama URL, model, VRAM). Use `--gpu cpu` for CPU-only (stub). Use `--gpu auto` or omit for auto-detection.
+    - `--capabilities` — Legacy worker capability tags (repeatable; stored/logged only; analysis scheduling uses VRAM/profile ids)
     - `--vram-gb` — Available VRAM in GB for analysis scheduling
     - `--model-profile-id` — Analysis model profile id (analysis_model_profiles)
     - `--model-url` — Override Ollama URL

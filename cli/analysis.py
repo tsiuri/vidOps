@@ -142,6 +142,8 @@ def enqueue_distributed_analysis(
             model_name=config_model,
             model_profile_id=config_model_profile_id,
         )
+        # Query VRAM requirement for filtering in claim query
+        required_vram_gb = _get_required_vram_for_analysis_job(db, job_id)
     finally:
         db.disconnect()
 
@@ -163,6 +165,7 @@ def enqueue_distributed_analysis(
             config=job_config,
             priority=priority,
             status=JobStatus.PENDING,
+            required_vram_gb=required_vram_gb,
         )
         created_job = job_repo.create(generic_job)
         click.echo(click.style(f"✓ GenericWorker job created: {created_job.job_id}", fg="green"))
@@ -224,6 +227,24 @@ def _rebuild_transcript_from_db(ytid: str, output_dir: Path) -> Path | None:
         logger.error("Rebuild returned no transcript for %s; words table may be empty.", ytid)
         return None
     return rebuilt
+
+
+def _get_required_vram_for_analysis_job(db: AnalysisDatabase, analysis_job_id: str) -> float:
+    """
+    Query the maximum required VRAM across all tasks for an analysis job.
+    Returns 0.0 if no tasks found or on error.
+    """
+    try:
+        cur = db.cursor
+        cur.execute(
+            "SELECT COALESCE(MAX(required_vram_gb), 0) FROM analysis_tasks WHERE job_id = %s",
+            (analysis_job_id,),
+        )
+        row = cur.fetchone()
+        return float(row[0] or 0)
+    except Exception as exc:
+        logger.warning("Failed to query VRAM for analysis_job %s: %s", analysis_job_id, exc)
+        return 0.0
 
 
 def _select_analysis_config(db: AnalysisDatabase) -> tuple[Optional[str], Optional[str]]:

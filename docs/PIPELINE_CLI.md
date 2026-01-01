@@ -153,6 +153,8 @@ analysis:
     - granite3.3:8b
     - qwen2.5:7b-instruct
 ```
+Note: `analysis.default_capabilities` are legacy tags only. VRAM-based scheduling uses
+`analysis.default_vram_gb` and `analysis.default_model_profile_id` instead.
 
 ### CLI Overrides
 
@@ -305,7 +307,7 @@ psql -U billie -d transcripts -c \
 **Solutions**:
 1. Worker may not be running - start one: `vo worker start general`
 2. Dependency check issue - check worker logs for SQL errors
-3. Job may be stale - Overlord releases stale jobs after ~2 hours
+3. Job may be stale - Overlord releases stale jobs after ~12 hours
 
 ### No Jobs Being Claimed
 

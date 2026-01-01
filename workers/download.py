@@ -9,6 +9,7 @@ from typing import Optional
 from dal import JobRepository, WorkerRepository
 from models import Worker, WorkerStatus, JobStatus
 from services import get_download_service
+from workers.heartbeat import WorkerHeartbeat
 from configuration import load_config
 
 logger = logging.getLogger(__name__)
@@ -38,9 +39,15 @@ class DownloadWorker:
 
         self.poll_interval = 2  # seconds
         self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
-        self.last_heartbeat = 0
         self._shutdown_requested = False
         self.max_jobs = self.config.workers.max_jobs  # 0 = infinite
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            job_repo=self.job_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.heartbeat_interval,
+            logger=logger,
+        )
 
         # Setup signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -74,6 +81,7 @@ class DownloadWorker:
         try:
             # Register worker
             self._register_worker()
+            self.heartbeat.start()
 
             jobs_processed = 0
 
@@ -91,9 +99,8 @@ class DownloadWorker:
                     # Continue immediately to next job
                     continue
 
-                # No job available, sleep and send heartbeat
+                # No job available, sleep
                 time.sleep(self.poll_interval)
-                self._heartbeat()
 
         except KeyboardInterrupt:
             logger.info("Worker interrupted by user")
@@ -130,30 +137,22 @@ class DownloadWorker:
             logger.info(f"Claimed job {job.job_id} (type: {job.job_type})")
             self._update_status(WorkerStatus.BUSY, job.job_id)
             self.current_job_id = job.job_id
+            self.heartbeat.set_current_job(job.job_id)
 
             # Process the job
             self.service.process_job(job)
 
             self._update_status(WorkerStatus.IDLE, None)
             self.current_job_id = None
+            self.heartbeat.set_current_job(None)
             return True
 
         except Exception as e:
             logger.error(f"Error processing job: {e}", exc_info=True)
             self._update_status(WorkerStatus.IDLE, None)
             self.current_job_id = None
+            self.heartbeat.set_current_job(None)
             return False
-
-    def _heartbeat(self):
-        """Send heartbeat to database"""
-        current_time = time.time()
-        if current_time - self.last_heartbeat >= self.heartbeat_interval:
-            try:
-                self.worker_repo.heartbeat(self.worker_id)
-                self.last_heartbeat = current_time
-                logger.debug(f"Heartbeat sent for worker {self.worker_id}")
-            except Exception as e:
-                logger.warning(f"Failed to send heartbeat: {e}")
 
     def _update_status(self, status: WorkerStatus, current_job_id: Optional[str] = None):
         """Update worker status in database"""
@@ -168,6 +167,7 @@ class DownloadWorker:
         """Clean shutdown procedure"""
         logger.info(f"Worker {self.worker_id} shutting down")
         try:
+            self.heartbeat.stop()
             self._update_status(WorkerStatus.STOPPING)
             # Could add cleanup logic here
         except Exception as e:

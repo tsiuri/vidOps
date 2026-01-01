@@ -10,7 +10,7 @@ This document explains the Overlord service automation, CLI status commands, and
 
 The **Overlord Service** is a background supervisor that monitors the job queue and worker registry, automatically performing:
 
-1. **Job Chaining**: Detects completed transcription jobs and enqueues follow-up analysis jobs
+1. **Job Chaining**: Detects completed transcription jobs and enqueues follow-up analysis jobs (**currently disabled**)
 2. **Stale Job Recovery**: Releases jobs claimed by dead/crashed workers back to pending
 3. **Worker Housekeeping**: Marks workers without heartbeats as stale
 
@@ -23,14 +23,16 @@ The Overlord operates entirely on the generic `jobs` and `workers` tables, maint
 ### Responsibilities
 
 **1. Job Chaining (transcription → analysis)**
-- Polls for `job_type='transcription'` jobs with `status='completed'`
+- **Currently disabled** in `services/overlord.py` (implementation kept, not invoked)
+- When enabled: polls `job_type='transcription'` jobs with `status='completed'`
 - Checks `result.analysis_enqueued` to avoid duplicates
 - Enqueues analysis jobs via `AnalysisService`
 - Records linkage in transcription job's `result.analysis_job_id`
 
 **2. Stale Job Recovery**
 - Detects jobs with `status IN ('claimed', 'running')` not updated recently
-- Default threshold: 2 hours since last `updated_at`
+- Default threshold: 12 hours since last `updated_at`
+- Workers now run a background heartbeat that touches active jobs to keep `updated_at` fresh
 - Releases jobs back to `status='pending'` for re-claiming
 - Marks associated workers as `STALE`
 
@@ -49,7 +51,7 @@ Defined in `vidops/services/overlord.py`:
 cycle_interval_sec = 10  # Check every 10 seconds
 
 # Stale thresholds
-job_stale_threshold = timedelta(hours=2)  # Jobs not updated in 2 hours
+job_stale_threshold = timedelta(hours=12)  # Jobs not updated in 12 hours
 worker_stale_threshold = timedelta(
     minutes=config.workers.heartbeat_interval * 3
 )  # 3x heartbeat interval
@@ -232,10 +234,10 @@ analysis: 20 total
 **Action:** Check worker logs, restart worker, investigate crash
 
 ⚠️ **Stale Jobs:**
-- Jobs in CLAIMED/RUNNING for >2 hours without progress
+- Jobs in CLAIMED/RUNNING for >12 hours without progress
 - Jobs with same `claimed_by` as STALE worker
 
-**Action:** Overlord will auto-release after 2 hours. Check worker logs to identify failure cause.
+**Action:** Overlord will auto-release after 12 hours. Check worker logs to identify failure cause.
 
 ⚠️ **Failed Jobs:**
 - High failure rate (>10%)
@@ -306,7 +308,7 @@ psql -h 192.168.0.187 -d transcripts -U billie -c "
 ```
 
 **Fix:**
-- Overlord will auto-release after 2 hours
+- Overlord will auto-release after 12 hours
 - Manually release if urgent:
 ```python
 from vidops.dal import JobRepository
@@ -384,7 +386,7 @@ SELECT job_id, job_type, status, claimed_by, updated_at,
        NOW() - updated_at AS age
 FROM jobs
 WHERE status IN ('claimed', 'running')
-  AND updated_at < NOW() - INTERVAL '2 hours'
+  AND updated_at < NOW() - INTERVAL '12 hours'
 ORDER BY updated_at ASC;
 ```
 

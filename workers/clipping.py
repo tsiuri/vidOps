@@ -11,6 +11,7 @@ from configuration import load_config
 from models import Worker, WorkerStatus, JobStatus
 from dal import WorkerRepository, JobRepository
 from services import get_clipping_service # Import the clipping service factory
+from workers.heartbeat import WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,13 @@ class ClippingWorker:
         self.clipping_service = get_clipping_service()
         self.running = False
         self.current_job_id: Optional[str] = None
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            job_repo=self.job_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.config.workers.heartbeat_interval,
+            logger=logger,
+        )
         
         # Configure logging
         logging.basicConfig(level=logging.INFO,
@@ -50,10 +58,6 @@ class ClippingWorker:
         self.worker_repo.register(worker_model)
         logger.info(f"ClippingWorker '{self.worker_id}' registered as {WorkerStatus.IDLE.value}.")
 
-    def _heartbeat(self):
-        """Sends a heartbeat to the database."""
-        self.worker_repo.heartbeat(self.worker_id)
-
     def _update_status(self, status: WorkerStatus, job_id: Optional[str] = None):
         """Updates the worker's status in the database."""
         self.worker_repo.update_status(self.worker_id, status, job_id)
@@ -68,6 +72,7 @@ class ClippingWorker:
             return False
 
         self.current_job_id = job.job_id
+        self.heartbeat.set_current_job(job.job_id)
         logger.info(f"ClippingWorker '{self.worker_id}' claimed job '{job.job_id}' (YTID: {job.ytid}).")
         self._update_status(WorkerStatus.BUSY, job.job_id)
         try:
@@ -78,6 +83,7 @@ class ClippingWorker:
             # The service.process_job method already updates job status to FAILED on error
         finally:
             self.current_job_id = None
+            self.heartbeat.set_current_job(None)
             self._update_status(WorkerStatus.IDLE)
         return True
 
@@ -102,6 +108,7 @@ class ClippingWorker:
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
 
         self._register_worker()
+        self.heartbeat.start()
 
         processed_jobs_count = 0
         while self.running:
@@ -113,8 +120,7 @@ class ClippingWorker:
                         logger.info(f"Processed {processed_jobs_count} jobs, reaching max_jobs limit. Shutting down.")
                         self.running = False
                 else:
-                    # No job claimed, send heartbeat and sleep
-                    self._heartbeat()
+                    # No job claimed, sleep
                     time.sleep(self.config.workers.heartbeat_interval)
             except Exception as e:
                 logger.error(f"Unhandled error in worker main loop: {e}", exc_info=True)
@@ -122,6 +128,7 @@ class ClippingWorker:
                 self._update_status(WorkerStatus.ERRORED)
 
         logger.info(f"ClippingWorker '{self.worker_id}' shutting down.")
+        self.heartbeat.stop()
         self._update_status(WorkerStatus.STOPPING)
         time.sleep(1) # Give some time for status update to commit
 

@@ -51,7 +51,6 @@ class AnalysisTaskRepository:
                 pass_id,
                 chunk_text,
                 chunk_metadata,
-                required_capabilities,
                 required_vram_gb,
                 model_profile_id,
                 status,
@@ -72,7 +71,6 @@ class AnalysisTaskRepository:
                 %(pass_id)s,
                 %(chunk_text)s,
                 %(chunk_metadata)s,
-                %(required_capabilities)s,
                 %(required_vram_gb)s,
                 %(model_profile_id)s,
                 %(status)s,
@@ -96,7 +94,6 @@ class AnalysisTaskRepository:
             "pass_id": data["pass_id"],
             "chunk_text": data["chunk_text"],
             "chunk_metadata": Json(data.get("chunk_metadata") or {}),
-            "required_capabilities": data.get("required_capabilities") or [],
             "required_vram_gb": data.get("required_vram_gb", 0) or 0,
             "model_profile_id": data.get("model_profile_id"),
             "status": data["status"],
@@ -126,20 +123,21 @@ class AnalysisTaskRepository:
         self,
         worker_id: str,
         worker_vram_gb: float,
-        worker_model_profile_id: Optional[int],
         lease_duration: timedelta,
     ) -> Optional[AnalysisTask]:
         """
         Atomically claim the next available task compatible with the worker's VRAM.
+
+        Profile IDs are stored on tasks for reference but do not affect claiming.
+        Only VRAM requirements matter - a worker with sufficient VRAM can claim any task.
 
         Uses SELECT ... FOR UPDATE SKIP LOCKED to avoid contention between workers.
         """
         now = datetime.now(timezone.utc)
         lease_expires = now + lease_duration
         vram_gb = max(float(worker_vram_gb or 0), 0.0)
-        profile_id = int(worker_model_profile_id) if worker_model_profile_id is not None else None
 
-        # VRAM gating is the active scheduler. Legacy capability tags are ignored.
+        # Only VRAM gating matters. Profile IDs are reference-only.
         select_sql = """
             SELECT *
             FROM analysis_tasks
@@ -149,17 +147,13 @@ class AnalysisTaskRepository:
                     required_vram_gb IS NULL
                  OR required_vram_gb <= %(vram_gb)s
               )
-              AND (
-                    model_profile_id IS NULL
-                 OR model_profile_id = %(profile_id)s
-              )
             ORDER BY created_at ASC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         """
 
         cur = self.db.cursor
-        cur.execute(select_sql, {"now": now, "vram_gb": vram_gb, "profile_id": profile_id})
+        cur.execute(select_sql, {"now": now, "vram_gb": vram_gb})
         row = _row_to_dict(cur.fetchone(), cur)
         if not row:
             if self.db.conn:

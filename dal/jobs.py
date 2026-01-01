@@ -45,11 +45,11 @@ class JobRepository:
                     f"""
                     INSERT INTO {self.table_name} (
                         job_id, job_type, status, priority, ytid,
-                        media_path, config, created_at, updated_at
+                        media_path, config, required_vram_gb, created_at, updated_at
                     )
                     VALUES (
                         %(job_id)s, %(job_type)s, %(status)s, %(priority)s, %(ytid)s,
-                        %(media_path)s, %(config)s, %(created_at)s, %(updated_at)s
+                        %(media_path)s, %(config)s, %(required_vram_gb)s, %(created_at)s, %(updated_at)s
                     )
                     RETURNING *;
                     """,
@@ -62,7 +62,8 @@ class JobRepository:
         self,
         worker: Worker,
         lease_duration: timedelta = timedelta(hours=1),
-        job_types: Optional[list[str]] = None
+        job_types: Optional[list[str]] = None,
+        worker_vram_gb: Optional[float] = None
     ) -> Optional[Job]:
         """
         Atomically claims the next available job from the queue.
@@ -77,6 +78,8 @@ class JobRepository:
             lease_duration: How long the job should be "leased" before it's
                             considered stale.
             job_types: Optional list of job_type values to restrict the claim to.
+            worker_vram_gb: Optional VRAM available to worker (for filtering analysis jobs).
+                           If None, VRAM filtering is skipped.
 
         Returns:
             A Job object if one was successfully claimed, otherwise None.
@@ -87,6 +90,14 @@ class JobRepository:
 
         with get_connection() as conn:
             with conn.cursor() as cur:
+                # Build VRAM filter conditionally
+                vram_filter = ""
+                if worker_vram_gb is not None:
+                    vram_filter = """
+                            -- VRAM filter: either no requirement, or worker has enough
+                            AND (j.required_vram_gb IS NULL OR j.required_vram_gb <= %s)
+                    """
+
                 cur.execute(
                     f"""
                     UPDATE {self.table_name}
@@ -105,6 +116,7 @@ class JobRepository:
                                 (j.status = %s AND j.updated_at < %s)
                             )
                             { "AND j.job_type = ANY(%s)" if job_types else "" }
+                            {vram_filter}
                             -- Either no dependency, or dependency is completed
                             AND (
                                 j.config->>'depends_on' IS NULL
@@ -125,6 +137,7 @@ class JobRepository:
                             stale_threshold,
                         ]
                         + ([job_types] if job_types else [])
+                        + ([worker_vram_gb] if worker_vram_gb is not None else [])
                         + [
                             JobStatus.COMPLETED.value,
                         ]
@@ -353,3 +366,19 @@ class JobRepository:
                 )
                 row = cur.fetchone()
                 return Job.from_row(row) if row else None
+
+    def touch(self, job_id: str) -> None:
+        """
+        Update updated_at for a job without changing its status.
+        Useful for long-running jobs to avoid stale detection.
+        """
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    UPDATE {self.table_name}
+                    SET updated_at = NOW()
+                    WHERE job_id = %s;
+                    """,
+                    (job_id,)
+                )

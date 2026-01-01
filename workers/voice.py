@@ -11,6 +11,7 @@ from configuration import load_config
 from dal import JobRepository, WorkerRepository
 from models import Worker, WorkerStatus
 from services import get_voice_service
+from workers.heartbeat import WorkerHeartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,13 @@ class VoiceFilterWorker:
         self.max_jobs = self.config.workers.max_jobs
         self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
         self._shutdown_requested = False
-        self.last_heartbeat = 0.0
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            job_repo=self.job_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.heartbeat_interval,
+            logger=logger,
+        )
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -57,6 +64,7 @@ class VoiceFilterWorker:
     def run(self):
         logger.info("Voice worker %s starting on %s", self.worker_id, self.machine_alias)
         self._register_worker()
+        self.heartbeat.start()
 
         processed = 0
         try:
@@ -69,19 +77,13 @@ class VoiceFilterWorker:
                     continue
 
                 time.sleep(self.poll_interval)
-                self._heartbeat()
         finally:
+            self.heartbeat.stop()
             self._update_status(WorkerStatus.STOPPING)
 
     def _register_worker(self):
         self.worker_repo.register(self.worker_obj)
         self._update_status(WorkerStatus.IDLE)
-
-    def _heartbeat(self):
-        now = time.time()
-        if now - self.last_heartbeat >= self.heartbeat_interval:
-            self.worker_repo.heartbeat(self.worker_id)
-            self.last_heartbeat = now
 
     def _update_status(self, status: WorkerStatus, current_job_id: Optional[str] = None):
         self.worker_obj.status = status
@@ -98,10 +100,12 @@ class VoiceFilterWorker:
             return False
 
         logger.info("Processing voice job %s (ytid=%s)", job.job_id, job.ytid)
+        self.heartbeat.set_current_job(job.job_id)
         self._update_status(WorkerStatus.BUSY, job.job_id)
         try:
             self.service.process_job(job)
         finally:
+            self.heartbeat.set_current_job(None)
             self._update_status(WorkerStatus.IDLE, None)
         return True
 

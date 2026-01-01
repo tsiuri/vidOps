@@ -947,7 +947,6 @@ def create_analysis_job(
                 pass_id=pass_id,
                 chunk_text=chunk_text,
                 chunk_metadata=chunk_metadata,
-                required_capabilities=[],
                 required_vram_gb=required_vram_gb,
                 model_profile_id=int(base_profile.get("id") or 0) or None,
             )

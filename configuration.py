@@ -222,8 +222,6 @@ class AnalysisConfig:
     chunk_overlap_words: int = 150
     # Logging level for analysis workers
     log_mode: str = "quiet"  # 'quiet', 'info', 'debug'
-    # Capabilities to advertise when analysis-distributed worker starts (if CLI flag omitted)
-    default_capabilities: List[str] = field(default_factory=list)
     # Default available VRAM for analysis workers (GB)
     default_vram_gb: float = 0.0
     # Default model profile id for analysis workers
@@ -257,15 +255,13 @@ OLLAMA_BASE_PORT = 11434
 class GpuProfileConfig:
     """Per-GPU configuration profile.
 
-    Each GPU can have its own capabilities, Ollama endpoint, and model preferences.
+    Each GPU can have its own VRAM, Ollama endpoint, and model preferences.
     Ollama URL defaults to localhost:{OLLAMA_BASE_PORT + gpu_index} if not specified.
     """
     # Display name for this GPU (optional, e.g., "RTX 4090")
     name: Optional[str] = None
     # Available VRAM for this GPU (GB)
     vram_gb: Optional[float] = None
-    # Capabilities to advertise for this GPU (e.g., ["gpu_24gb", "qwen2.5:32b"])
-    capabilities: List[str] = field(default_factory=list)
     # Ollama URL override for this GPU (default: http://localhost:{11434 + gpu_index})
     ollama_url: Optional[str] = None
     # Model name override for analysis on this GPU
@@ -513,8 +509,6 @@ def load_config(config_path: str = "config.yaml") -> Config:
                             'default_model_profile_id',
                             config.analysis.default_model_profile_id,
                         )
-                        if 'default_capabilities' in analysis_data:
-                            config.analysis.default_capabilities = list(analysis_data.get('default_capabilities') or config.analysis.default_capabilities)
 
                     # Parse per-GPU profiles
                     if 'gpus' in yaml_data:
@@ -525,7 +519,6 @@ def load_config(config_path: str = "config.yaml") -> Config:
                                 profile = GpuProfileConfig(
                                     name=gpu_data.get('name'),
                                     vram_gb=gpu_data.get('vram_gb'),
-                                    capabilities=list(gpu_data.get('capabilities', [])),
                                     ollama_url=gpu_data.get('ollama_url'),
                                     model_name=gpu_data.get('model_name'),
                                     model_profile_id=gpu_data.get('model_profile_id'),

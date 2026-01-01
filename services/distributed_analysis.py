@@ -44,7 +44,6 @@ class DistributedAnalysisService:
         db_password: Optional[str] = None,
         model_url: str = "http://localhost:11434",
         model_name: str = "llama3",
-        capabilities: Optional[List[str]] = None,
         available_vram_gb: float = 0.0,
         model_profile_id: Optional[int] = None,
         machine_alias: Optional[str] = None,
@@ -56,18 +55,9 @@ class DistributedAnalysisService:
         self.db_password = db_password
         self.model_url = model_url
         self.model_name = model_name
-        self.capabilities = capabilities or []
         self.available_vram_gb = max(float(available_vram_gb or 0), 0.0)
         self.model_profile_id = model_profile_id
         self.machine_alias = machine_alias
-
-    def _build_capabilities(self, model_name: str) -> List[str]:
-        caps = list(self.capabilities)
-        if not caps:
-            caps = [model_name, "gpu_8gb"]
-        elif model_name not in caps:
-            caps.append(model_name)
-        return caps
 
     def process_job(self, job: Job) -> None:
         """
@@ -93,36 +83,21 @@ class DistributedAnalysisService:
                 except Exception:
                     logger.warning("Failed to persist analysis_job_id for %s", job.job_id, exc_info=True)
 
-            model_url = job.config.get("model_url") or self.model_url
-            model_name = job.config.get("model_name") or self.model_name
-            model_profile_id = job.config.get("model_profile_id") or self.model_profile_id
-            capabilities = self._build_capabilities(model_name)
+            # Worker's settings take precedence over job config (for multi-GPU setups)
+            # This allows workers with --gpu flags to override job defaults
+            model_url = self.model_url or job.config.get("model_url")
+            model_name = self.model_name or job.config.get("model_name")
+            model_profile_id = self.model_profile_id or job.config.get("model_profile_id")
             machine_alias = self.machine_alias or job.claimed_by or self.db_host
-            required_vram_gb = self._get_required_vram_for_job(analysis_job_id)
-            if required_vram_gb > self.available_vram_gb:
-                msg = (
-                    f"Insufficient VRAM for analysis job {analysis_job_id}: "
-                    f"requires {required_vram_gb} GB, worker has {self.available_vram_gb} GB."
-                )
-                self.job_repo.update_status(job.job_id, JobStatus.FAILED, msg)
-                logger.error(msg)
-                return
+            # VRAM filtering now happens at claim time via jobs.config->>'required_vram_gb'
+            # No need to check again here - if we claimed it, we have enough VRAM
             task_profile_id = self._get_model_profile_for_job(analysis_job_id)
-            if task_profile_id and model_profile_id and task_profile_id != model_profile_id:
-                msg = (
-                    f"Model profile mismatch for analysis job {analysis_job_id}: "
-                    f"tasks use profile {task_profile_id}, worker configured for {model_profile_id}."
-                )
-                self.job_repo.update_status(job.job_id, JobStatus.FAILED, msg)
-                logger.error(msg)
-                return
 
             worker = AnalysisWorker(
                 machine_alias=machine_alias,
                 worker_type="analysis_bridge",
                 model_url=model_url,
                 model_name=model_name,
-                capabilities=capabilities,
                 available_vram_gb=self.available_vram_gb,
                 model_profile_id=model_profile_id or task_profile_id,
                 db_host=self.db_host,
@@ -252,24 +227,6 @@ class DistributedAnalysisService:
         )
         db.connect()
         return db
-
-    def _get_required_vram_for_job(self, analysis_job_id: str) -> float:
-        db = self._connect_analysis_db()
-        try:
-            cur = db.cursor
-            cur.execute(
-                "SELECT COALESCE(MAX(required_vram_gb), 0) FROM analysis_tasks WHERE job_id = %s",
-                (analysis_job_id,),
-            )
-            row = cur.fetchone()
-            return float(row[0] or 0)
-        except Exception:
-            return 0.0
-        finally:
-            try:
-                db.disconnect()
-            except Exception:
-                pass
 
     def _get_model_profile_for_job(self, analysis_job_id: str) -> Optional[int]:
         db = self._connect_analysis_db()

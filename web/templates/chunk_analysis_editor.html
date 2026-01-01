@@ -46,7 +46,12 @@
           <strong>Installed models:</strong>
           <div style="margin-top:4px; display:flex; flex-wrap:wrap; gap:6px;">
             {% for m in available_models %}
-              <span style="padding:4px 8px; border-radius:999px; background:#eef2ff; color:#2d3a8c; font-size:0.85em;">{{ m }}</span>
+              <span style="padding:4px 8px; border-radius:999px; background:#eef2ff; color:#2d3a8c; font-size:0.85em;">
+                {{ m }}
+                {% if model_vram and model_vram.get(m) %}
+                  <span style="color:#059669; font-weight:600; margin-left:4px;">{{ model_vram.get(m) }}GB</span>
+                {% endif %}
+              </span>
             {% endfor %}
           </div>
         </div>

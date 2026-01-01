@@ -60,6 +60,7 @@ class AnalysisWorker:
         self.worker_type = worker_type
         self.model_url = model_url
         self.model_name = model_name
+        # Legacy capability tags are stored/logged but not used for claiming.
         self.capabilities = capabilities
         self.available_vram_gb = max(float(available_vram_gb or 0), 0.0)
         self.model_profile_id = model_profile_id
@@ -132,7 +133,6 @@ class AnalysisWorker:
                     task = self.task_repo.claim_next(
                         worker_id=self.worker_id,
                         worker_vram_gb=self.available_vram_gb,
-                        worker_model_profile_id=self.model_profile_id,
                         lease_duration=self.lease_duration,
                     )
 

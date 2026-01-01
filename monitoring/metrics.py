@@ -217,15 +217,8 @@ last_error_timestamp = Gauge(
 )
 
 # =====================================================================
-# Capability/Config Metrics
+# VRAM Config Metrics
 # =====================================================================
-
-worker_capabilities_gauge = Gauge(
-    name="analysis_worker_capabilities_count",
-    documentation="Number of capabilities this worker declares",
-    labelnames=["worker_id"],
-    registry=WORKER_REGISTRY,
-)
 
 worker_vram_gb_gauge = Gauge(
     name="analysis_worker_vram_gb",

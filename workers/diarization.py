@@ -11,6 +11,7 @@ from configuration import load_config
 from models import Worker, WorkerStatus, JobStatus
 from dal import WorkerRepository, JobRepository
 from services import get_diarization_service
+from workers.heartbeat import WorkerHeartbeat
 from monitoring.metrics import (
     jobs_claimed_total,
     jobs_completed_total,
@@ -45,6 +46,13 @@ class DiarizeWorker:
         self._descendants_killed = False
         self.current_job_id: Optional[str] = None
         self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            job_repo=self.job_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.heartbeat_interval,
+            logger=logger,
+        )
 
         # Metrics initialization
         self.startup_time = datetime.now(timezone.utc)
@@ -77,10 +85,6 @@ class DiarizeWorker:
         self.worker_repo.register(worker_model)
         logger.info(f"DiarizeWorker '{self.worker_id}' registered as {WorkerStatus.IDLE.value}.")
 
-    def _heartbeat(self):
-        """Sends a heartbeat to the database."""
-        self.worker_repo.heartbeat(self.worker_id)
-
     def _update_status(self, status: WorkerStatus, job_id: Optional[str] = None):
         """Updates the worker's status in the database."""
         self.worker_repo.update_status(self.worker_id, status, job_id)
@@ -95,6 +99,7 @@ class DiarizeWorker:
 
         if job:
             self.current_job_id = job.job_id
+            self.heartbeat.set_current_job(job.job_id)
             job_start_time = time.time()
 
             # Record job claim
@@ -151,6 +156,7 @@ class DiarizeWorker:
                 # The service.process_job method already updates job status to FAILED on error
             finally:
                 self.current_job_id = None
+                self.heartbeat.set_current_job(None)
                 worker_current_job_gauge.labels(
                     worker_id=self.worker_id,
                     worker_type=self.worker_type,
@@ -228,6 +234,7 @@ class DiarizeWorker:
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
 
         self._register_worker()
+        self.heartbeat.start()
 
         processed_jobs_count = 0
         while self.running:
@@ -239,8 +246,7 @@ class DiarizeWorker:
                         logger.info(f"Processed {processed_jobs_count} jobs, reaching max_jobs limit. Shutting down.")
                         self.running = False
                 else:
-                    # No job claimed, send heartbeat and update metrics
-                    self._heartbeat()
+                    # No job claimed, update metrics
                     self._update_health_metrics()
                     time.sleep(self.heartbeat_interval)
             except Exception as e:
@@ -249,6 +255,7 @@ class DiarizeWorker:
                 self._update_status(WorkerStatus.ERRORED)
 
         logger.info(f"DiarizeWorker '{self.worker_id}' shutting down.")
+        self.heartbeat.stop()
         self._update_status(WorkerStatus.STOPPING)
         time.sleep(1) # Give some time for status update to commit
 

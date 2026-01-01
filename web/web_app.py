@@ -56,6 +56,25 @@ from services.hc_finalization import HCProjectFinalizationService
 from services.hc_export import HCProjectExportService
 from db import get_connection
 
+
+def _get_required_vram_for_analysis_job(db: AnalysisDatabase, analysis_job_id: str) -> float:
+    """
+    Query the maximum required VRAM across all tasks for an analysis job.
+    Returns 0.0 if no tasks found or on error.
+    """
+    try:
+        cur = db.cursor
+        cur.execute(
+            "SELECT COALESCE(MAX(required_vram_gb), 0) FROM analysis_tasks WHERE job_id = %s",
+            (analysis_job_id,),
+        )
+        row = cur.fetchone()
+        return float(row[0] or 0)
+    except Exception as exc:
+        logger.warning("Failed to query VRAM for analysis_job %s: %s", analysis_job_id, exc)
+        return 0.0
+
+
 app = Flask(__name__)
 
 LOCAL_CFG = load_local_config()
@@ -1696,6 +1715,9 @@ def new_analysis_job():
                                         model_profile_id=config_model_profile_id,
                                     )
 
+                                    # Query VRAM requirement for filtering in claim query
+                                    required_vram_gb = _get_required_vram_for_analysis_job(analysis_db, analysis_job_id)
+
                                     # Create generic job entry for GenericWorker
                                     job_repo = JobRepository()
                                     job_config = {
@@ -1713,6 +1735,7 @@ def new_analysis_job():
                                         config=job_config,
                                         priority=priority,
                                         status=JobStatus.PENDING,
+                                        required_vram_gb=required_vram_gb,
                                     )
                                     created_job = job_repo.create(generic_job)
 
@@ -2070,6 +2093,19 @@ def edit_chunk_analysis(config_id):
         available_models = [line.split()[0] for line in ollama_list if line.strip()]
     except Exception:
         available_models = []
+
+    # Get VRAM requirements for available models
+    model_vram = {}
+    if available_models:
+        try:
+            profiles = db.list_analysis_model_profiles()
+            for profile in profiles:
+                model_name = profile.get('model_name', '')
+                vram_gb = profile.get('required_vram_gb')
+                if model_name and vram_gb is not None:
+                    model_vram[model_name] = vram_gb
+        except Exception:
+            pass  # Continue without VRAM info if query fails
     cfg = row.get('config_json') or {}
     error = None
     success = False
@@ -2140,6 +2176,7 @@ def edit_chunk_analysis(config_id):
         model_override=model_override,
         default_model=default_model,
         available_models=available_models,
+        model_vram=model_vram,
         error=error,
         success=success,
     )
@@ -2755,6 +2792,36 @@ def jobs_browser():
         sort_dir=sort_dir,
         limit=limit,
     )
+
+
+@app.route('/jobs/<job_id>')
+def job_detail(job_id: str):
+    """Display detailed information about a specific job."""
+    from db import get_connection
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    j.*,
+                    v.title,
+                    v.channel,
+                    v.upload_date
+                FROM jobs j
+                LEFT JOIN videos v ON j.ytid = v.ytid
+                WHERE j.job_id = %s
+                """,
+                (job_id,)
+            )
+            row = cur.fetchone()
+
+            if not row:
+                return "Job not found", 404
+
+            job = dict(row)
+
+    return render_template('job_detail.html', job=job)
 
 
 @app.route('/jobs/<job_id>/priority', methods=['POST'])

@@ -97,8 +97,6 @@ def status_workers(stale_minutes, show_all):
         if worker.current_job_id:
             click.echo(f"    Current Job: {worker.current_job_id}")
 
-        if worker.capabilities:
-            click.echo(f"    Capabilities: {', '.join(worker.capabilities)}")
         if worker.vram_gb is not None:
             click.echo(f"    VRAM (GB): {worker.vram_gb}")
 

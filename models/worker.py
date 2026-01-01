@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, UTC
 from enum import Enum
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 import uuid
 
 class WorkerStatus(str, Enum):
@@ -26,8 +26,7 @@ class Worker:
     worker_id: str = field(default_factory=lambda: f"worker_{uuid.uuid4()}")
     status: WorkerStatus = WorkerStatus.REGISTERING
     
-    # Capabilities & State
-    capabilities: List[str] = field(default_factory=list) # e.g., ['gpu_0', 'model_medium']
+    # State
     vram_gb: Optional[float] = None
     current_job_id: Optional[str] = None
     
@@ -56,7 +55,6 @@ class Worker:
             machine_alias=row['machine_alias'],
             worker_type=row['worker_type'],
             status=status,
-            capabilities=row.get('capabilities') or [],
             vram_gb=row.get('vram_gb'),
             current_job_id=row.get('current_job_id'),
             registered_at=row.get('registered_at', datetime.now(UTC)),
@@ -78,7 +76,7 @@ if __name__ == "__main__":
     worker_obj = Worker(
         machine_alias="gpu-rig-1",
         worker_type="transcription",
-        capabilities=['gpu', 'cuda', 'model_large-v2'],
+        vram_gb=12.0,
         pid=12345
     )
     print("Instance created:", worker_obj)
@@ -89,7 +87,7 @@ if __name__ == "__main__":
     worker_dict = worker_obj.to_dict()
     print("Instance to dict:", worker_dict)
     assert worker_dict['status'] == 'registering'
-    assert worker_dict['capabilities'][0] == 'gpu'
+    assert worker_dict['vram_gb'] == 12.0
 
     # From Row
     db_row = worker_dict

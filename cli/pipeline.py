@@ -313,6 +313,7 @@ def enqueue_pipeline(
     if not skip_analysis:
         analysis_dep = prev_job_id if not skip_diarization else (prev_job_id if prev_job_id else None)
         analysis_model_name = cfg.analysis.ollama.model if cfg.analysis else "llama3"
+        required_vram_gb = float(cfg.analysis.default_vram_gb or 0) if cfg.analysis else 0.0
         if analysis_config_id:
             analysis_db = AnalysisDatabase()
             analysis_db.connect()
@@ -323,6 +324,15 @@ def enqueue_pipeline(
                     config_model = getattr(config_obj, "model", None)
                     if config_model:
                         analysis_model_name = config_model
+                    # Try to get VRAM from model profile if available
+                    model_profile_id = getattr(config_obj, "model_profile_id", None)
+                    if model_profile_id:
+                        try:
+                            profile = analysis_db.get_analysis_model_profile(model_profile_id)
+                            if profile and profile.get("required_vram_gb"):
+                                required_vram_gb = float(profile["required_vram_gb"])
+                        except Exception:  # noqa: BLE001
+                            pass  # Use default
             except Exception as exc:  # noqa: BLE001
                 click.echo(click.style(f"  ⚠ Failed to read analysis model override: {exc}", fg="yellow"))
             finally:
@@ -341,6 +351,7 @@ def enqueue_pipeline(
                 config=analysis_job_config,
                 priority=priority,
                 status=JobStatus.PENDING,
+                required_vram_gb=required_vram_gb,
             )
         )
         # pipeline metadata

@@ -59,7 +59,7 @@ Infinite loop:
 - Routes to: `from vidops.cli.worker import worker`
 
 **CLI Handler:** `/home/billie/tools/vidops/cli/worker.py`
-- Parses CLI arguments (machine-alias, model-url, model-profile-id, vram, legacy capabilities, etc.)
+- Parses CLI arguments (machine-alias, model-url, model-profile-id, vram, legacy capability tags, etc.)
 - Loads vidops config via `load_config()`
 - Instantiates `AnalysisWorker` class
 - Calls `worker.run_forever()`
@@ -169,6 +169,7 @@ ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start anal
 - `%H` - Expands to system hostname (e.g., 'my-gpu-server')
 - `${OLLAMA_URL}` - Expands to environment variable value
 - Result: Single worker with hostname-based identification
+- `--capabilities` flags are legacy tags (stored/logged only; VRAM scheduling uses `--vram-gb` and `--model-profile-id`)
 
 ### Restart Policy
 
@@ -520,7 +521,7 @@ psql -U transcripts_user transcripts << SQL
 SELECT COUNT(*) FROM analysis_tasks WHERE status='pending';
 SQL
 
-# Check worker capabilities vs task requirements
+# Check worker VRAM/profile vs task requirements (capabilities are legacy tags)
 sudo journalctl -u analysis-distributed-worker | grep -i capability
 
 # Manually verify claim logic

@@ -344,6 +344,7 @@ python3 vo_cli.py worker start analysis-distributed \
     --capabilities gpu_8gb \
     --capabilities qwen2.5:7b-instruct
 ```
+Note: `--capabilities` are legacy tags only; VRAM/profile ids drive analysis scheduling.
 
 ### Multiple Workers
 

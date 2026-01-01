@@ -41,7 +41,7 @@ class OverlordService:
         self.cycle_interval_sec = 10  # How often the overlord wakes up
 
         # Stale thresholds from config or defaults
-        self.job_stale_threshold = timedelta(hours=2)  # Jobs not updated in 2 hours
+        self.job_stale_threshold = timedelta(hours=12)  # Jobs not updated in 12 hours
         self.worker_stale_threshold = timedelta(
             minutes=self.config.workers.heartbeat_interval * 3
         )  # 3x heartbeat interval
@@ -189,7 +189,8 @@ class OverlordService:
         try:
             while self.running:
                 # Job chaining: transcription -> analysis
-                self._process_completed_transcriptions()
+                # Disabled for now; keep implementation available for later re-enable.
+                # self._process_completed_transcriptions()
 
                 # Stale job recovery
                 self._recover_stale_jobs()

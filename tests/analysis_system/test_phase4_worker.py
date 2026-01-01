@@ -183,7 +183,6 @@ def test_phase4_integration():
             task = repo.claim_next(
                 worker_id=worker.worker_id,
                 worker_vram_gb=worker.available_vram_gb,
-                worker_model_profile_id=worker.model_profile_id,
                 lease_duration=worker.lease_duration,
             )
 

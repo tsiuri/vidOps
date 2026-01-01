@@ -350,9 +350,10 @@
     const detailUrl = `/api/video/${encodeURIComponent(ytid)}/detail`;
     const segmentsUrl = `/api/video/${encodeURIComponent(ytid)}/segments?limit=${SEGMENT_LIMIT}`;
     const analysesUrl = `/api/analyses/${encodeURIComponent(ytid)}`;
+    const configLink = run && run.config_id ? `<a href="/analysis-configs/${encodeURIComponent(run.config_id)}" target="_blank" rel="noopener">${escapeHtml(run.config_id)}</a>` : 'n/a';
     const info = run ? `
       <div class="muted">Run ${escapeHtml(run.job_id || '')} (${escapeHtml(run.status || '')})</div>
-      <div>Config: <strong>${escapeHtml(run.config_id || 'n/a')}</strong></div>
+      <div>Config: <strong>${configLink}</strong></div>
       <div>Tasks: ${run.completed_tasks ?? 0}/${run.total_tasks ?? 0} · Failures: ${run.failed_tasks ?? 0}</div>
       <div class="muted">Started ${escapeHtml(run.created_at || 'unknown')} · Completed ${escapeHtml(run.completed_at || '—')}</div>
     ` : '<div class="muted">No analysis run metadata recorded.</div>';

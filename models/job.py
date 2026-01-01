@@ -32,7 +32,10 @@ class Job:
     config: Dict[str, Any] = field(default_factory=dict)
     result: Dict[str, Any] = field(default_factory=dict)
     error_message: Optional[str] = None
-    
+
+    # Resource requirements
+    required_vram_gb: Optional[float] = None
+
     # Tracking
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -64,6 +67,7 @@ class Job:
             ytid=row.get('ytid'),
             media_path=row.get('media_path'),
             config=row.get('config') or {},
+            required_vram_gb=row.get('required_vram_gb'),
             created_at=row.get('created_at', datetime.now(timezone.utc)),
             updated_at=row.get('updated_at', datetime.now(timezone.utc)),
             claimed_at=row.get('claimed_at'),

@@ -206,9 +206,16 @@ def get_distributed_analysis_service() -> DistributedAnalysisService:
     """
     Returns a configured instance of DistributedAnalysisService with its dependencies.
     Uses config to get Ollama URL and model name.
+    Reads runtime VRAM/profile from environment if worker set them (e.g., via --gpu flag).
     """
+    import os
     config = load_config()
     job_repo = JobRepository()
+
+    # Read from environment if worker set runtime values (e.g., --gpu flag)
+    vram_gb = float(os.environ.get("VIDOPS_WORKER_VRAM_GB", config.analysis.default_vram_gb or 0))
+    model_url = os.environ.get("VIDOPS_WORKER_MODEL_URL", config.analysis.ollama.url)
+    model_name = os.environ.get("VIDOPS_WORKER_MODEL_NAME", config.analysis.ollama.model)
 
     return DistributedAnalysisService(
         job_repo=job_repo,
@@ -216,10 +223,9 @@ def get_distributed_analysis_service() -> DistributedAnalysisService:
         db_name=config.database.name,
         db_user=config.database.user,
         db_password=config.database.password,
-        model_url=config.analysis.ollama.url,
-        model_name=config.analysis.ollama.model,
-        capabilities=list(config.analysis.default_capabilities or []),
-        available_vram_gb=config.analysis.default_vram_gb,
-        model_profile_id=config.analysis.default_model_profile_id,
+        model_url=model_url,
+        model_name=model_name,
+        available_vram_gb=vram_gb,
+        model_profile_id=None,  # Worker accepts any profile; tasks define their own requirements
         machine_alias=config.workers.machine_alias,
     )
