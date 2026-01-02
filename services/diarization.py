@@ -17,6 +17,7 @@ from configuration import load_config
 from .reference_builder import ReferenceBuilder
 from .reference_registry import ReferenceRegistry
 from .memory_monitor import MemoryMonitor
+from utils.process_manager import get_process_manager
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class ReferenceDirectoryMissing(FileNotFoundError):
 
 class DiarizationService:
     """
-    Bridge diarization jobs through the legacy workspace.sh diarize command.
+    Native diarization worker (pyannote) that preserves legacy outputs/paths.
     """
 
     def __init__(
@@ -47,6 +48,32 @@ class DiarizationService:
 
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._load_memory_monitor_config()
+        self._process_manager = get_process_manager()
+
+    def _resolve_python_bin(self, workspace_root: Path) -> Path:
+        """
+        Resolve the Python interpreter to run diarization helpers with.
+
+        Prefers an explicit DIAR_PYTHON_BIN override, then a local .venv
+        (platform-aware Scripts/bin), and finally the current interpreter.
+        """
+        env_override = os.environ.get("DIAR_PYTHON_BIN")
+        if env_override:
+            override_path = Path(env_override)
+            if override_path.exists():
+                return override_path
+
+        venv_dir = workspace_root / ".venv"
+        candidates = []
+        if os.name == "nt":
+            candidates.append(venv_dir / "Scripts" / "python.exe")
+        candidates.append(venv_dir / "bin" / "python")
+        candidates.append(Path(sys.executable))
+
+        for candidate in candidates:
+            if candidate and Path(candidate).exists():
+                return Path(candidate)
+        return Path(sys.executable)
 
     def _wait_with_progress(self, proc: subprocess.Popen, description: str, log_interval: int = 60) -> int:
         """
@@ -399,7 +426,8 @@ class DiarizationService:
         return path_str
 
     def _normalize_output_dir(self, output_dir: Optional[str], ytid: str) -> str:
-        base = output_dir or f"results/diarization/{ytid}"
+        # Match legacy layout: generated/diarization_resemblyzer/<ytid>/
+        base = output_dir or f"generated/diarization_resemblyzer/{ytid}"
         return self._normalize_relative(base, allow_dir=True)
 
     def _ensure_reference_at_enqueue(
@@ -534,56 +562,6 @@ class DiarizationService:
             raise FileNotFoundError(f"reference.json missing in {dest_dir}")
         return dest_dir
 
-    def _run_legacy_diarize(
-        self,
-        job: Job,
-        workspace_root: Path,
-        audio_path: Path,
-        words_path: Path,
-        output_dir: Path,
-    ) -> None:
-        if os.environ.get("VIDOPS_FAKE_DIARIZATION", "").lower() in {"1", "true"}:
-            self._write_fake_outputs(job, output_dir, audio_path)
-            return
-
-        workspace_sh = Path(__file__).resolve().parents[1] / "workspace.sh"
-        cmd = [
-            "bash",
-            str(workspace_sh),
-            "diarize",
-            "--ytid",
-            job.ytid,
-            "--audio",
-            str(audio_path),
-            "--words",
-            str(words_path),
-            "--project-root",
-            str(workspace_root),
-            "--device",
-            str(job.config.get("device", "auto")),
-            "--chunk-seconds",
-            str(job.config.get("chunk_seconds", 6.0)),
-            "--overlap-seconds",
-            str(job.config.get("overlap_seconds", 1.0)),
-            "--similarity-threshold",
-            str(job.config.get("similarity_threshold", 0.6)),
-            "--gap-threshold",
-            str(job.config.get("gap_threshold", 0.15)),
-        ]
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(workspace_root)
-        logger.info("Running legacy diarize: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_root,
-            env=env,
-            text=True,
-            capture_output=False,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Legacy diarization failed with exit {result.returncode}")
-
     def _get_audio_duration(self, audio_path: Path) -> float:
         """Get audio duration in seconds using ffprobe."""
         try:
@@ -674,11 +652,7 @@ class DiarizationService:
         ytids_file.write_text(f"{job.ytid}\n", encoding="utf-8")
 
         results_root = output_dir.parent  # batch_diarize writes under base/<ytid>
-        # Prefer configured python for pyannote pipeline
-        py_bin = Path(os.environ.get("DIAR_PYTHON_BIN", "/home/billie/tools/vidops/.venv/bin/python"))
-        if not py_bin.exists():
-            alt_py = workspace_root / ".venv" / "bin" / "python"
-            py_bin = alt_py if alt_py.exists() else Path(sys.executable)
+        py_bin = self._resolve_python_bin(workspace_root)
 
         # Allow per-process device override for multi-GPU setups.
         # Prefer env-provided device if present (e.g., VIDOPS_DIAR_DEVICE=cuda, cuda:0, cpu).
@@ -717,13 +691,7 @@ class DiarizationService:
         self._clear_cuda_cache()
 
         logger.info("Running pyannote diarize: %s", " ".join(cmd))
-        proc = subprocess.Popen(
-            cmd,
-            cwd=workspace_root,
-            env=env,
-            text=True,
-            start_new_session=True,  # allow clean group termination on interrupts
-        )
+        proc = self._process_manager.spawn_isolated(cmd, env=env, cwd=str(workspace_root))
 
         # Register subprocess PID with memory monitor so it tracks all descendants
         if self._memory_monitor and self._memory_monitor.monitoring:
@@ -734,26 +702,15 @@ class DiarizationService:
             return_code = self._wait_with_progress(proc, f"Diarization for {job.ytid}", log_interval=60)
         except BaseException as exc:  # catch KeyboardInterrupt/SystemExit for cleanup
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
+                self._process_manager.kill_process_tree(proc)
             except Exception:
-                pass
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except Exception:
-                    pass
+                proc.kill()
             raise exc
         if proc.poll() is None:
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait(timeout=5)
+                self._process_manager.kill_process_tree(proc)
             except Exception:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except Exception:
-                    pass
+                proc.kill()
         if return_code != 0:
             raise RuntimeError(f"pyannote diarization failed with exit {return_code}")
 
@@ -794,10 +751,7 @@ class DiarizationService:
         chunk_results_dir = workspace_root / "tmp" / f"{job.job_id}_chunk_results"
         chunk_results_dir.mkdir(parents=True, exist_ok=True)
 
-        py_bin = Path(os.environ.get("DIAR_PYTHON_BIN", "/home/billie/tools/vidops/.venv/bin/python"))
-        if not py_bin.exists():
-            alt_py = workspace_root / ".venv" / "bin" / "python"
-            py_bin = alt_py if alt_py.exists() else Path(sys.executable)
+        py_bin = self._resolve_python_bin(workspace_root)
 
         chunk_duration = float(os.environ.get("DIAR_CHUNK_DURATION", "3600"))  # 1 hour
         chunk_overlap = float(os.environ.get("DIAR_CHUNK_OVERLAP", "30"))  # 30 seconds
@@ -898,13 +852,7 @@ class DiarizationService:
             self._clear_cuda_cache()
 
             logger.info(f"Running diarization on chunk {chunk_idx}: {' '.join(chunk_cmd)}")
-            proc = subprocess.Popen(
-                chunk_cmd,
-                cwd=workspace_root,
-                env=env,
-                text=True,
-                start_new_session=True,
-            )
+            proc = self._process_manager.spawn_isolated(chunk_cmd, env=env, cwd=str(workspace_root))
 
             # Register with memory monitor
             if self._memory_monitor and self._memory_monitor.monitoring:
@@ -918,13 +866,9 @@ class DiarizationService:
                 )
             except BaseException as exc:
                 try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    proc.wait(timeout=5)
+                    self._process_manager.kill_process_tree(proc)
                 except Exception:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except Exception:
-                        pass
+                    proc.kill()
                 raise exc
 
             if return_code != 0:

@@ -18,6 +18,7 @@ from dal import (
     FilesystemCache,
 )
 from models import Job, JobStatus, Transcript, Word
+from services.subtitle_native import VTTConverter, SubtitleDownloader
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ DEFAULT_LANG = "en"
 class SubtitleService:
     """
     Bridge legacy dl-subs and convert-captions into the DB queue and storage manager.
+    dl-subs is now native yt-dlp but preserves legacy outputs/paths under pull/.
     """
 
     def __init__(
@@ -43,6 +45,7 @@ class SubtitleService:
         self.word_repo = word_repo
         self.fs_cache = fs_cache
         self.config = load_config()
+        self._downloader = SubtitleDownloader()
 
     # ------------------------------------------------------------------
     # Enqueue helpers
@@ -168,29 +171,24 @@ class SubtitleService:
         pull_dir = workspace_root / "pull"
         pull_dir.mkdir(parents=True, exist_ok=True)
 
-        url_list = pull_dir / f"{job.job_id}_urls.txt"
-        url_list.write_text(f"{url}\n", encoding="utf-8")
-
-        cmd = [
-            "bash",
-            str(self._workspace_sh()),
-            "dl-subs",
-            "batch",
-            str(url_list),
-            subtitle_format,
-        ]
-
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(workspace_root)
-
-        self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Downloading subtitles via legacy dl-subs.")
-        logger.info("Running legacy dl-subs for %s: %s", job.ytid, " ".join(cmd))
+        self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Downloading subtitles via native dl-subs.")
+        logger.info("Running native dl-subs for %s", job.ytid)
         start_ts = time.time()
-        result = subprocess.run(cmd, cwd=workspace_root, env=env, capture_output=False, text=True, check=False)
-        if result.returncode != 0:
-            logger.warning("dl-subs exited %s; will verify outputs anyway", result.returncode)
+        try:
+            subtitle_path = self._downloader.download_subtitle(
+                url=url,
+                ytid=job.ytid,
+                pull_dir=pull_dir,
+                subtitle_format=subtitle_format,
+                lang=lang,
+            )
+        except Exception as exc:
+            error_msg = f"dl-subs failed for {job.ytid}: {exc}"
+            logger.error(error_msg, exc_info=True)
+            self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_msg)
+            return
 
-        subtitle_path = self._find_subtitle_output(pull_dir, job.ytid, subtitle_format)
+        subtitle_path = subtitle_path or self._find_subtitle_output(pull_dir, job.ytid, subtitle_format)
         relative_path = subtitle_path.relative_to(workspace_root)
         self.fs_cache.persist_local_artifact(
             subtitle_path,
@@ -237,9 +235,13 @@ class SubtitleService:
         return candidates[0]
 
     # ------------------------------------------------------------------
-    # convert-captions bridge
+    # convert-captions bridge (native Python)
     # ------------------------------------------------------------------
     def _process_convert_captions(self, job: Job) -> None:
+        """
+        Convert VTT captions to words.yt.tsv using native Python implementation.
+        Replaces legacy bash convert-captions script.
+        """
         if not job.ytid:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job has no ytid.")
             return
@@ -251,28 +253,43 @@ class SubtitleService:
         generated_dir.mkdir(parents=True, exist_ok=True)
 
         subtitle_path = self._resolve_subtitle(job)
-        legacy_vtt = pull_dir / subtitle_path.name
-        if not legacy_vtt.exists():
-            shutil.copy2(subtitle_path, legacy_vtt)
-
         overwrite = bool(job.config.get("overwrite"))
-        subtitle_format = job.config.get("format", "vtt")
 
-        cmd = ["bash", str(self._workspace_sh()), "convert-captions", str(legacy_vtt)]
-        if overwrite:
-            cmd.insert(3, "--overwrite")
-
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(workspace_root)
-
-        self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Running legacy convert-captions.")
-        logger.info("Running convert-captions for %s: %s", job.ytid, " ".join(cmd))
+        self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Converting captions to words.yt.tsv.")
+        logger.info("Running native Python caption conversion for %s", job.ytid)
         start_ts = time.time()
-        result = subprocess.run(cmd, cwd=workspace_root, env=env, capture_output=False, text=True, check=False)
-        if result.returncode != 0:
-            logger.warning("convert-captions exited %s; will attempt ingestion", result.returncode)
 
-        words_path = self._locate_words_output(generated_dir, legacy_vtt)
+        try:
+            # Use native Python VTT converter
+            converter = VTTConverter()
+
+            # Determine output path in generated/ directory
+            base = subtitle_path.name
+            if base.endswith(".transcript.en.vtt"):
+                base = base[:-len(".transcript.en.vtt")]
+            elif base.endswith(".vtt"):
+                base = base[:-len(".vtt")]
+            words_path = generated_dir / f"{base}.words.yt.tsv"
+
+            # Convert VTT to words.yt.tsv
+            converter.convert_vtt_to_words(
+                vtt_path=subtitle_path,
+                output_path=words_path,
+                overwrite=overwrite
+            )
+
+            # Also copy VTT to pull/ for compatibility if needed
+            legacy_vtt = pull_dir / subtitle_path.name
+            if not legacy_vtt.exists() or subtitle_path.resolve() != legacy_vtt.resolve():
+                shutil.copy2(subtitle_path, legacy_vtt)
+
+        except Exception as e:
+            error_msg = f"Caption conversion failed: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.job_repo.update_status(job.job_id, JobStatus.FAILED, error_msg)
+            return
+
+        # Persist artifacts to central storage
         relative_words = words_path.relative_to(workspace_root)
         stored_words = self.fs_cache.persist_local_artifact(
             words_path,
@@ -283,7 +300,6 @@ class SubtitleService:
         )
 
         vtt_relative = legacy_vtt.relative_to(workspace_root)
-        # Ensure subtitle asset exists in central storage as well
         self.fs_cache.persist_local_artifact(
             legacy_vtt,
             str(vtt_relative),
@@ -292,12 +308,14 @@ class SubtitleService:
             kind="vtt",
         )
 
+        # Parse and insert words into database
         words, segment_count = self._parse_words(words_path, job.ytid)
         if words:
             self.word_repo.bulk_insert(words, job_id=job.job_id)
 
         lang = job.config.get("lang") or DEFAULT_LANG
 
+        # Update transcript records
         subtitle_transcript = Transcript(
             ytid=job.ytid,
             kind="vtt",
@@ -327,7 +345,7 @@ class SubtitleService:
                 "duration_seconds": round(duration, 3),
             },
         )
-        logger.info("convert-captions complete for %s → %s", job.ytid, relative_words)
+        logger.info("Caption conversion complete for %s → %s", job.ytid, relative_words)
 
     def _locate_words_output(self, generated_dir: Path, vtt_path: Path) -> Path:
         """Given a VTT path, locate the associated *.words.yt.tsv output."""

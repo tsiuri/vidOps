@@ -203,56 +203,52 @@ class TranscriptionService:
             # 2. Update job status to RUNNING
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING)
 
-            # 3. Reconstruct legacy inputs and run the legacy transcribe path
+            # 3. Run native Whisper transcription (no workspace.sh)
             model_name = self._resolve_model_name(job.config)
             language = self._resolve_language(job.config)
-            legacy_workspace, legacy_media_path, filelist_path = self._prepare_legacy_inputs(
-                Path(media_local_path), job
-            )
-            logger.info(
-                "Launching legacy transcription for %s using model=%s language=%s",
-                job.ytid,
-                model_name,
-                language or "auto",
-            )
+            vad_filter = self._resolve_vad_filter(job.config)
             start_time = time.time()
-            legacy_result = self._run_legacy_transcribe(
-                workspace_root=legacy_workspace,
-                filelist_path=filelist_path,
+            segments = self._run_whisper(
+                media_path=Path(media_local_path),
                 model_name=model_name,
                 language=language,
-                job=job,
+                vad_filter=vad_filter,
+                config=job.config,
             )
-            if legacy_result.returncode != 0:
-                stderr = (getattr(legacy_result, "stderr", "") or "").strip()
-                stdout = (getattr(legacy_result, "stdout", "") or "").strip()
-                known_safe = "ROCm unavailable; skipping AMD worker."
-                if known_safe in stderr or known_safe in stdout:
-                    logger.warning(
-                        "Legacy transcribe returned %s with known-safe warning (%s); ingesting outputs",
-                        legacy_result.returncode,
-                        known_safe,
-                    )
-                else:
-                    logger.warning(
-                        "Legacy transcribe exited with code %s; attempting to ingest outputs anyway (stderr=%s)",
-                        legacy_result.returncode,
-                        stderr,
-                    )
+            if not segments:
+                raise ValueError("Whisper returned no segments for this media")
 
-            # 4. Ingest legacy outputs
-            vtt_path, words_path = self._locate_legacy_outputs(legacy_workspace, job.ytid)
-            words = self._parse_legacy_words(words_path, job.ytid, model_name)
+            words = self._segments_to_words(job.ytid, model_name, segments)
             words_count = len(words)
             segment_count = self._estimate_segments(words)
+            vtt_content = self._segments_to_vtt(segments)
+            words_tsv_content = self._words_to_tsv(words)
+
+            # 4. Write outputs locally before persisting to storage
+            output_dir = self._prepare_output_dir(job.job_id)
+            base_name = f"{job.ytid}_{model_name}"
+            vtt_path = output_dir / f"{base_name}.vtt"
+            words_path = output_dir / f"{base_name}.words.yt.tsv"
+            vtt_path.write_text(vtt_content, encoding="utf-8")
+            words_path.write_text(words_tsv_content, encoding="utf-8")
+
+            # 4a. Maintain legacy layout/naming under generated/ for downstream tools
+            legacy_root = self._ensure_legacy_workspace_dirs()
+            generated_dir = legacy_root / "generated"
+            legacy_vtt = generated_dir / vtt_path.name
+            legacy_words = generated_dir / words_path.name
+            try:
+                shutil.copy2(vtt_path, legacy_vtt)
+                shutil.copy2(words_path, legacy_words)
+            except Exception as exc:
+                logger.warning("Failed to copy transcripts to legacy layout: %s", exc)
+                legacy_vtt = vtt_path
+                legacy_words = words_path
 
             if words_count:
                 self.word_repo.bulk_insert(words, job_id=job.job_id)
             else:
-                logger.warning("Legacy transcription produced no per-word entries for %s", job.ytid)
-
-            vtt_content = Path(vtt_path).read_text(encoding="utf-8")
-            words_tsv_content = Path(words_path).read_text(encoding="utf-8")
+                logger.warning("Transcription produced no per-word entries for %s", job.ytid)
 
             # 5. Store transcripts via storage manager and register assets
             vtt_kind = f"vtt_whisper_{model_name}"
@@ -273,8 +269,8 @@ class TranscriptionService:
                 segment_count=segment_count,
             )
 
-            vtt_rel = self._persist_transcript_asset(Path(vtt_path), job.ytid, "transcript_vtt")
-            words_rel = self._persist_transcript_asset(Path(words_path), job.ytid, "transcript_words")
+            vtt_rel = self._persist_transcript_asset(Path(legacy_vtt), job.ytid, "transcript_vtt")
+            words_rel = self._persist_transcript_asset(Path(legacy_words), job.ytid, "transcript_words")
 
             vtt_transcript.path = str(vtt_rel)
             words_transcript.path = str(words_rel)
@@ -307,7 +303,7 @@ class TranscriptionService:
                 )
 
             logger.info(
-                "Successfully transcribed %s with model %s in %.2fs via legacy runner",
+                "Successfully transcribed %s with model %s in %.2fs via native runner",
                 job.ytid,
                 model_name,
                 processing_time,
@@ -699,6 +695,41 @@ class TranscriptionService:
             kind=asset_kind,
         )
         return Path(stored_path)
+
+    def _prepare_output_dir(self, job_id: str) -> Path:
+        """
+        Prepare a local output directory for transcription artifacts.
+        Uses config.paths.local_temp_dir (relative to PROJECT_ROOT) to stay cross-platform.
+        """
+        project_root = Path(
+            os.environ.get("VIDOPS_PROJECT_ROOT")
+            or os.environ.get("PROJECT_ROOT")
+            or Path.cwd()
+        ).resolve()
+        base_tmp = Path(self.config.paths.local_temp_dir or "tmp")
+        if not base_tmp.is_absolute():
+            base_tmp = project_root / base_tmp
+        output_dir = base_tmp / "transcribe" / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def _ensure_legacy_workspace_dirs(self) -> Path:
+        """
+        Ensure legacy workspace directories (pull/generated/logs/tmp) exist and
+        return the workspace root. This preserves legacy layouts for downstream tools.
+        """
+        workspace_root = Path(
+            os.environ.get("VIDOPS_PROJECT_ROOT")
+            or os.environ.get("PWD")
+            or Path.cwd()
+        ).resolve()
+        pull_dir = workspace_root / "pull"
+        generated_dir = workspace_root / "generated"
+        logs_dir = workspace_root / "logs" / "transcribe"
+        tmp_dir = workspace_root / "tmp"
+        for d in (pull_dir, generated_dir, logs_dir, tmp_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        return workspace_root
 
     def _prepare_legacy_inputs(self, media_local_path: Path, job: Job) -> Tuple[Path, Path, Path]:
         """

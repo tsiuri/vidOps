@@ -2,10 +2,16 @@
 
 import logging
 import os
+import platform
 import time
 import signal
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 from configuration import load_config
 from models import Worker, WorkerStatus, JobStatus
@@ -37,7 +43,7 @@ class DiarizeWorker:
         self.worker_type = "diarization"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
         self.worker_repo = WorkerRepository()
         self.job_repo = JobRepository()
         self.diarization_service = get_diarization_service()
@@ -46,6 +52,14 @@ class DiarizeWorker:
         self._descendants_killed = False
         self.current_job_id: Optional[str] = None
         self.heartbeat_interval = max(1, self.config.workers.heartbeat_interval)
+        self._psutil_process = None
+        if psutil:
+            try:
+                self._psutil_process = psutil.Process(self.pid)
+                # Prime CPU percent measurement
+                self._psutil_process.cpu_percent(interval=None)
+            except Exception:
+                self._psutil_process = None
         self.heartbeat = WorkerHeartbeat(
             worker_repo=self.worker_repo,
             job_repo=self.job_repo,
@@ -189,49 +203,71 @@ class DiarizeWorker:
                 worker_type=self.worker_type,
             ).set(uptime_seconds)
 
-            # Update memory usage (read from /proc/self/status)
-            try:
-                with open("/proc/self/status", "r") as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            # VmRSS is in kB, convert to bytes
-                            memory_kb = int(line.split()[1])
-                            memory_bytes = memory_kb * 1024
-                            generic_worker_memory_usage_bytes.labels(
-                                worker_id=self.worker_id,
-                                worker_type=self.worker_type,
-                            ).set(memory_bytes)
-                            break
-            except Exception:
-                pass  # Non-Linux systems won't have /proc/self/status
-
-            # Update CPU usage (simplified: read from /proc/self/stat)
-            try:
-                with open("/proc/self/stat", "r") as f:
-                    stat_data = f.read().split()
-                    # Rough CPU estimate: utime + stime in jiffies
-                    utime = int(stat_data[13])
-                    stime = int(stat_data[14])
-                    total_time = (utime + stime) / 100.0  # Approximate percentage
-                    cpu_percent = min(total_time, 100.0)  # Cap at 100%
+            process = self._psutil_process
+            if psutil:
+                try:
+                    process = process or psutil.Process(self.pid)
+                    memory_bytes = process.memory_info().rss
+                    generic_worker_memory_usage_bytes.labels(
+                        worker_id=self.worker_id,
+                        worker_type=self.worker_type,
+                    ).set(memory_bytes)
+                    cpu_percent = process.cpu_percent(interval=None)
                     generic_worker_cpu_usage_percent.labels(
                         worker_id=self.worker_id,
                         worker_type=self.worker_type,
                     ).set(cpu_percent)
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            else:
+                # Fallback for environments without psutil
+                try:
+                    with open("/proc/self/status", "r") as f:
+                        for line in f:
+                            if line.startswith("VmRSS:"):
+                                memory_kb = int(line.split()[1])
+                                memory_bytes = memory_kb * 1024
+                                generic_worker_memory_usage_bytes.labels(
+                                    worker_id=self.worker_id,
+                                    worker_type=self.worker_type,
+                                ).set(memory_bytes)
+                                break
+                except Exception:
+                    pass
+                try:
+                    with open("/proc/self/stat", "r") as f:
+                        stat_data = f.read().split()
+                        utime = int(stat_data[13])
+                        stime = int(stat_data[14])
+                        total_time = (utime + stime) / 100.0
+                        cpu_percent = min(total_time, 100.0)
+                        generic_worker_cpu_usage_percent.labels(
+                            worker_id=self.worker_id,
+                            worker_type=self.worker_type,
+                        ).set(cpu_percent)
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.debug("Error updating health metrics: %s", e)
+
+    def _register_signal_handlers(self) -> None:
+        """Register shutdown signal handlers where supported."""
+        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, self._handle_shutdown_signal)
+            except (ValueError, OSError, AttributeError) as exc:
+                logger.debug("Skipping signal handler for %s: %s", sig, exc)
 
     def run(self):
         """Main loop for the worker."""
         logger.info(f"Starting DiarizeWorker '{self.worker_id}'...")
         self.running = True
-        
+
         # Signal handling
-        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
-        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        self._register_signal_handlers()
 
         self._register_worker()
         self.heartbeat.start()
@@ -287,19 +323,50 @@ class DiarizeWorker:
             return
         try:
             to_kill = self._collect_descendants(os.getpid())
-            for sig in (signal.SIGTERM, signal.SIGKILL):
+            if not to_kill:
+                return
+            if psutil:
                 for pid in to_kill:
                     try:
-                        os.kill(pid, sig)
-                    except ProcessLookupError:
+                        proc = psutil.Process(pid)
+                        proc.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
                 time.sleep(0.25)
+                for pid in to_kill:
+                    try:
+                        proc = psutil.Process(pid)
+                        if proc.is_running():
+                            proc.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            else:
+                sig_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                for sig in (signal.SIGTERM, sig_kill):
+                    for pid in to_kill:
+                        try:
+                            os.kill(pid, sig)
+                        except ProcessLookupError:
+                            continue
+                    time.sleep(0.25)
             self._descendants_killed = True
         except Exception as exc:
             logger.warning("Failed to kill descendants: %s", exc)
 
     def _collect_descendants(self, pid: int) -> list[int]:
-        """Collect descendant PIDs via /proc."""
+        """Collect descendant PIDs in a cross-platform way."""
+        if psutil:
+            try:
+                proc = psutil.Process(pid)
+                return [child.pid for child in proc.children(recursive=True)]
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return []
+            except Exception:
+                return []
+        return self._collect_descendants_proc(pid)
+
+    def _collect_descendants_proc(self, pid: int) -> list[int]:
+        """Collect descendant PIDs via /proc (Linux fallback)."""
         descendants: list[int] = []
         try:
             children_path = f"/proc/{pid}/task/{pid}/children"

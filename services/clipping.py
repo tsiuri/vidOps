@@ -5,7 +5,7 @@ import math
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import json
 from datetime import datetime
 from psycopg2.extras import Json
@@ -16,8 +16,8 @@ from configuration import load_config
 from db import get_connection
 import os
 import csv
-import subprocess
 import time
+from services.clipping_native import NativeClipper, ClipRow
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class ClippingService:
         self.job_repo = job_repo
         self.fs_cache = fs_cache
         self.config = load_config()
+        self._clipper = NativeClipper()
 
     def enqueue_clip_job(
         self,
@@ -172,20 +173,28 @@ class ClippingService:
 
             # Stage media for all ytids in manifest
             ytids = self._collect_manifest_ytids(hits_manifest)
+            staged_media: dict[str, Path] = {}
             for mid in ytids:
                 media_relative = self._resolve_media_asset_path(mid)
                 if not media_relative:
                     logger.warning("No media asset for %s; legacy cutter may skip", mid)
                     continue
                 local_source = self.fs_cache.pull_to_cache(media_relative)
-                self._stage_media(Path(local_source), project_root)
+                staged_path = self._stage_media(Path(local_source), project_root)
+                staged_media[mid] = staged_path
 
-            # 4. Invoke legacy cutter
+            # 4. Invoke native cutter (mirrors legacy outputs/layout)
+            rows = self._read_manifest_rows(hits_manifest)
+            mode = job.config.get("mode", "net")
             start_ts = time.time()
-            self._run_legacy_cut(hits_manifest, output_dir, project_root, job)
+            if mode == "local":
+                clip_paths = self._clipper.cut_local(rows, output_dir, staged_media)
+            else:
+                clip_paths = self._clipper.cut_net(rows, output_dir)
 
-            # 5. Locate outputs (all new files since start)
-            clip_paths = self._find_new_clips(output_dir, since=start_ts, ytids=ytids)
+            # Fallback to mtime scan if nothing returned
+            if not clip_paths:
+                clip_paths = self._find_new_clips(output_dir, since=start_ts, ytids=ytids)
             registered = []
 
             # Persist manifest
@@ -364,8 +373,28 @@ class ClippingService:
                     continue
                 url = parts[0]
                 if "watch?v=" in url:
-                    ytids.append(url.split("watch?v=")[-1][:11])
+                ytids.append(url.split("watch?v=")[-1][:11])
         return ytids or [""]
+
+    def _read_manifest_rows(self, manifest: Path) -> List[ClipRow]:
+        """Read manifest TSV (url, start, end, label, caption) into ClipRow objects."""
+        rows: List[ClipRow] = []
+        with manifest.open("r", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                try:
+                    rows.append(
+                        ClipRow(
+                            url=row.get("url", ""),
+                            start=float(row.get("start") or 0.0),
+                            end=float(row.get("end") or 0.0),
+                            label=row.get("label", ""),
+                            caption=row.get("caption", ""),
+                        )
+                    )
+                except Exception:
+                    continue
+        return rows
 
     def _sanitize_filename(self, name: str) -> str:
         safe = []

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import signal
 import subprocess
 import time
@@ -12,6 +13,11 @@ import sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 from configuration import load_config
 from dal import JobRepository, WorkerRepository
@@ -60,7 +66,7 @@ class GenericWorker:
             status=WorkerStatus.REGISTERING,
             vram_gb=self.config.analysis.default_vram_gb,
             pid=os.getpid(),
-            hostname=os.uname().nodename,
+            hostname=platform.node(),
         )
         self.heartbeat = WorkerHeartbeat(
             worker_repo=self.worker_repo,
@@ -101,8 +107,17 @@ class GenericWorker:
         self.web_thread: Optional[threading.Thread] = None
         self.metrics_thread: Optional[threading.Thread] = None
 
-        signal.signal(signal.SIGINT, self._handle_shutdown_signal)
-        signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
+        self._register_signal_handlers()
+
+    def _register_signal_handlers(self) -> None:
+        """Register shutdown handlers in a cross-platform way."""
+        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, self._handle_shutdown_signal)
+            except (ValueError, OSError, AttributeError) as exc:
+                logger.debug("Skipping signal handler for %s: %s", sig, exc)
 
     def run(self):
         logging.basicConfig(
@@ -427,9 +442,9 @@ class GenericWorker:
             check_disk_space(self.workspace_root, min_gb=30.0)
             logger.info("  ✓ Sufficient disk space (30GB minimum)")
 
-        # Optional cleanup if workspace is above the configured trigger
-        if not self._maybe_cleanup_workspace(prompt=True):
-            return False
+            # Optional cleanup if workspace is above the configured trigger
+            if not self._maybe_cleanup_workspace(prompt=True):
+                return False
 
             logger.info("Pre-flight checks passed")
             return True
@@ -621,25 +636,48 @@ class GenericWorker:
 
     def _get_directory_size_gb(self, directory: Path) -> float:
         """
-        Get directory size in GB using du -x (stay on the same filesystem) to avoid
-        counting mounted storage. Falls back to 0 on error.
+        Get directory size in GB while staying on the same filesystem. Falls back to 0 on error.
         """
         try:
-            result = subprocess.run(
-                ["du", "-sb", "-x", str(directory)],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=True
-            )
-            bytes_used = int(result.stdout.split()[0])
-            return bytes_used / (1024 ** 3)
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Timeout calculating size of {directory}")
+            root_dev = directory.stat().st_dev
+        except Exception as exc:
+            logger.warning(f"Error stat-ing {directory}: {exc}")
             return 0.0
-        except Exception as e:
-            logger.warning(f"Error calculating size of {directory}: {e}")
+
+        total_bytes = 0
+        stack = [directory]
+        try:
+            while stack:
+                current = stack.pop()
+                try:
+                    with os.scandir(current) as entries:
+                        for entry in entries:
+                            try:
+                                stat = entry.stat(follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            except Exception as exc:
+                                logger.debug("Error stat-ing %s: %s", entry.path, exc)
+                                continue
+
+                            if stat.st_dev != root_dev:
+                                # Skip entries on other filesystems to mirror du -x
+                                continue
+
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append(Path(entry.path))
+                            else:
+                                total_bytes += stat.st_size
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                except Exception as exc:
+                    logger.warning(f"Error traversing %s: %s", current, exc)
+                    continue
+        except Exception as exc:
+            logger.warning(f"Error calculating size of {directory}: {exc}")
             return 0.0
+
+        return total_bytes / (1024 ** 3)
 
     def _handle_shutdown_signal(self, signum, frame):
         if self._shutdown_requested:
@@ -665,18 +703,49 @@ class GenericWorker:
             return
         try:
             to_kill = self._collect_descendants(os.getpid())
-            for sig in (signal.SIGTERM, signal.SIGKILL):
+            if not to_kill:
+                return
+            if psutil:
                 for pid in to_kill:
                     try:
-                        os.kill(pid, sig)
-                    except ProcessLookupError:
+                        proc = psutil.Process(pid)
+                        proc.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
                         continue
                 time.sleep(0.25)
+                for pid in to_kill:
+                    try:
+                        proc = psutil.Process(pid)
+                        if proc.is_running():
+                            proc.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+            else:
+                sig_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                for sig in (signal.SIGTERM, sig_kill):
+                    for pid in to_kill:
+                        try:
+                            os.kill(pid, sig)
+                        except ProcessLookupError:
+                            continue
+                    time.sleep(0.25)
             self._descendants_killed = True
         except Exception as exc:
             logger.warning("Failed to kill descendants: %s", exc)
 
     def _collect_descendants(self, pid: int) -> list[int]:
+        """Collect descendant PIDs in a cross-platform way."""
+        if psutil:
+            try:
+                proc = psutil.Process(pid)
+                return [child.pid for child in proc.children(recursive=True)]
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return []
+            except Exception:
+                return []
+        return self._collect_descendants_proc(pid)
+
+    def _collect_descendants_proc(self, pid: int) -> list[int]:
         """Collect descendant PIDs via /proc."""
         descendants: list[int] = []
         try:

@@ -2,21 +2,20 @@
 
 import logging
 import os
-import shutil
-import subprocess
 from pathlib import Path
 from typing import List, Optional
 
 from dal import VideoRepository, JobRepository, FilesystemCache
 from models import Job, JobStatus
+from services.stitching_native import VideoStitcher
 
 logger = logging.getLogger(__name__)
 
 class StitchingService:
     """
-    Bridge DB-backed stitch jobs into the legacy workspace.sh stitch runner.
-    Inputs are materialized under media/clips/, the legacy script is invoked,
-    and outputs are pushed to central storage with asset registration.
+    Native stitching (no workspace.sh) while preserving legacy outputs/paths.
+    Inputs are materialized under media/clips/, stitched via ffmpeg, and outputs
+    are pushed to central storage with asset registration.
     """
 
     def __init__(
@@ -110,35 +109,27 @@ class StitchingService:
             sort_method = job.config.get("sort_method", "date_timestamp")
 
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting stitching.")
-            result = self._run_legacy_stitch(project_root, stage_dir, output_local, method, sort_method)
-            stdout_tail = (result.stdout or "").strip()[-500:]
-            stderr_tail = (result.stderr or "").strip()[-500:]
-
-            if result.returncode != 0:
-                job_result = {
-                    "stitched_path": None,
-                    "stdout_tail": stdout_tail,
-                    "stderr_tail": stderr_tail,
-                }
-                self.job_repo.update_status(
-                    job.job_id,
-                    JobStatus.FAILED,
-                    error_message=f"Legacy stitch exited {result.returncode}",
-                    result=job_result,
-                )
-                return
+            stitcher = VideoStitcher()
+            if method == "batch":
+                stitcher.batch_stitch(stage_dir, output_local, sort_method=sort_method)
+            elif method == "concat":
+                stitcher.concat_stitch(stage_dir, output_local, sort_method=sort_method, filter_complex=False)
+            elif method == "concat_filter":
+                stitcher.concat_stitch(stage_dir, output_local, sort_method=sort_method, filter_complex=True)
+            elif method == "cfr":
+                stitcher.cfr_stitch(stage_dir, output_local, sort_method=sort_method)
+            else:
+                raise ValueError(f"Unknown stitch method: {method}")
 
             if not output_local.exists() or output_local.stat().st_size == 0:
                 job_result = {
                     "stitched_path": None,
-                    "stdout_tail": stdout_tail,
-                    "stderr_tail": stderr_tail,
-                    "error": "Legacy stitch produced no output",
+                    "error": "Stitch produced no output",
                 }
                 self.job_repo.update_status(
                     job.job_id,
                     JobStatus.FAILED,
-                    error_message="Legacy stitch produced no output",
+                    error_message="Stitch produced no output",
                     result=job_result,
                 )
                 return
@@ -156,8 +147,8 @@ class StitchingService:
                 "stored_path": str(Path(stored_path)),
                 "input_count": len(staged_files),
                 "stage_dir": str(stage_dir.relative_to(project_root)),
-                "stdout_tail": stdout_tail,
-                "stderr_tail": stderr_tail,
+                "method": method,
+                "sort_method": sort_method,
             }
             self.job_repo.update_status(job.job_id, JobStatus.COMPLETED, result=job_result)
             logger.info("Successfully stitched %s -> %s", job.job_id, output_relative)
@@ -255,6 +246,7 @@ class StitchingService:
         return cleaned.strip("-") or "clip"
 
     def _local_output_path(self, project_root: Path, output_filename: str) -> Path:
-        target = project_root / "media" / "final" / output_filename
-        target.parent.mkdir(parents=True, exist_ok=True)
-        return target
+        # Legacy outputs live under generated/stitch/
+        target_dir = project_root / "generated" / "stitch"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / output_filename

@@ -13,6 +13,7 @@ This worker:
 from __future__ import annotations
 
 import os
+import platform
 import time
 import sys
 import signal
@@ -27,6 +28,11 @@ try:
     import torch  # Optional, for GPU cleanup
 except Exception:
     torch = None
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 from configuration import load_config
 from dal.analysis_task_repository import AnalysisDatabase, AnalysisTaskRepository
@@ -140,7 +146,7 @@ class AnalysisWorker:
                 status=WorkerStatus.REGISTERING,
                 vram_gb=self.available_vram_gb,
                 pid=os.getpid(),
-                hostname=os.uname().nodename,
+                hostname=platform.node(),
             )
             self.heartbeat = WorkerHeartbeat(
                 worker_repo=self.worker_repo,
@@ -204,6 +210,13 @@ class AnalysisWorker:
         self.current_task: Optional[AnalysisTask] = None
         self.metrics_server = None
         self.startup_time = datetime.now(timezone.utc)
+        self._psutil_process = None
+        if psutil:
+            try:
+                self._psutil_process = psutil.Process(os.getpid())
+                self._psutil_process.cpu_percent(interval=None)
+            except Exception:
+                self._psutil_process = None
 
         # Start metrics server if port > 0
         if self.metrics_port > 0:
@@ -450,12 +463,21 @@ class AnalysisWorker:
     # Main loop
     # ------------------------------------------------------------------
 
+    def _register_signal_handlers(self) -> None:
+        """Register signal handlers with platform guards."""
+        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, self._handle_signal)
+            except (ValueError, OSError, AttributeError) as exc:
+                logger.debug("Skipping signal handler for %s: %s", sig, exc)
+
     def run_forever(self) -> None:
         """
         Main worker loop. Runs until interrupted.
         """
-        signal.signal(signal.SIGINT, self._handle_signal)
-        signal.signal(signal.SIGTERM, self._handle_signal)
+        self._register_signal_handlers()
 
         logger.info("Worker %s starting main loop...", self.worker_id)
 
@@ -1336,38 +1358,44 @@ class AnalysisWorker:
 
     def _update_health_metrics(self) -> None:
         """Update worker health gauges periodically."""
-        import os
         try:
             # Update uptime
             now = datetime.now(timezone.utc)
             uptime_seconds = (now - self.startup_time).total_seconds()
             worker_uptime_seconds.labels(worker_id=self.worker_id).set(uptime_seconds)
 
-            # Update memory usage (read from /proc/self/status)
-            try:
-                with open("/proc/self/status", "r") as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            # VmRSS is in kB, convert to bytes
-                            memory_kb = int(line.split()[1])
-                            memory_bytes = memory_kb * 1024
-                            worker_memory_usage_bytes.labels(worker_id=self.worker_id).set(memory_bytes)
-                            break
-            except Exception:
-                pass  # Non-Linux systems won't have /proc/self/status
-
-            # Update CPU usage (simplified: read from /proc/self/stat)
-            try:
-                with open("/proc/self/stat", "r") as f:
-                    stat_data = f.read().split()
-                    # Rough CPU estimate: utime + stime in jiffies
-                    utime = int(stat_data[13])
-                    stime = int(stat_data[14])
-                    total_time = (utime + stime) / 100.0  # Approximate percentage
-                    cpu_percent = min(total_time, 100.0)  # Cap at 100%
+            process = self._psutil_process
+            if psutil:
+                try:
+                    process = process or psutil.Process(os.getpid())
+                    memory_bytes = process.memory_info().rss
+                    worker_memory_usage_bytes.labels(worker_id=self.worker_id).set(memory_bytes)
+                    cpu_percent = process.cpu_percent(interval=None)
                     worker_cpu_usage_percent.labels(worker_id=self.worker_id).set(cpu_percent)
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            else:
+                # Fallback for environments without psutil
+                try:
+                    with open("/proc/self/status", "r") as f:
+                        for line in f:
+                            if line.startswith("VmRSS:"):
+                                memory_kb = int(line.split()[1])
+                                memory_bytes = memory_kb * 1024
+                                worker_memory_usage_bytes.labels(worker_id=self.worker_id).set(memory_bytes)
+                                break
+                except Exception:
+                    pass
+                try:
+                    with open("/proc/self/stat", "r") as f:
+                        stat_data = f.read().split()
+                        utime = int(stat_data[13])
+                        stime = int(stat_data[14])
+                        total_time = (utime + stime) / 100.0
+                        cpu_percent = min(total_time, 100.0)
+                        worker_cpu_usage_percent.labels(worker_id=self.worker_id).set(cpu_percent)
+                except Exception:
+                    pass
 
             # Update pending tasks count (query repo if available)
             try:
@@ -1494,7 +1522,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run an analysis worker that consumes tasks from analysis_tasks.")
-    parser.add_argument("--machine-alias", required=False, default=os.uname().nodename)
+    parser.add_argument("--machine-alias", required=False, default=platform.node())
     parser.add_argument("--worker-type", required=False, default="analysis_gpu")
     parser.add_argument("--model-url", required=False, default="http://localhost:11434")
     parser.add_argument("--model-name", required=False, default="qwen2.5:7b-instruct")

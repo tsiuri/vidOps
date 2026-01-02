@@ -28,6 +28,11 @@ VidOps started as a purely “workspace.sh” driven toolkit:
   SOURCE_OF_TRUTH.md in docs/REFACTOR_ARCHITECTURE is
   the current state document; deprecated plans, phase logs, and
   old queue docs live under docs/deprecated/.
+
+2026-01-01 update: Transcription no longer shells to `workspace.sh`; it runs native faster-whisper (word timestamps), writes VTT/words locally, and persists via FilesystemCache/DB ingestion (Windows-safe).
+2026-01-01 update: Clipping (clips cut-local/cut-net) now uses native ffmpeg/yt-dlp with legacy filenames/paths preserved under `generated/hits/<run>/`, no `workspace.sh` dependency.
+2026-01-01 update: Diarization now runs native pyannote (no `workspace.sh`); outputs stay under `generated/diarization_resemblyzer/<ytid>/` with legacy filenames.
+2026-01-01 update: dl-subs now runs native yt-dlp (no `workspace.sh`); subtitles land in `pull/` with legacy naming, then persist via FilesystemCache/DB.
   
 Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGENTS.md, this document, and the SOURCE_OF_TRUTH.md up-to-date as you make changes.  There could be scripts and functions not documented currently in this evolving workspace.  Please document those as you locate them.
 
