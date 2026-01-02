@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 
 from dal import FilesystemCache, JobRepository, VideoRepository
 from models import Job, JobStatus
+from services.voice_filter_native import run_voice_filter
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ VOICE_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".aac", ".ogg", ".mp4", ".m
 
 class VoiceFilterService:
     """
-    Bridge voice filtering jobs through the legacy workspace.sh voice commands.
+    Native voice filtering (no workspace.sh) with legacy outputs (voice_analysis.json, hasan_clips.txt).
     """
 
     def __init__(
@@ -100,7 +101,7 @@ class VoiceFilterService:
 
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting voice filter.")
             start_time = time.time()
-            results_path, matches_path = self._run_legacy_voice(
+            results_path, matches_path = self._run_native_voice(
                 job,
                 workspace_root,
                 clips_dir,
@@ -221,7 +222,7 @@ class VoiceFilterService:
             raise FileNotFoundError("No reference clips staged")
         return staged
 
-    def _run_legacy_voice(
+    def _run_native_voice(
         self,
         job: Job,
         workspace_root: Path,
@@ -235,42 +236,14 @@ class VoiceFilterService:
         if os.environ.get("VIDOPS_FAKE_VOICE", "").lower() in {"1", "true"}:
             return self._write_fake_voice_outputs(output_dir, staged_clips)
 
-        workspace_sh = Path(__file__).resolve().parents[1] / "workspace.sh"
-        subcmd = {
-            "chunked": "filter-chunked",
-            "parallel": "filter-parallel",
-            "simple": "filter-simple",
-        }.get(method, "filter-chunked")
-
-        cmd = [
-            "bash",
-            str(workspace_sh),
-            "voice",
-            subcmd,
-            str(clips_dir),
-            "--reference",
-            *[str(p) for p in reference_paths],
-            "--output",
-            str(output_dir),
-            "--threshold",
-            str(threshold),
-        ]
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(workspace_root)
-        logger.info("Running legacy voice filter: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_root,
-            env=env,
-            text=True,
-            capture_output=False,
-            check=False,
+        mode = method or "chunked"
+        results_path, matches_path = run_voice_filter(
+            clips_dir=clips_dir,
+            reference_paths=reference_paths,
+            output_dir=output_dir,
+            threshold=threshold,
+            mode=mode,
         )
-        if result.returncode != 0:
-            raise RuntimeError(f"Legacy voice filter failed with exit {result.returncode}")
-
-        results_path = output_dir / "voice_analysis.json"
-        matches_path = output_dir / "hasan_clips.txt"
         if not results_path.exists() or not matches_path.exists():
             raise FileNotFoundError(f"Voice outputs missing in {output_dir}")
         return results_path, matches_path

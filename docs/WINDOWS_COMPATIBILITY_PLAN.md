@@ -435,16 +435,16 @@ Requirement: every `vo` command must run on Windows without bash/`workspace.sh`.
 - `status`, `query-ids`, `overlord`, `monitor`, `hc-export`, `webui`: ✅ Windows-ready (pure Python/DB).
 - `download`: ✅ Windows-ready (native service).
 - `analyze enqueue-distributed`: ✅ Windows-ready (distributed analysis path). `analyze enqueue` (legacy) remains Linux-only and is out of scope.
-- `worker start …`: ⚠️ Partially blocked — general worker still claims job types that call `workspace.sh` (dates, extra-utils, voice). Analysis-distributed/download/transcribe/clipping/diarize/dl-subs/stitch OK today.
-- `pipeline enqueue/status`: ⚠️ Blocked until dates/extra-utils/voice/stitch are ported.
+- `worker start …`: ⚠️ Partially blocked — general worker still claims job types that call `workspace.sh` (extra-utils). Analysis-distributed/download/transcribe/clipping/diarize/dl-subs/stitch/dates/voice OK today.
+- `pipeline enqueue/status`: ⚠️ Blocked until extra-utils is ported or gated.
 - `transcribe`: ✅ Native Whisper path (no `workspace.sh`), Windows-ready.
 - `diarize`: ✅ Native pyannote path (no `workspace.sh`), outputs/paths unchanged (`generated/diarization_resemblyzer/<ytid>/…`).
 - `clip` / `clips cut` / `quickclip`: ✅ Native clipping path (ffmpeg/yt-dlp) with legacy-compatible outputs.
 - `dl-subs`: ✅ Native yt-dlp path, writes into `pull/` with legacy subtitle filenames.
 - `stitch`: ✅ Native ffmpeg path, outputs under `generated/stitch/` with legacy naming.
-- `voice`: ❌ Calls `workspace.sh voice`. Port needed: native voice filtering pipeline.
-- `dates`: ❌ Calls `workspace.sh dates`. Port needed: native implementation or mark Linux-only.
-- `extra-utils`: ❌ Calls `workspace.sh extra-utils`. Port needed: native implementations or mark Linux-only.
+- `voice`: ✅ Native voice filtering (py scripts) with legacy outputs (voice_analysis.json, hasan_clips.txt).
+- `dates`: ✅ Native Python helper (scripts/date_management/*) with legacy outputs.
+- `extra-utils`: 🚫 Linux-only by policy; not supported on Windows.
 - `convert-captions`: ✅ Native Python (VTT → words).
 ## Progress Log
 
@@ -458,6 +458,7 @@ Requirement: every `vo` command must run on Windows without bash/`workspace.sh`.
 - Completed: Ported clipping (cut-local/cut-net) to native ffmpeg/yt-dlp while preserving legacy filenames/paths (`generated/hits/<run>/`).
 - Completed: Ported diarization to native pyannote path (no `workspace.sh`); outputs remain under `generated/diarization_resemblyzer/<ytid>/` with legacy filenames.
 - Completed: Ported stitching to native ffmpeg (no `workspace.sh`); outputs stay under `generated/stitch/` with legacy naming.
+- Completed: Ported voice filtering to native Python scripts (no `workspace.sh`); outputs remain voice_analysis.json + hasan_clips.txt.
 
 **2026-01-01 (Later - Phase 2)** ✅ **PHASE 2 COMPLETE**
 - **Stitching Service Migration:**

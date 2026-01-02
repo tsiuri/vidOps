@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 
 class DatesService:
     """
-    Bridge legacy `workspace.sh dates ...` helpers into the DB queue.
-    Inputs (date lists) are rebuilt under PROJECT_ROOT/data, the legacy script
-    runs, and any manifest output is pushed to storage as `dates_manifest`.
+    Native dates helpers (no workspace.sh) that preserve legacy outputs.
+    Inputs (date lists) are rebuilt under PROJECT_ROOT/data, the Python helpers
+    run, and any manifest output is pushed to storage as `dates_manifest`.
     """
 
     def __init__(
@@ -90,8 +90,9 @@ class DatesService:
             dest_dir = job.config.get("dest_dir")
             output_relative = job.config.get("output_relative_path")
             output_local = self._local_output_path(project_root, output_relative, job.job_id)
-            cmd = self._build_command(
-                project_root,
+            self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting dates helper.")
+            stdout_tail, stderr_tail, returncode = self._run_native_dates(
+                project_root=project_root,
                 action=action,
                 dates_file=dates_file,
                 source_dir=source_dir,
@@ -101,21 +102,9 @@ class DatesService:
                 extra_args=job.config.get("extra_args") or [],
             )
 
-            self.job_repo.update_status(job.job_id, JobStatus.RUNNING, "Starting dates helper.")
-            result = subprocess.run(
-                cmd,
-                cwd=project_root,
-                env=self._legacy_env(project_root),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            stdout_tail = (result.stdout or "").strip()[-500:]
-            stderr_tail = (result.stderr or "").strip()[-500:]
-
             expects_output = output_relative is not None
 
-            if result.returncode != 0:
+            if returncode != 0:
                 job_result = {
                     "dates_manifest": None,
                     "stdout_tail": stdout_tail,
@@ -124,7 +113,7 @@ class DatesService:
                 self.job_repo.update_status(
                     job.job_id,
                     JobStatus.FAILED,
-                    error_message=f"Legacy dates exited {result.returncode}",
+                    error_message=f"Dates helper exited {returncode}",
                     result=job_result,
                 )
                 return
@@ -209,7 +198,7 @@ class DatesService:
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
 
-    def _build_command(
+    def _run_native_dates(
         self,
         project_root: Path,
         action: str,
@@ -219,44 +208,65 @@ class DatesService:
         dest_dir: Optional[str],
         output_path: Optional[Path],
         extra_args: List[str],
-    ) -> List[str]:
-        workspace_sh = project_root / "workspace.sh"
-        cmd = ["bash", str(workspace_sh), "dates", action]
-
+    ) -> tuple[str, str, int]:
+        """
+        Run native date helpers (Python) instead of workspace.sh. Preserves legacy outputs.
+        """
         resolved_source = self._resolve_path(project_root, source_dir)
         resolved_archive = self._resolve_path(project_root, archive_cache)
         resolved_dest = self._resolve_path(project_root, dest_dir)
+        cmd: List[str]
 
+        scripts_dir = project_root / "scripts" / "date_management"
         if action == "find-missing":
             if not dates_file or not resolved_source:
                 raise ValueError("find-missing requires dates_file and source_dir")
-            cmd.extend([str(dates_file), str(resolved_source)])
+            cmd = [
+                "python",
+                str(scripts_dir / "find_missing_dates.py"),
+                str(dates_file),
+                str(resolved_source),
+            ]
             if output_path:
                 cmd.extend(["--output", str(output_path)])
         elif action == "create-list":
             if not dates_file or not resolved_archive:
                 raise ValueError("create-list requires dates_file and archive_cache")
-            cmd.extend([str(dates_file), str(resolved_archive)])
+            cmd = [
+                "python",
+                str(scripts_dir / "create_download_list.py"),
+                str(dates_file),
+                str(resolved_archive),
+            ]
             if output_path:
                 cmd.extend(["--output", str(output_path)])
         elif action == "move":
             if not dates_file or not resolved_source:
                 raise ValueError("move requires dates_file and source_dir")
-            cmd.extend([str(dates_file), str(resolved_source)])
+            cmd = [
+                "python",
+                str(scripts_dir / "move_files_by_date.py"),
+                str(dates_file),
+                str(resolved_source),
+            ]
             if resolved_dest:
                 cmd.extend(["--dest-dir", str(resolved_dest)])
         else:
-            if dates_file:
-                cmd.append(str(dates_file))
-            if resolved_source:
-                cmd.append(str(resolved_source))
-            if resolved_archive:
-                cmd.append(str(resolved_archive))
-            if resolved_dest:
-                cmd.append(str(resolved_dest))
+            raise ValueError(f"Unsupported dates action: {action}")
 
         cmd.extend(extra_args or [])
-        return cmd
+        env = self._legacy_env(project_root)
+        result = subprocess.run(
+            cmd,
+            cwd=project_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        stdout_tail = (result.stdout or "").strip()[-500:]
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        return stdout_tail, stderr_tail, result.returncode
 
     def _legacy_env(self, project_root: Path) -> dict:
         env = os.environ.copy()

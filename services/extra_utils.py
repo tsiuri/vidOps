@@ -73,6 +73,15 @@ class ExtraUtilsService:
         return self.job_repo.create(job)
 
     def process_job(self, job: Job) -> None:
+        # Extra-utils remain Linux-only; reject on Windows
+        if os.name == "nt":
+            self.job_repo.update_status(
+                job.job_id,
+                JobStatus.FAILED,
+                error_message="extra-utils not supported on Windows (Linux-only helper).",
+            )
+            return
+
         tool = job.config.get("tool")
         if not tool:
             self.job_repo.update_status(

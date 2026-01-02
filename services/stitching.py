@@ -2,6 +2,7 @@
 
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -205,36 +206,6 @@ class StitchingService:
         except Exception as exc:
             logger.warning("Failed to stage %s: %s", source, exc)
             return None
-
-    def _run_legacy_stitch(
-        self,
-        project_root: Path,
-        input_dir: Path,
-        output_path: Path,
-        method: str,
-        sort_method: str,
-    ) -> subprocess.CompletedProcess:
-        workspace_sh = project_root / "workspace.sh"
-        cmd = [
-            "bash",
-            str(workspace_sh),
-            "stitch",
-            method,
-            str(input_dir),
-            str(output_path),
-            sort_method,
-        ]
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(project_root)
-        logger.info("Running legacy stitch: %s", " ".join(cmd))
-        return subprocess.run(
-            cmd,
-            cwd=project_root,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
 
     def _sanitize(self, name: str) -> str:
         safe = []

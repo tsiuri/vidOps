@@ -373,7 +373,7 @@ class ClippingService:
                     continue
                 url = parts[0]
                 if "watch?v=" in url:
-                ytids.append(url.split("watch?v=")[-1][:11])
+                    ytids.append(url.split("watch?v=")[-1][:11])
         return ytids or [""]
 
     def _read_manifest_rows(self, manifest: Path) -> List[ClipRow]:
