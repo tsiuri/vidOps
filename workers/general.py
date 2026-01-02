@@ -8,6 +8,7 @@ import time
 import gc
 import threading
 import socket
+import sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -30,6 +31,7 @@ from services import (
     get_hc_project_service,
 )
 from workers.heartbeat import WorkerHeartbeat
+from utils.workspace_cleanup import WorkspaceCleanup, WorkspaceCleanupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,7 @@ class GenericWorker:
 
         # Workspace monitoring
         self.heartbeat_counter = 0
-        self.workspace_root = Path(os.environ.get("TOOL_ROOT", Path(__file__).parent.parent.parent))
+        self.workspace_root = Path(os.environ.get("TOOL_ROOT") or Path(__file__).resolve().parents[1])
         self.tmp_dir = self.workspace_root / "tmp"
 
         # Housekeeping (idle maintenance tasks)
@@ -425,6 +427,10 @@ class GenericWorker:
             check_disk_space(self.workspace_root, min_gb=30.0)
             logger.info("  ✓ Sufficient disk space (30GB minimum)")
 
+        # Optional cleanup if workspace is above the configured trigger
+        if not self._maybe_cleanup_workspace(prompt=True):
+            return False
+
             logger.info("Pre-flight checks passed")
             return True
 
@@ -440,6 +446,110 @@ class GenericWorker:
         except Exception as exc:
             logger.error(f"Pre-flight check failed: {exc}", exc_info=True)
             return False
+
+    def _maybe_cleanup_workspace(self, prompt: bool = True, current_size: Optional[float] = None) -> bool:
+        """
+        Run a targeted cleanup if workspace size exceeds the configured trigger.
+        Returns True to continue startup, False to abort.
+        """
+        current_size = current_size if current_size is not None else self._get_directory_size_gb(self.workspace_root)
+        cfg = getattr(self.config.workspace, "tmp_cleanup", None)
+        get_val = (
+            (lambda key, default=None: cfg.get(key, default))
+            if isinstance(cfg, dict)
+            else (lambda key, default=None: getattr(cfg, key, default))
+        )
+        enabled = bool(cfg and get_val("enabled", False))
+        trigger_gb = float(get_val("trigger_workspace_size_gb", 0.0) or 0.0)
+
+        logger.info(
+            "Workspace size at startup: %.2fGB (cleanup %s; trigger: %.2fGB)",
+            current_size,
+            "enabled" if enabled else "disabled",
+            trigger_gb,
+        )
+
+        if not enabled:
+            return True
+
+        if trigger_gb <= 0:
+            return True
+
+        if current_size <= trigger_gb:
+            logger.info(
+                "Cleanup not triggered: workspace %.2fGB <= trigger %.2fGB",
+                current_size,
+                trigger_gb,
+            )
+            return True
+
+        cleanup = WorkspaceCleanup(
+            WorkspaceCleanupConfig(
+                enabled=True,
+                trigger_workspace_size_gb=trigger_gb,
+                min_bytes=int(get_val("min_bytes", 50_000_000)),
+                max_deletions=int(get_val("max_deletions", 200)),
+                min_age_minutes=int(get_val("min_age_minutes", 120)),
+                paths=list(get_val("paths", [])),
+                skip_exts=list(get_val("skip_exts", [])),
+            )
+        )
+
+        stats = cleanup.run(self.workspace_root, self.tmp_dir)
+        new_size = self._get_directory_size_gb(self.workspace_root)
+        logger.info(
+            "Workspace cleanup finished: %.2fGB -> %.2fGB (removed=%s, freed=%.2fGB)",
+            current_size,
+            new_size,
+            stats.get("files_removed", 0),
+            stats.get("bytes_freed", 0) / (1024 ** 3),
+        )
+
+        limit = float(self.config.workspace.max_workspace_size_gb or 0.0)
+        # If no hard limit configured, fall back to the cleanup trigger as the threshold for prompting.
+        prompt_limit = limit if limit > 0 else trigger_gb
+
+        if prompt_limit <= 0 or new_size <= prompt_limit:
+            return True
+
+        if prompt and sys.stdin and sys.stdin.isatty():
+            prompt_msg = (
+                f"Workspace remains above limit: {new_size:.2f}GB > {prompt_limit:.2f}GB. "
+                "Continue anyway? [y/N]: "
+            )
+            try:
+                resp = input(prompt_msg).strip().lower()
+            except Exception:
+                resp = ""
+            if resp in {"y", "yes"}:
+                logger.warning(
+                    "Continuing with workspace size %.2fGB above limit %.2fGB",
+                    new_size,
+                    prompt_limit,
+                )
+                return True
+            logger.error(
+                "Startup aborted: workspace size %.2fGB exceeds limit %.2fGB and user declined to continue",
+                new_size,
+                prompt_limit,
+            )
+            return False
+
+        if prompt:
+            logger.error(
+                "Startup aborted: workspace size %.2fGB exceeds limit %.2fGB (no TTY for confirmation)",
+                new_size,
+                prompt_limit,
+            )
+            return False
+
+        # Non-interactive call (e.g., heartbeat): return False to signal over-limit
+        logger.error(
+            "Workspace still above limit after cleanup: %.2fGB > %.2fGB",
+            new_size,
+            prompt_limit,
+        )
+        return False
 
     def _check_workspace_size(self) -> bool:
         """
@@ -467,6 +577,16 @@ class GenericWorker:
                 if tmp_size_gb > self.config.workspace.max_tmp_size_gb:
                     logger.error(
                         f"tmp/ directory size ({tmp_size_gb:.2f}GB) exceeds limit "
+                        f"({self.config.workspace.max_tmp_size_gb}GB). Attempting cleanup."
+                    )
+                    cleaned = self._maybe_cleanup_workspace(prompt=False)
+                    if cleaned:
+                        tmp_size_gb = self._get_directory_size_gb(self.tmp_dir)
+                        logger.info("Post-cleanup tmp/ size: %.2fGB", tmp_size_gb)
+                        if tmp_size_gb <= self.config.workspace.max_tmp_size_gb:
+                            return True
+                    logger.error(
+                        f"tmp/ directory size ({tmp_size_gb:.2f}GB) still exceeds limit "
                         f"({self.config.workspace.max_tmp_size_gb}GB). Worker terminating."
                     )
                     return False
@@ -478,6 +598,16 @@ class GenericWorker:
             if workspace_size_gb > self.config.workspace.max_workspace_size_gb:
                 logger.error(
                     f"Workspace size ({workspace_size_gb:.2f}GB) exceeds limit "
+                    f"({self.config.workspace.max_workspace_size_gb}GB). Attempting cleanup."
+                )
+                cleaned = self._maybe_cleanup_workspace(prompt=False, current_size=workspace_size_gb)
+                if cleaned:
+                    workspace_size_gb = self._get_directory_size_gb(self.workspace_root)
+                    logger.info("Post-cleanup workspace size: %.2fGB", workspace_size_gb)
+                    if workspace_size_gb <= self.config.workspace.max_workspace_size_gb:
+                        return True
+                logger.error(
+                    f"Workspace size ({workspace_size_gb:.2f}GB) still exceeds limit "
                     f"({self.config.workspace.max_workspace_size_gb}GB). Worker terminating."
                 )
                 return False
@@ -491,11 +621,12 @@ class GenericWorker:
 
     def _get_directory_size_gb(self, directory: Path) -> float:
         """
-        Get directory size in GB using du command (fast: ~6ms for tmp/, ~800ms for full workspace).
+        Get directory size in GB using du -x (stay on the same filesystem) to avoid
+        counting mounted storage. Falls back to 0 on error.
         """
         try:
             result = subprocess.run(
-                ["du", "-sb", str(directory)],
+                ["du", "-sb", "-x", str(directory)],
                 capture_output=True,
                 text=True,
                 timeout=5,

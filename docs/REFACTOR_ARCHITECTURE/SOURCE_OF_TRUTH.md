@@ -41,6 +41,7 @@ This is the canonical status and working instructions for the refactor to the da
 
 ## Legacy Workspace Bridge (mandate)
 - Workers/CLI commands pull job config from the database, materialize the old-style inputs expected by the corresponding `workspace.sh` script (TSV manifests, path lists, etc.) via `FilesystemCache`, and invoke the legacy script with DB-sourced arguments.
+- GenericWorker runs a startup cleanup pass when the workspace size exceeds `workspace.tmp_cleanup.trigger_workspace_size_gb` (config.yaml). The cleanup sweeps only known heavy dirs (`tmp/raw`, `tmp/generated`, diarization chunk dirs, reference_builder scratch, `tmp/mnt`, pull/, generated/) for files above `min_bytes` and older than `min_age_minutes`, skips small-text extensions, and prompts (default N) to continue if the workspace is still above the size limit after the sweep. Cleanup uses a lock file to avoid concurrent workers clobbering each other.
 - Outputs from the legacy script are treated as cache: write to the local cache, push to central storage, then translate artifacts into database transactions (asset registration, transcript/word ingestion, job `result` updates).
 - Do not bypass the DB queue or rely on legacy file queues; the DB remains the source of truth even when the execution path calls legacy shell modules.
 - When adding new commands, document which legacy script is invoked and the input/output translation steps; ensure central storage paths are used for any exchanged files.

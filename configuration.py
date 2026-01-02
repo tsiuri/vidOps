@@ -121,6 +121,10 @@ class WorkspaceConfig:
     monitor_tmp_separately: bool = True
     # Maximum tmp/ size (GB) if monitoring separately
     max_tmp_size_gb: float = 50.0
+    # Targeted cleanup configuration (dict from config.yaml)
+    tmp_cleanup: Dict[str, Any] = field(default_factory=dict)
+    # Relative paths to exclude from workspace size calculations (e.g., mounted storage)
+    size_exclude_paths: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -493,6 +497,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
                     if 'diarization' in yaml_data:
                         config.diarization = _load_config_from_dict(DiarizationConfig, yaml_data['diarization'])
                     if 'workers' in yaml_data: config.workers = _load_config_from_dict(WorkerConfig, yaml_data['workers'])
+                    if 'workspace' in yaml_data: config.workspace = _load_config_from_dict(WorkspaceConfig, yaml_data['workspace'])
                     if 'storage_broker' in yaml_data:
                         config.storage_broker = _load_config_from_dict(StorageBrokerConfig, yaml_data['storage_broker'])
                     if 'download' in yaml_data:
