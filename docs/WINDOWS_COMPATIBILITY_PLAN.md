@@ -31,7 +31,7 @@ VidOps is currently Linux-focused with several platform-specific dependencies. T
 - Python codebase (95% uses pathlib and cross-platform libraries)
 - FFmpeg/yt-dlp integration (binaries available for Windows)
 - Ollama integration (native Windows support)
-- PyTorch + CUDA (full Windows support)
+- PyTorch + CUDA (Linux: torch 2.8.0+cu128 on Python 3.13; Windows: torch 2.4.1+cu121 on Python 3.12 via platform markers in `requirements.txt`)
 - faster-whisper (Windows-compatible)
 - PyAnnote diarization (Windows-compatible)
 
@@ -41,6 +41,14 @@ VidOps is currently Linux-focused with several platform-specific dependencies. T
 - Analysis worker (`workers/analysis_distributed.py`)
 - Clipping worker (`workers/clipping.py`)
 - Generic worker (`workers/general.py`) - with modifications
+
+### Dependency Notes (Single Requirements File)
+
+- A single `requirements.txt` now carries both platforms via environment markers.
+- Linux keeps the existing CUDA stack: torch/torchaudio 2.8.0+cu128 plus all `nvidia-*` CUDA wheels (Python 3.13).
+- Windows uses the published CUDA wheels that exist today: torch/torchaudio/torchvision 2.4.1+cu121 on Python 3.12 (`platform_system == "Windows" and python_version < "3.13"` markers). There are no Windows CUDA wheels for Python 3.13 yet.
+- `audioop-lts` is gated to Linux so Windows installs do not fail while the runtime uses the built-in audioop on Python <3.13 or alternative handling on Windows 3.13.
+- Both platforms share the same file; installers should keep the two extra PyTorch indexes (`cu128`, `cu121`) active when installing.
 
 ### ⚠️ Needs Modification
 
