@@ -21,6 +21,10 @@ from .memory_monitor import MemoryMonitor
 logger = logging.getLogger(__name__)
 
 
+class ReferenceDirectoryMissing(FileNotFoundError):
+    """Raised when a diarization reference dir is absent from central storage."""
+
+
 class DiarizationService:
     """
     Bridge diarization jobs through the legacy workspace.sh diarize command.
@@ -505,7 +509,9 @@ class DiarizationService:
     def _stage_reference(self, reference_rel: str, workspace_root: Path) -> Path:
         src_dir = self.fs_cache.get_central_path(reference_rel)
         if not src_dir.exists():
-            raise FileNotFoundError(f"Reference directory not found: {src_dir}")
+            raise ReferenceDirectoryMissing(
+                f"Reference directory missing in central storage: {src_dir} (relative={reference_rel})"
+            )
         dest_dir = workspace_root / "data" / "references" / src_dir.name
         if dest_dir.exists():
             shutil.rmtree(dest_dir)

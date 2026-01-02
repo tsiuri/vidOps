@@ -16,33 +16,11 @@ PROJECT_ROOT="$(pwd)"
 export TOOL_ROOT
 export PROJECT_ROOT
 
-# Verify we're in a valid project directory; prompt before creating structure
+# Verify project marker; warn but do not prompt/initialize (non-interactive workers must not block)
 # Accept either legacy marker (.vidops-project) or new marker (.vidops_deploy_marker)
 if [[ ! -f "$PROJECT_ROOT/.vidops-project" && ! -f "$PROJECT_ROOT/.vidops_deploy_marker" ]]; then
-    echo -e "\033[1;33mThis directory is not initialized as a VidOps project.\033[0m"
-    echo "Path: $PROJECT_ROOT"
-    echo "If initialized, the following directories may be created here:"
-    echo "  pull/ generated/ logs/{pull,db} data/ results/ media/{clips,final} config/ cuts"
-    if [[ -t 0 ]]; then
-        read -r -p "Initialize VidOps project structure here? [y/N]: " _ans
-    else
-        echo "Non-interactive session detected; defaulting to No."
-        _ans=""
-    fi
-    case "${_ans,,}" in
-        y|yes)
-            echo -e "\033[1;33mInitializing VidOps project in: $PROJECT_ROOT\033[0m"
-            # Create deployment marker to avoid future prompts in this directory
-            touch "$PROJECT_ROOT/.vidops_deploy_marker"
-            mkdir -p "$PROJECT_ROOT"/{pull,generated,logs/pull,logs/db,data,results,media/{clips,final},config,cuts}
-            echo -e "\033[1;32mProject structure created.\033[0m"
-            ;;
-        *)
-            echo -e "\033[1;34mSkipping initialization.\033[0m"
-            echo "To suppress this prompt in the future for this directory, either re-run and answer 'y',"
-            echo "or manually create the marker file: $PROJECT_ROOT/.vidops_deploy_marker"
-            ;;
-    esac
+    echo -e "\033[1;33m[warn] VidOps project marker missing at $PROJECT_ROOT; continuing without auto-init.\033[0m"
+    echo "Set VIDOPS_PROJECT_ROOT to your data workspace or touch .vidops_deploy_marker to silence this warning."
 fi
 
 # Stay in project directory - don't cd to tool directory
