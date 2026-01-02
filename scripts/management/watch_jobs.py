@@ -70,6 +70,32 @@ def fetch_status(limit: int = 10):
                 (limit,),
             )
             data["recent_failed"] = cur.fetchall()
+
+            cur.execute(
+                """
+                select
+                    sum(
+                        case
+                            when status = 'completed'
+                                 and coalesce(completed_at, updated_at) >= now() - interval '2 hours'
+                            then 1 else 0
+                        end
+                    ) as completed_recent,
+                    sum(
+                        case
+                            when status = 'failed'
+                                 and updated_at >= now() - interval '2 hours'
+                            then 1 else 0
+                        end
+                    ) as failed_recent
+                from jobs
+                """
+            )
+            row = cur.fetchone() or (0, 0)
+            data["recent_counts"] = {
+                "completed_recent": row[0] or 0,
+                "failed_recent": row[1] or 0,
+            }
     return data
 
 
@@ -168,6 +194,16 @@ def draw(screen, args):
                     meta.append({"section": "status", "status_label": status_rows[row_idx][0]})
                 else:
                     meta.append({"section": "status"})
+        body_lines.append("")
+        meta.append({"section": "spacer"})
+
+        recent_counts = data.get("recent_counts") or {}
+        completed_recent = recent_counts.get("completed_recent", 0)
+        failed_recent = recent_counts.get("failed_recent", 0)
+        body_lines.append(
+            f"Last 2h: completed={completed_recent}  failed={failed_recent}"
+        )
+        meta.append({"section": "recent_counts"})
         body_lines.append("")
         meta.append({"section": "spacer"})
 
