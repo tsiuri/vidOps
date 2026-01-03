@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import signal
 import time
 from typing import Optional
@@ -26,7 +27,7 @@ class ExtraUtilsWorker:
         self.worker_id = f"{self.config.workers.machine_alias}-extra-utils-{os.getpid()}"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
 
         self.job_repo = JobRepository()
         self.worker_repo = WorkerRepository()

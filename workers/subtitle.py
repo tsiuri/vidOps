@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import signal
 import time
 from datetime import timedelta
@@ -30,7 +31,7 @@ class SubtitleWorker:
         self.worker_id = f"{self.config.workers.machine_alias}-{self.worker_type}-{os.getpid()}"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
         self.job_types: Sequence[str] = ("dl_subs", "convert_captions")
         self.running = False
         self.current_job_id: Optional[str] = None

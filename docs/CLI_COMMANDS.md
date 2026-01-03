@@ -49,6 +49,11 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
     - `voice` — VoiceFilterWorker: voice filter jobs only
     - `dates` — DatesWorker: dates helper jobs only
     - `extra_utils` — ExtraUtilsWorker: extra utility jobs only
+  - `stop` (stop a worker by worker_id or machine alias)
+    - Defaults to the current machine alias from `config.yaml`
+    - Use `--worker-id` to target a specific worker
+    - Use `--all` to stop all matches
+    - Use `--force` to force-kill the process
   - Key options for `start`:
     - `--gpu N` — Select GPU index (0, 1, 2...). Sets `CUDA_VISIBLE_DEVICES` and loads per-GPU config (legacy capability tags, Ollama URL, model, VRAM). Use `--gpu cpu` for CPU-only (stub). Use `--gpu auto` or omit for auto-detection.
     - `--capabilities` — Legacy worker capability tags (repeatable; stored/logged only; analysis scheduling uses VRAM/profile ids)

@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import time
 import signal
 from datetime import timedelta
@@ -26,7 +27,7 @@ class StitchWorker:
         self.worker_type = "stitching"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
         self.worker_repo = WorkerRepository()
         self.job_repo = JobRepository()
         self.stitching_service = get_stitching_service()

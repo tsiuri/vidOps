@@ -3,7 +3,10 @@
 import click
 import os
 import subprocess
+import re
 import sys
+import time
+import signal
 from pathlib import Path
 from workers import (
     GenericWorker,
@@ -19,8 +22,15 @@ from workers import (
 )
 from workers.analysis_distributed import AnalysisWorker as DistributedAnalysisWorker
 from configuration import load_config, OLLAMA_BASE_PORT
+from dal import WorkerRepository
+from models import WorkerStatus
 import logging
 from typing import Optional
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 RUN_WEBUI_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "run_webui.py"
 DEFAULT_ANALYSIS_PORT = 5000
@@ -32,6 +42,46 @@ logger = logging.getLogger(__name__)
 def _get_gpu_flag() -> Optional[str]:
     """Get the --gpu flag value that was parsed early in vo_cli.py."""
     return os.environ.get("_VIDOPS_GPU_FLAG") or None
+
+
+def _detect_vram_gb(gpu_index: Optional[int]) -> Optional[float]:
+    """Best-effort VRAM detection via nvidia-smi (returns GB)."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return None
+
+    line = lines[gpu_index] if gpu_index is not None and gpu_index < len(lines) else lines[0]
+    token = None
+    for part in line.replace(",", " ").split():
+        if part.isdigit():
+            token = part
+            break
+    if token is None:
+        match = re.search(r"(\d+)", line)
+        if match:
+            token = match.group(1)
+    if token is None:
+        return None
+
+    try:
+        mib = int(token)
+    except ValueError:
+        return None
+    return round(mib / 1024, 2)
 
 
 def ensure_webui_running(host: str = "127.0.0.1", port: int = 5000) -> None:
@@ -56,6 +106,41 @@ def ensure_webui_running(host: str = "127.0.0.1", port: int = 5000) -> None:
         subprocess.run(cmd, check=False, cwd=str(Path(__file__).resolve().parents[1]))
     except Exception as exc:
         logger.warning("Failed to auto-start web UI: %s", exc)
+
+def _terminate_pid(pid: int, force: bool = False, wait_seconds: float = 5.0) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return False
+    if psutil:
+        try:
+            proc = psutil.Process(pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+        try:
+            if force:
+                proc.kill()
+                return True
+            proc.terminate()
+            proc.wait(timeout=wait_seconds)
+            return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return False
+        except psutil.TimeoutExpired:
+            try:
+                proc.kill()
+                return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return False
+    else:
+        try:
+            sig = signal.SIGTERM
+            if force and hasattr(signal, "SIGKILL"):
+                sig = signal.SIGKILL
+            os.kill(pid, sig)
+            return True
+        except Exception:
+            return False
 
 @click.group()
 def worker():
@@ -232,6 +317,11 @@ def start_worker(
         resolved_vram_gb = float(gpu_profile.vram_gb)
     if effective_gpu and effective_gpu.lower() == "cpu":
         resolved_vram_gb = 0.0
+    elif resolved_vram_gb <= 0:
+        detected_vram = _detect_vram_gb(gpu_index)
+        if detected_vram:
+            resolved_vram_gb = detected_vram
+            click.echo(f"  Detected VRAM (GB): {resolved_vram_gb}")
     config.analysis.default_vram_gb = resolved_vram_gb
 
     resolved_model_profile_id = config.analysis.default_model_profile_id
@@ -277,7 +367,7 @@ def start_worker(
     elif worker_type in ("analysis", "analysis-distributed"):
         try:
             # Use provided values, then GPU profile, then base config
-            _machine_alias = machine_alias or os.uname().nodename
+            _machine_alias = machine_alias or config.workers.machine_alias
 
             # Model URL precedence: CLI > GPU profile > base config
             if model_url:
@@ -358,3 +448,69 @@ def start_worker(
         worker_instance.run()
     else:
         click.echo(click.style(f"Error: Unknown worker type '{worker_type}'", fg="red"), err=True)
+
+
+@worker.command("stop")
+@click.option(
+    "--machine-alias",
+    default=None,
+    help="Stop workers for this machine alias (defaults to config machine_alias)."
+)
+@click.option(
+    "--worker-id",
+    default=None,
+    help="Stop a specific worker_id (overrides machine-alias filtering)."
+)
+@click.option(
+    "--all",
+    "stop_all",
+    is_flag=True,
+    default=False,
+    help="Stop all matching workers (otherwise stops the most recent)."
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Force-kill the worker process."
+)
+def stop_worker(machine_alias: str, worker_id: str, stop_all: bool, force: bool) -> None:
+    """Stop worker processes by machine alias or worker id."""
+    config = load_config()
+    repo = WorkerRepository()
+
+    workers = []
+    if worker_id:
+        worker = repo.get(worker_id)
+        if worker:
+            workers = [worker]
+    else:
+        target_alias = machine_alias or config.workers.machine_alias
+        workers = repo.list(machine_alias=target_alias)
+
+    if not workers:
+        click.echo("No matching workers found.")
+        return
+
+    if not stop_all and len(workers) > 1:
+        click.echo(
+            f"Multiple workers found ({len(workers)}); stopping the most recent. "
+            "Use --all to stop all or --worker-id to target one."
+        )
+        workers = workers[:1]
+
+    for worker in workers:
+        if not worker.pid:
+            click.echo(f"Worker {worker.worker_id} has no pid; cannot stop automatically.")
+            continue
+        stopped = _terminate_pid(int(worker.pid), force=force)
+        if stopped:
+            repo.update_status(
+                worker.worker_id,
+                WorkerStatus.STOPPING,
+                current_job_id=None,
+                worker_type=worker.worker_type,
+            )
+            click.echo(f"Stopped worker {worker.worker_id} (pid {worker.pid}).")
+        else:
+            click.echo(f"Failed to stop worker {worker.worker_id} (pid {worker.pid}).")

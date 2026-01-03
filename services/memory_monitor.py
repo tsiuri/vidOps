@@ -156,9 +156,29 @@ class MemoryMonitor:
             # Also scan for ffmpeg processes that might be related
             # Only if we have tracked subprocesses (to avoid tracking unrelated ffmpeg)
             if self._tracked_subprocess_pids:
-                current_user = os.getuid()
+                current_user = None
+                current_username = None
+                if hasattr(os, "getuid"):
+                    try:
+                        current_user = os.getuid()
+                    except Exception:
+                        current_user = None
+                if current_user is None:
+                    try:
+                        current_username = self.process.username()
+                    except Exception:
+                        current_username = None
                 try:
-                    for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'memory_info', 'uids', 'ppid', 'create_time']):
+                    for proc in psutil.process_iter([
+                        'pid',
+                        'name',
+                        'cmdline',
+                        'memory_info',
+                        'uids',
+                        'username',
+                        'ppid',
+                        'create_time',
+                    ]):
                         try:
                             proc_info = proc.info
                             pid = proc_info['pid']
@@ -168,8 +188,12 @@ class MemoryMonitor:
                                 continue
                             
                             # Only track ffmpeg processes owned by current user
-                            if proc_info.get('uids') and proc_info['uids'].real != current_user:
-                                continue
+                            if current_user is not None and proc_info.get('uids'):
+                                if proc_info['uids'].real != current_user:
+                                    continue
+                            if current_user is None and current_username and proc_info.get('username'):
+                                if proc_info['username'] != current_username:
+                                    continue
                             
                             cmdline = proc_info.get('cmdline', [])
                             if cmdline and any('ffmpeg' in str(arg).lower() for arg in cmdline):

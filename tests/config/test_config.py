@@ -2,6 +2,7 @@
 
 import pytest
 import os
+import socket
 from pathlib import Path
 import yaml
 import logging # Import logging
@@ -75,7 +76,7 @@ def test_load_config_defaults():
     assert config.paths == PathsConfig()
     assert config.transcription == TranscriptionConfig()
     assert config.workers.heartbeat_interval == 60 # Default value
-    assert config.workers.machine_alias == os.uname().nodename # Default uses hostname
+    assert config.workers.machine_alias == socket.gethostname() # Default uses hostname
 
 @pytest.mark.unit
 def test_load_config_yaml_override(dummy_config_yaml):
