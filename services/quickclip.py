@@ -37,6 +37,33 @@ class QuickClipService:
         self.fs_cache = fs_cache
         self.config = load_config()
 
+    def _parse_hms_to_seconds(self, ts: str) -> float:
+        """
+        Parse a timestamp that may be seconds, mm:ss, or hh:mm:ss into seconds.
+        """
+        ts = ts.strip()
+        if not ts:
+            raise ValueError("Empty timestamp")
+        # Fast path: numeric seconds
+        try:
+            return float(ts)
+        except ValueError:
+            pass
+
+        parts = ts.split(":")
+        if len(parts) > 3:
+            raise ValueError(f"Invalid timestamp format: {ts}")
+
+        total = 0.0
+        for idx, part in enumerate(reversed(parts)):
+            if part == "":
+                raise ValueError(f"Invalid timestamp component in '{ts}'")
+            try:
+                total += float(part) * (60 ** idx)
+            except ValueError:
+                raise ValueError(f"Invalid numeric value in timestamp '{ts}'") from None
+        return total
+
     def create_quickclip(
         self,
         url: str,
@@ -163,8 +190,8 @@ class QuickClipService:
                         )
 
                     resolved_spans.append({
-                        "start": float(start_str),
-                        "end": float(end_str),
+                        "start": self._parse_hms_to_seconds(start_str),
+                        "end": self._parse_hms_to_seconds(end_str),
                         "label": span["label"],
                         "index": span["index"],
                     })
@@ -355,20 +382,30 @@ class QuickClipService:
 
         Returns dict with start, end, label, index.
         """
-        # Check for label suffix
-        if ":" in span_str:
-            time_part, label = span_str.rsplit(":", 1)
-        else:
-            time_part = span_str
-            label = None
-
-        # Parse time range
-        if "-" not in time_part:
+        # Expected format: START-END[:LABEL], where START/END can be hh:mm:ss, mm:ss, or seconds.
+        if "-" not in span_str:
             raise ValueError(f"Invalid span format: {span_str}. Expected START-END[:LABEL]")
 
-        start_str, end_str = time_part.split("-", 1)
-        start_str = start_str.strip()
-        end_str = end_str.strip()
+        start_part, end_label_part = span_str.split("-", 1)
+        start_str = start_part.strip()
+        label = None
+
+        # Try to parse the end portion as time; if it fails, assume the last colon separates the label.
+        end_str = end_label_part.strip()
+        try:
+            # Quick validation that end_str is a time; actual conversion happens later
+            self._parse_hms_to_seconds(end_str)
+        except ValueError:
+            if ":" not in end_label_part:
+                raise
+            end_candidate, label_candidate = end_label_part.rsplit(":", 1)
+            end_str = end_candidate.strip()
+            label = label_candidate.strip() or None
+            # Validate end time after separating label
+            self._parse_hms_to_seconds(end_str)
+
+        if not start_str or not end_str:
+            raise ValueError(f"Invalid span format: {span_str}. Expected START-END[:LABEL]")
 
         return {
             "start_str": start_str,
@@ -390,14 +427,16 @@ class QuickClipService:
             if start_str == "(start)":
                 start = 0.0
             else:
-                start = float(start_str)
+                start = self._parse_hms_to_seconds(start_str)
 
             # Resolve end
             if end_str == "(end)":
                 end = video_duration
             else:
-                end = float(end_str)
+                end = self._parse_hms_to_seconds(end_str)
 
+            if start < 0 or end <= 0:
+                raise ValueError(f"Timestamps must be positive and end > 0 (got start={start}, end={end})")
             if start >= end:
                 raise ValueError(f"Start time ({start}) must be less than end time ({end})")
 

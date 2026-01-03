@@ -439,8 +439,13 @@ class DiarizationService:
         build_reference: bool,
     ) -> str:
         ref_central = self.fs_cache.get_central_path(reference_rel)
-        if ref_central.exists():
+        ref_json = ref_central / "reference.json"
+        if ref_json.exists():
             return reference_rel
+
+        # Treat existing-but-empty reference dirs as missing
+        if ref_central.exists() and not ref_json.exists():
+            logger.warning("Reference directory exists but lacks reference.json: %s", ref_central)
 
         # If interactive and allowed, prompt once
         if (
@@ -536,30 +541,71 @@ class DiarizationService:
 
     def _stage_reference(self, reference_rel: str, workspace_root: Path) -> Path:
         src_dir = self.fs_cache.get_central_path(reference_rel)
-        if not src_dir.exists():
-            raise ReferenceDirectoryMissing(
-                f"Reference directory missing in central storage: {src_dir} (relative={reference_rel})"
-            )
-        dest_dir = workspace_root / "data" / "references" / src_dir.name
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
+        fallback_dir = workspace_root / "data" / "references" / src_dir.name
+        fallback_json = fallback_dir / "reference.json"
+
+        ref_json_src = src_dir / "reference.json"
+        if not ref_json_src.exists():
+            if fallback_json.exists():
+                logger.warning(
+                    "Reference missing in central storage; seeding %s from workspace fallback %s",
+                    src_dir,
+                    fallback_dir,
+                )
+                try:
+                    if src_dir.exists() and src_dir.resolve() != fallback_dir.resolve():
+                        shutil.rmtree(src_dir)
+                    src_dir.parent.mkdir(parents=True, exist_ok=True)
+                    if src_dir.resolve() != fallback_dir.resolve():
+                        shutil.copytree(fallback_dir, src_dir)
+                    ref_json_src = src_dir / "reference.json"
+                except Exception as exc:
+                    logger.warning("Failed to seed central reference %s: %s", src_dir, exc)
+            if not ref_json_src.exists() and not fallback_json.exists():
+                raise ReferenceDirectoryMissing(
+                    f"Reference directory missing in central storage: {src_dir} (relative={reference_rel})"
+                )
+
+        stage_src = src_dir if ref_json_src.exists() else fallback_dir
+        dest_dir = workspace_root / "data" / "references" / stage_src.name
+
+        # If staging directly from fallback (dest already matches source), reuse it
+        if dest_dir.resolve() == stage_src.resolve():
+            if not (dest_dir / "reference.json").exists():
+                raise FileNotFoundError(f"reference.json missing in {dest_dir}")
+            return dest_dir
+
+        if dest_dir.exists() and dest_dir.resolve() != stage_src.resolve():
+            # Preserve packaged fallback if that's what's on disk; otherwise, start clean
+            if dest_dir.resolve() != fallback_dir.resolve():
+                shutil.rmtree(dest_dir)
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        for item in sorted(src_dir.rglob("*")):
+        for item in sorted(stage_src.rglob("*")):
             if not item.is_file():
                 continue
-            rel = item.relative_to(self.fs_cache.central_storage_root)
-            cached = self.fs_cache.pull_to_cache(str(rel))
-            relative = item.relative_to(src_dir)
+            # If source is central storage, go through cache for consistency
+            if stage_src == src_dir:
+                rel = item.relative_to(self.fs_cache.central_storage_root)
+                cached = self.fs_cache.pull_to_cache(str(rel))
+                source_path = cached
+            else:
+                source_path = item
+            relative = item.relative_to(stage_src)
             if relative.parts and relative.parts[0] == "clips":
                 target = dest_dir / item.name
             else:
                 target = dest_dir / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(cached, target)
+            shutil.copy2(source_path, target)
         ref_json = dest_dir / "reference.json"
         if not ref_json.exists():
-            raise FileNotFoundError(f"reference.json missing in {dest_dir}")
+            # Final fallback: copy packaged reference directly if available
+            if fallback_json.exists() and dest_dir.resolve() != fallback_dir.resolve():
+                shutil.rmtree(dest_dir)
+                shutil.copytree(fallback_dir, dest_dir)
+            if not ref_json.exists():
+                raise FileNotFoundError(f"reference.json missing in {dest_dir}")
         return dest_dir
 
     def _get_audio_duration(self, audio_path: Path) -> float:

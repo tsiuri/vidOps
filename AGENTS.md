@@ -71,6 +71,7 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 - Secrets: set tokens via env (`HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`, DB creds); never commit them. Check `db.cfg` for DB defaults.
 - GPU/CPU: diarization pins `torch/torchaudio` 2.8.0+cu128; rerun the setup script if the venv drifts. For CPU runs, use `--cpu` flag.
 - Paths: honor `TOOL_ROOT` (repo) vs `PROJECT_ROOT` (data). Don’t write under repo except `tmp/` and generated logs/tests.***
+- Config propagation: when adding new `config.yaml` keys or env-driven defaults, sync the updated config onto every worker host (and any per-machine overrides) before relying on the new settings, otherwise workers will diverge on model/VRAM defaults and job eligibility.
 
 ## System Notes
 - Ollama runs via systemd with separate services: `ollama-nvidia.service` on `0.0.0.0:11434` and `ollama-amd.service` on `127.0.0.1:11435`.

@@ -109,6 +109,7 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - Overlord monitoring guide: `docs/OVERLORD_MONITORING.md` covers responsibilities, thresholds, CLI commands, and troubleshooting flows.
 - Dependency note (2026-01-01): `requirements.txt` now uses platform markers for CUDA stacks. Linux stays on torch/torchaudio 2.8.0+cu128 with the full `nvidia-*` wheels (Python 3.13). Windows uses torch/torchaudio/torchvision 2.4.1+cu121 on Python 3.12; CUDA-only wheels (nvidia-*, triton) are gated to Linux; `audioop-lts` is Linux-only to avoid missing Windows wheels.
 - Use this file as the single reference for priorities and status. If you need historical context, consult files under `archived/`; do not treat them as requirements.
+- Config propagation rule: when adding or renaming config keys (in `config.yaml` or env-driven defaults), push the updated config to every worker host and reconcile per-machine overrides before relying on the new values; misaligned configs cause workers to disagree on model/VRAM defaults and job eligibility.
 
 ## Recent Changes (2025-12-11 — Continued)
 

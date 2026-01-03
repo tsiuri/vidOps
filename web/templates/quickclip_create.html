@@ -26,8 +26,8 @@
 
     <div style="grid-column: 1 / -1;">
       <label for="spans"><strong>Timestamp spans</strong></label>
-      <textarea id="spans" name="spans" rows="6" placeholder="120-145:intro&#10;300-320:main discussion" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">{{ form.spans }}</textarea>
-      <small class="muted">One span per line. Use optional labels with <code>:label</code>. Placeholders <code>(start)</code> and <code>(end)</code> are allowed. Leave blank if using full video download option.</small>
+      <textarea id="spans" name="spans" rows="6" placeholder="00:05:20-00:06:30:intro&#10;5:20-6:30:main discussion&#10;90-105" style="width:100%; padding:10px; border:1px solid #ccd2da; border-radius:6px;">{{ form.spans }}</textarea>
+      <small class="muted">One span per line. Time format supports <code>hh:mm:ss</code>, <code>mm:ss</code>, or raw seconds. Optional labels go after a colon (e.g., <code>00:05:20-00:06:30:intro</code>). Placeholders <code>(start)</code> and <code>(end)</code> are allowed. Leave blank if using full video download option.</small>
     </div>
 
     <div>
