@@ -80,6 +80,7 @@ class PathsConfig:
     central_storage_root: str = "/mnt/storage/vidops"
     local_temp_dir: str = "tmp"
     path_prefix: str = ""  # Prefix to prepend to absolute paths from DB (e.g., /mnt/mainroot for remote mounts)
+    path_map: Dict[str, str] = field(default_factory=dict)
 
 @dataclass
 class NvidiaConfig:

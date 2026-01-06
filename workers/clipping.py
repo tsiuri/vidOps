@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import time
 from datetime import timedelta
 import signal
@@ -26,7 +27,7 @@ class ClippingWorker:
         self.worker_type = "clipping"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
         self.worker_repo = WorkerRepository() # Uses generic workers table
         self.job_repo = JobRepository() # Uses generic jobs table
         self.clipping_service = get_clipping_service()

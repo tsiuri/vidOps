@@ -8,6 +8,7 @@ Used by services to distinguish local failures from job failures.
 import errno
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -33,9 +34,14 @@ def check_disk_space(path: Path, min_gb: float = 30.0) -> None:
         DiskSpaceError: If insufficient space available
     """
     try:
-        stat = os.statvfs(str(path))
-        free_gb = (stat.f_bavail * stat.f_frsize) / (1024**3)
+        if hasattr(os, "statvfs"):
+            stat = os.statvfs(str(path))
+            free_bytes = stat.f_bavail * stat.f_frsize
+        else:
+            usage = shutil.disk_usage(str(path))
+            free_bytes = usage.free
 
+        free_gb = free_bytes / (1024**3)
         if free_gb < min_gb:
             raise DiskSpaceError(
                 f"Insufficient disk space on {path}: {free_gb:.2f}GB free, {min_gb}GB required"

@@ -34,7 +34,7 @@ VidOps started as a purely “workspace.sh” driven toolkit:
 2026-01-01 update: Diarization now runs native pyannote (no `workspace.sh`); outputs stay under `generated/diarization_resemblyzer/<ytid>/` with legacy filenames.
 2026-01-01 update: dl-subs now runs native yt-dlp (no `workspace.sh`); subtitles land in `pull/` with legacy naming, then persist via FilesystemCache/DB.
 2026-01-01 update: Voice filtering runs native Python scripts (no `workspace.sh`); outputs remain `voice_analysis.json` and `hasan_clips.txt`.
-2026-01-01 update: `requirements.txt` now uses platform markers for CUDA stacks (Linux torch/torchaudio 2.8.0+cu128 on Python 3.13 with nvidia-* wheels; Windows torch/torchaudio/torchvision 2.4.1+cu121 on Python 3.12; triton/nvidia-* gated to Linux; audioop-lts Linux-only).
+2026-01-01 update: `requirements.txt` now uses platform markers for CUDA stacks (Linux torch/torchaudio 2.8.0+cu128 on Python 3.13 with nvidia-* wheels; Windows torch/torchaudio/torchvision 2.4.1+cu121 on Python 3.12; pyannote-audio 4.0.2 on Linux vs 3.1.1 on Windows; webrtcvad on non-Windows, Windows installs webrtcvad-wheels plus a local shim wheel for dependency resolution; triton/nvidia-* gated to Linux; audioop-lts Linux-only).
   
 Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGENTS.md, this document, and the SOURCE_OF_TRUTH.md up-to-date as you make changes.  There could be scripts and functions not documented currently in this evolving workspace.  Please document those as you locate them.
 
@@ -43,9 +43,24 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 - Data and run artifacts stay out of the repo; the workspace pattern uses `pull/`, `generated/`, `tmp/`, and `logs/` in your project root. Repo-level `tmp/` is safe for scratch.
 - Tests are in `tests/` plus a few top-level smoke helpers (e.g., `TEST_METRICS_INTEGRATION.sh`, `docs/SMOKE_TESTS.md`).
 
+## Cross-Platform Compatibility (Linux + Windows)
+- Prefer Python entrypoints over shell scripts for core flows; keep shell wrappers as thin adapters.
+- Avoid hardcoded path separators or `/tmp`; use `pathlib`/`os.path` and repo `tmp/` for scratch.
+- Use `subprocess.run(..., shell=False)` and pass args as lists; avoid bash-specific syntax in core code.
+- Expect different venv layouts: `.venv/bin/python` vs `.venv\Scripts\python.exe`; use `sys.executable`.
+- Ensure external tools (`ffmpeg`, `yt-dlp`) are discovered via PATH on both OSes and validate with a lightweight check.
+- Use `VIDOPS_GPU_INDEX_MAP` for non-standard CUDA device ordering instead of hardcoded index swaps.
+- Use `shutil.disk_usage` on Windows (no `os.statvfs`) when checking free space.
+- Use `paths.path_map` in `config.yaml` to translate absolute DB paths (e.g., `/mnt/...`) to Windows UNC/drive paths; prefer storing `rel_path` and other relative paths for cross-platform assets.
+- Ensure helper scripts that print filenames (e.g., diarization chunkers) set UTF-8 stdout/stderr on Windows to avoid cp1252 encoding errors.
+- Avoid `os.getuid` on Windows; use `psutil.Process().username()` when filtering user-owned processes (e.g., memory monitor).
+- Enforce LF line endings via `.gitattributes` to keep Linux/Windows checkouts consistent.
+- Add new cross-platform constraints here as we discover them.
+
 ## Build, Test, and Dev Commands
 - Bootstrap diarization env: `bash scripts/setup_diarization_venv.sh` (use `--cpu` if no CUDA). Activates `.venv`.
 - Run workers: `python vo_cli.py worker start <role> ...` (e.g., `analysis-distributed`, `worker start diarization`).
+- Stop workers: `python vo_cli.py worker stop [--worker-id <id>] [--all] [--force]` (defaults to current machine alias).
 - Workspace wrapper (from a project dir): `./workspace.sh download|transcribe|hits|diarize ...`.
 - Launch web UIs: `python scripts/run_webui.py` or `python vo_cli.py webui` (starts the combined analysis/QuickClip UI on :5000 and, if configured, the monitoring UI on :8000; use `--skip`/`--only` or `--monitoring-cmd` to customize)
 - After any web UI or template changes, restart the web services. Easiest: `.venv/bin/python scripts/run_webui.py --skip monitoring --detach` (or `vo webui --skip monitoring --detach` from `.venv`), which restarts the analysis UI on :5000. Add/remove `--skip monitoring` as needed. If your host uses a custom systemd unit for the web UI, restart that instead; the repo doesn’t ship one by default.

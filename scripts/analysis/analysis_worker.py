@@ -13,6 +13,7 @@ This worker:
 from __future__ import annotations
 
 import os
+import platform
 import time
 import sys
 import signal
@@ -427,7 +428,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run an analysis worker that consumes tasks from analysis_tasks.")
-    parser.add_argument("--machine-alias", required=False, default=os.uname().nodename)
+    parser.add_argument("--machine-alias", required=False, default=platform.node())
     parser.add_argument("--worker-type", required=False, default="analysis_gpu")
     parser.add_argument("--model-url", required=False, default="http://localhost:11434")
     parser.add_argument("--model-name", required=False, default="qwen2.5:7b-instruct")

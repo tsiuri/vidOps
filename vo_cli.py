@@ -3,12 +3,22 @@
 # Auto-activate venv if available and not already using it
 import sys
 import os
+import importlib.util
+import subprocess
 from pathlib import Path
 
 _VENV_DIR = Path(__file__).parent / ".venv"
-_VENV_PYTHON = _VENV_DIR / "bin" / "python"
+_VENV_PYTHON = None
+_VENV_CANDIDATES = [
+    _VENV_DIR / "Scripts" / "python.exe",
+    _VENV_DIR / "bin" / "python",
+]
+for candidate in _VENV_CANDIDATES:
+    if candidate.exists():
+        _VENV_PYTHON = candidate
+        break
 # sys.prefix points to venv when activated; differs from sys.base_prefix
-if _VENV_PYTHON.exists() and Path(sys.prefix) != _VENV_DIR.resolve():
+if _VENV_PYTHON and Path(sys.prefix) != _VENV_DIR.resolve():
     os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON)] + sys.argv)
 
 # -----------------------------------------------------------------------------
@@ -28,6 +38,26 @@ def _parse_early_gpu_flag():
             break
     return gpu_val
 
+def _map_gpu_index(gpu_index: str) -> str:
+    """
+    Map a logical GPU index to CUDA_VISIBLE_DEVICES using VIDOPS_GPU_INDEX_MAP.
+    Format: "0:1,1:0" (defaults to identity if unset or invalid).
+    """
+    mapping = os.environ.get("VIDOPS_GPU_INDEX_MAP", "")
+    if not mapping:
+        return gpu_index
+    mapped = {}
+    for pair in mapping.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        left, right = pair.split(":", 1)
+        left = left.strip()
+        right = right.strip()
+        if left and right:
+            mapped[left] = right
+    return mapped.get(gpu_index, gpu_index)
+
 _EARLY_GPU = _parse_early_gpu_flag()
 if _EARLY_GPU is not None:
     if _EARLY_GPU.lower() == "cpu":
@@ -35,18 +65,117 @@ if _EARLY_GPU is not None:
         # TODO: CPU-only worker not fully implemented yet
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
     elif _EARLY_GPU.isdigit():
-        # GPU index swap: CUDA device numbering is reversed from nvidia-smi
-        # When CUDA_VISIBLE_DEVICES=0, PyTorch sees the 3090 (nvidia-smi GPU 1)
-        # When CUDA_VISIBLE_DEVICES=1, PyTorch sees the 3060 (nvidia-smi GPU 0)
-        # Swap so --gpu 0 → 3060, --gpu 1 → 3090 (matching nvidia-smi)
-        gpu_map = {"0": "1", "1": "0"}
-        cuda_device = gpu_map.get(_EARLY_GPU, _EARLY_GPU)
-        os.environ["CUDA_VISIBLE_DEVICES"] = cuda_device
+        # Optional GPU index map via VIDOPS_GPU_INDEX_MAP for non-standard numbering.
+        os.environ["CUDA_VISIBLE_DEVICES"] = _map_gpu_index(_EARLY_GPU)
     # "auto" or invalid values: don't set CUDA_VISIBLE_DEVICES, let CUDA decide
 
 # Store for later use by worker CLI
 os.environ["_VIDOPS_GPU_FLAG"] = _EARLY_GPU if _EARLY_GPU else ""
 # -----------------------------------------------------------------------------
+
+_AUTO_INSTALL_TIMEOUT = 120
+_FULL_INSTALL_TIMEOUT = 900
+
+
+def _resolve_requirement(requirements_path: Path, package: str) -> str:
+    if not requirements_path.exists():
+        return package
+    needle = package.lower()
+    for raw_line in requirements_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line or line.startswith("--"):
+            continue
+        base = line.split(";", 1)[0].strip()
+        base_lower = base.lower()
+        if (
+            base_lower == needle
+            or base_lower.startswith(needle + "[")
+            or base_lower.startswith(needle + "==")
+            or base_lower.startswith(needle + ">")
+            or base_lower.startswith(needle + "<")
+            or base_lower.startswith(needle + "~")
+        ):
+            return line
+    return package
+
+
+def _ensure_modules(modules: dict[str, str]) -> None:
+    missing: list[str] = []
+    requirements_path = Path(__file__).with_name("requirements.txt")
+    for module_name, pip_name in modules.items():
+        if importlib.util.find_spec(module_name) is None:
+            requirement = _resolve_requirement(requirements_path, pip_name)
+            missing.append(requirement)
+
+    if not missing:
+        return
+
+    if importlib.util.find_spec("pip") is None:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade"],
+                check=False,
+                timeout=60,
+            )
+        except Exception:
+            pass
+
+    print(f"Missing dependencies detected: {', '.join(missing)}")
+    requirements_path = Path(__file__).with_name("requirements.txt")
+
+    if requirements_path.exists():
+        timeout = int(os.environ.get("VIDOPS_INSTALL_TIMEOUT", _FULL_INSTALL_TIMEOUT))
+        assume_yes = os.environ.get("VIDOPS_ASSUME_YES") == "1"
+        if timeout > _AUTO_INSTALL_TIMEOUT and not assume_yes:
+            if sys.stdin and sys.stdin.isatty():
+                prompt = (
+                    f"Install full requirements now? This can take several minutes "
+                    f"(timeout {timeout}s). [y/N]: "
+                )
+                resp = input(prompt).strip().lower()
+                if resp not in {"y", "yes"}:
+                    print("Install cancelled. Run pip install -r requirements.txt manually.")
+                    raise SystemExit(1)
+            else:
+                print(
+                    "Missing dependencies and long install required. "
+                    "Set VIDOPS_ASSUME_YES=1 or run pip install -r requirements.txt manually."
+                )
+                raise SystemExit(1)
+
+        print(f"Attempting full install via pip (timeout={timeout}s)...")
+        cmd = [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)]
+    else:
+        timeout = _AUTO_INSTALL_TIMEOUT
+        print(f"Attempting minimal install via pip (timeout={timeout}s)...")
+        cmd = [sys.executable, "-m", "pip", "install", *missing]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print("Auto-install timed out. Run pip install -r requirements.txt manually.")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"Auto-install failed: {exc}")
+        raise SystemExit(1)
+
+    if result.returncode != 0:
+        print("Auto-install failed. Run pip install -r requirements.txt manually.")
+        raise SystemExit(1)
+
+
+_ensure_modules(
+    {
+        "click": "click",
+        "yaml": "PyYAML",
+        "psycopg2": "psycopg2-binary",
+        "httpx": "httpx",
+    }
+)
 
 import click
 from db import close_pool

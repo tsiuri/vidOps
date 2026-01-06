@@ -13,6 +13,18 @@ from typing import List, Tuple, Optional
 import argparse
 
 
+def _configure_console_encoding() -> None:
+    """Ensure UTF-8 output to avoid Windows console encoding crashes."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
 def get_audio_duration(audio_path: Path) -> float:
     """Get audio duration in seconds using ffprobe."""
     cmd = [
@@ -170,6 +182,7 @@ def chunk_audio(
 
 
 def main():
+    _configure_console_encoding()
     parser = argparse.ArgumentParser(
         description="Chunk long audio files for memory-efficient diarization",
         formatter_class=argparse.RawDescriptionHelpFormatter,

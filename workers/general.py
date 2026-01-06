@@ -58,6 +58,7 @@ class GenericWorker:
         self.current_job_id: Optional[str] = None
         self.base_worker_type = "general"
         self._shutdown_requested = False
+        self._shutdown_event = threading.Event()
         self.max_jobs = self.config.workers.max_jobs
         self.worker_obj = Worker(
             worker_id=self.worker_id,
@@ -111,7 +112,7 @@ class GenericWorker:
 
     def _register_signal_handlers(self) -> None:
         """Register shutdown handlers in a cross-platform way."""
-        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None)):
+        for sig in (signal.SIGINT, getattr(signal, "SIGTERM", None), getattr(signal, "SIGBREAK", None)):
             if sig is None:
                 continue
             try:
@@ -138,48 +139,53 @@ class GenericWorker:
         self.heartbeat.start()
         jobs_processed = 0
 
-        while not self._shutdown_requested:
-            try:
-                processed = self._process_single_job()
-                if processed:
-                    jobs_processed += 1
-                    self.idle_claim_failures = 0  # Reset idle counter on successful claim
-                    if 0 < self.max_jobs <= jobs_processed:
+        try:
+            while not self._shutdown_requested:
+                try:
+                    processed = self._process_single_job()
+                    if processed:
+                        jobs_processed += 1
+                        self.idle_claim_failures = 0  # Reset idle counter on successful claim
+                        if 0 < self.max_jobs <= jobs_processed:
+                            logger.info(
+                                "Processed %s jobs (max_jobs=%s); shutting down",
+                                jobs_processed,
+                                self.max_jobs,
+                            )
+                            break
+                        continue
+
+                    # No job claimed; increment idle counter
+                    self.idle_claim_failures += 1
+
+                    # Trigger housekeeping if idle threshold reached
+                    if self.idle_claim_failures >= self.config.housekeeping.trigger_idle_attempts:
                         logger.info(
-                            "Processed %s jobs (max_jobs=%s); shutting down",
-                            jobs_processed,
-                            self.max_jobs,
+                            "Idle for %d consecutive claim attempts; triggering housekeeping",
+                            self.idle_claim_failures,
                         )
+                        self._run_housekeeping()
+                        self.idle_claim_failures = 0  # Reset after housekeeping
+
+                    # Check workspace size (only checks every N heartbeats)
+                    if not self._check_workspace_size():
+                        logger.error("Workspace size limit exceeded. Shutting down worker.")
+                        self._shutdown_requested = True
                         break
-                    continue
 
-                # No job claimed; increment idle counter
-                self.idle_claim_failures += 1
-
-                # Trigger housekeeping if idle threshold reached
-                if self.idle_claim_failures >= self.config.housekeeping.trigger_idle_attempts:
-                    logger.info(
-                        "Idle for %d consecutive claim attempts; triggering housekeeping",
-                        self.idle_claim_failures,
-                    )
-                    self._run_housekeeping()
-                    self.idle_claim_failures = 0  # Reset after housekeeping
-
-                # Check workspace size (only checks every N heartbeats)
-                if not self._check_workspace_size():
-                    logger.error("Workspace size limit exceeded. Shutting down worker.")
-                    self._shutdown_requested = True
+                    # Wait, but wake immediately on shutdown signal
+                    self._shutdown_event.wait(self.config.workers.heartbeat_interval)
+                except Exception as exc:
+                    logger.error("Unhandled error in worker loop: %s", exc, exc_info=True)
+                    self._update_state(WorkerStatus.ERRORED)
                     break
-
-                time.sleep(self.config.workers.heartbeat_interval)
-            except Exception as exc:
-                logger.error("Unhandled error in worker loop: %s", exc, exc_info=True)
-                self._update_state(WorkerStatus.ERRORED)
-                break
-
-        logger.info("Generic worker %s shutting down", self.worker_id)
-        self.heartbeat.stop()
-        self._update_state(WorkerStatus.STOPPING)
+        except KeyboardInterrupt:
+            logger.warning("KeyboardInterrupt received; shutting down worker")
+            self._shutdown_requested = True
+        finally:
+            logger.info("Generic worker %s shutting down", self.worker_id)
+            self.heartbeat.stop()
+            self._update_state(WorkerStatus.STOPPING)
 
     # ------------------------------------------------------------------ internals
     def _register(self):
@@ -439,8 +445,8 @@ class GenericWorker:
 
             # Check disk space
             logger.info("Checking disk space...")
-            check_disk_space(self.workspace_root, min_gb=30.0)
-            logger.info("  ✓ Sufficient disk space (30GB minimum)")
+            check_disk_space(self.workspace_root, min_gb=20.0)
+            logger.info("  ✓ Sufficient disk space (20GB minimum)")
 
             # Optional cleanup if workspace is above the configured trigger
             if not self._maybe_cleanup_workspace(prompt=True):
@@ -686,6 +692,7 @@ class GenericWorker:
             os.kill(os.getpid(), signum)
             return
         self._shutdown_requested = True
+        self._shutdown_event.set()
         logger.warning("Received signal %s, initiating shutdown", signum)
         if self.current_job_id:
             try:
@@ -695,7 +702,7 @@ class GenericWorker:
                 logger.error("Failed to cancel job %s: %s", self.current_job_id, exc, exc_info=True)
         self._update_state(WorkerStatus.STOPPING)
         self._kill_descendants()
-        raise SystemExit(1)
+        raise KeyboardInterrupt
 
     def _kill_descendants(self):
         """Best-effort kill any child processes (e.g., ffmpeg) on shutdown."""

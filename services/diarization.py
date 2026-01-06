@@ -505,9 +505,9 @@ class DiarizationService:
 
     def _resolve_media_asset_path(self, ytid: str) -> str:
         asset = self.video_repo.get_primary_asset(ytid, "media")
-        if not asset or not asset.path:
+        if not asset or (not asset.rel_path and not asset.path):
             raise ValueError(f"No media asset registered for {ytid}. Download first.")
-        return asset.path
+        return asset.rel_path or asset.path
 
     def _resolve_transcript_path(self, ytid: str, transcript_kind: str) -> str:
         """

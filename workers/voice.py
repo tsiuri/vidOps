@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import signal
 import time
 from datetime import timedelta
@@ -27,7 +28,7 @@ class VoiceFilterWorker:
         self.worker_id = f"{self.config.workers.machine_alias}-voice-{os.getpid()}"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
 
         self.job_repo = JobRepository()
         self.worker_repo = WorkerRepository()

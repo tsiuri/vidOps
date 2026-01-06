@@ -2,6 +2,7 @@
 
 import logging
 import os
+import platform
 import time
 import signal
 from datetime import timedelta
@@ -26,7 +27,7 @@ class TranscriptionWorker:
         self.worker_type = "transcription"
         self.machine_alias = self.config.workers.machine_alias
         self.pid = os.getpid()
-        self.hostname = os.uname().nodename
+        self.hostname = platform.node()
         self.worker_repo = WorkerRepository()
         self.job_repo = JobRepository()
         self.transcription_service = get_transcription_service()

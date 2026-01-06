@@ -17,6 +17,7 @@ from models import Job, JobStatus
 from workers.analysis_distributed import AnalysisWorker
 from configuration import load_config
 from dal import TranscriptRepository
+from utils.path_utils import resolve_db_path
 from scripts.analysis.analyze_to_db import create_analysis_job, export_vtt_from_db
 from scripts.analysis.analyze_transcript import TranscriptChunker, VTTParser
 from scripts.analysis.analysis_config import AnalysisConfig
@@ -249,11 +250,7 @@ class DistributedAnalysisService:
                 pass
 
     def _resolve_transcript_path(self, path: Path, cfg) -> Path:
-        if path.is_absolute():
-            return path
-        prefix = cfg.paths.path_prefix or cfg.paths.central_storage_root
-        base = Path(prefix) if prefix else Path.cwd()
-        return (base / path).resolve()
+        return resolve_db_path(str(path), cfg.paths).resolve()
 
     def _load_transcript_text(self, transcript_path: Path) -> str:
         if transcript_path.suffix.lower() in {".vtt", ".srt"}:

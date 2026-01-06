@@ -120,6 +120,28 @@ class WorkerRepository:
                 )
                 rows = cur.fetchall()
                 return [Worker.from_row(row) for row in rows]
+
+    def list(self, machine_alias: Optional[str] = None, worker_id: Optional[str] = None) -> List[Worker]:
+        """
+        List workers filtered by machine alias and/or worker_id.
+        """
+        clauses = []
+        params = []
+        if machine_alias:
+            clauses.append("machine_alias = %s")
+            params.append(machine_alias)
+        if worker_id:
+            clauses.append("worker_id = %s")
+            params.append(worker_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM {self.table_name} {where} ORDER BY last_heartbeat DESC",
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+                return [Worker.from_row(row) for row in rows]
                 
     def purge_stale(self, stale_threshold: timedelta = timedelta(minutes=15)) -> int:
         """

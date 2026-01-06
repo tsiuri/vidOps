@@ -7,6 +7,7 @@ from typing import Optional
 from configuration import load_config
 from models import Video, Transcript, Asset
 from storage.broker_client import StorageBrokerClient
+from utils.path_utils import resolve_db_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,8 @@ class FilesystemCache:
         config = load_config()
         self.central_storage_root = Path(config.paths.central_storage_root)
         self.path_prefix = config.paths.path_prefix
+        self.path_map = config.paths.path_map
+        self.paths_config = config.paths
 
         # Local cache directory - use configured temp dir or fall back to user's home
         local_temp = config.paths.local_temp_dir
@@ -45,7 +48,13 @@ class FilesystemCache:
 
         # Ensure local cache exists
         self.local_cache_root.mkdir(parents=True, exist_ok=True)
-        logger.info(f"FilesystemCache initialized: central={self.central_storage_root}, local={self.local_cache_root}, prefix={self.path_prefix or 'none'}")
+        logger.info(
+            "FilesystemCache initialized: central=%s, local=%s, prefix=%s, map=%s",
+            self.central_storage_root,
+            self.local_cache_root,
+            self.path_prefix or "none",
+            "set" if self.path_map else "none",
+        )
         self.broker_client = StorageBrokerClient(config.storage_broker)
 
     def _resolve_path_with_prefix(self, path_str: str) -> Path:
@@ -62,16 +71,7 @@ class FilesystemCache:
         Returns:
             Resolved Path object
         """
-        path = Path(path_str)
-        if path.is_absolute() and self.path_prefix:
-            # Apply prefix to absolute paths
-            return Path(self.path_prefix) / path.relative_to(path.anchor)
-        elif path.is_absolute():
-            # Absolute path, no prefix configured
-            return path
-        else:
-            # Relative path - combine with central storage root
-            return self.central_storage_root / path
+        return resolve_db_path(path_str, self.paths_config)
 
     def get_central_path(self, relative_path: str) -> Path:
         """
@@ -130,7 +130,11 @@ class FilesystemCache:
         local_path = self.get_local_path(relative_path)
 
         if not central_path.exists():
-            raise FileNotFoundError(f"File not found in central storage: {central_path}")
+            fallback = self._try_resolve_by_basename(Path(relative_path).name)
+            if fallback is not None:
+                central_path = fallback
+            else:
+                raise FileNotFoundError(f"File not found in central storage: {central_path}")
 
         # Check if already cached and same size (simple cache validation)
         if local_path.exists() and local_path.stat().st_size == central_path.stat().st_size:
@@ -145,6 +149,16 @@ class FilesystemCache:
         shutil.copy2(central_path, local_path)
 
         return local_path
+
+    def _try_resolve_by_basename(self, name: str) -> Optional[Path]:
+        if not name:
+            return None
+        for subdir in ("pull", "raw", "media"):
+            candidate = self.central_storage_root / subdir / name
+            if candidate.exists():
+                logger.warning("Resolved missing asset by basename under %s", candidate)
+                return candidate
+        return None
 
     def get_media_path(self, video: Video, pull_to_local: bool = False) -> Optional[Path]:
         """

@@ -324,6 +324,8 @@ def preprocess_video(args: Tuple[str, Path, Path, Path, bool, float]) -> dict:
         if not vad_segments.exists():
             if verbose:
                 print(f"[{ytid}] Starting VAD processing...")
+            canonical_literal = json.dumps(canonical_path.as_posix())
+            vad_literal = json.dumps(vad_segments.as_posix())
             vad_script = f"""
 import json, numpy as np, webrtcvad
 from pathlib import Path
@@ -341,7 +343,7 @@ except ImportError:
 
 # Open file and get metadata without loading all data
 if HAS_SOUNDFILE:
-    with sf.SoundFile('{canonical_path}') as f:
+    with sf.SoundFile({canonical_literal}) as f:
         sr = f.samplerate
         total_frames = len(f)
         channels = f.channels
@@ -408,7 +410,7 @@ if HAS_SOUNDFILE:
 else:
     # Fallback: torchaudio (less memory efficient but still chunked)
     import torchaudio
-    waveform_t, sr = torchaudio.load('{canonical_path}')
+    waveform_t, sr = torchaudio.load({canonical_literal})
     waveform = waveform_t.numpy().T  # [time, channel]
     if waveform.dtype != np.int16:
         waveform = (waveform * 32767.0).astype(np.int16)
@@ -441,7 +443,7 @@ else:
     if in_segment:
         segments.append({{"start": seg_start, "end": total_frames / sr}})
 
-Path('{vad_segments}').write_text(json.dumps(segments, indent=2))
+Path({vad_literal}).write_text(json.dumps(segments, indent=2))
 """
 
             # Run VAD script with timeout to prevent hangs
@@ -462,12 +464,7 @@ Path('{vad_segments}').write_text(json.dumps(segments, indent=2))
                     stdout, stderr = proc.communicate(timeout=1800)  # 30 minute timeout
                     if proc.returncode != 0:
                         error_msg = stderr[:500] if stderr else "Unknown error"
-                        raise subprocess.CalledProcessError(
-                            proc.returncode,
-                            [str(venv_python), "-c", vad_script],
-                            output=stdout,
-                            stderr=stderr
-                        )
+                        raise RuntimeError(f"VAD script failed: {error_msg}")
                     if verbose:
                         print(f"[{ytid}] VAD script completed")
                 except subprocess.TimeoutExpired:
