@@ -82,6 +82,11 @@ from __init__ import __version__  # Import the version from the package
     with a centralized PostgreSQL database for job management and worker coordination.
 
     Use 'vo_cli.py <command> --help' for more information on a specific command.
+
+    TIP: Run long-running workers in tmux for better monitoring and collaboration:
+      tmux new-session -s vidops-worker
+      source .venv/bin/activate && python vo_cli.py worker start --gpu 1
+    Detach with Ctrl+B then D, reattach anytime with: tmux attach -t vidops-worker
     """
 )
 @click.version_option(__version__, "-v", "--version", message="VidOps Version: %(version)s")

@@ -923,6 +923,21 @@ def create_analysis_job(
         for pass_id in enabled_passes
     }
 
+    # Define job-level passes that should run once per job, not per chunk
+    job_level_passes = {
+        "aggregate_results",
+        "hot_targets",
+        "drills",
+        "db_store",
+        "local_json",
+        "markdown_report",
+    }
+
+    # Separate chunk-level and job-level passes
+    chunk_level_passes = [p for p in enabled_passes if p not in job_level_passes]
+    job_passes = [p for p in enabled_passes if p in job_level_passes]
+
+    # Create chunk-level tasks (one per chunk per pass)
     for chunk_id, chunk_obj in enumerate(chunks):
         # Extract text from chunk object
         chunk_text = (
@@ -937,7 +952,7 @@ def create_analysis_job(
         chunk_metadata.setdefault("total_chunks", total_chunks)
         chunk_metadata.setdefault("config_id", config_id)
 
-        for pass_id in enabled_passes:
+        for pass_id in chunk_level_passes:
             required_vram_gb = pass_requirements.get(pass_id, 0.0)
             task = AnalysisTask(
                 task_id=0,
@@ -947,6 +962,34 @@ def create_analysis_job(
                 pass_id=pass_id,
                 chunk_text=chunk_text,
                 chunk_metadata=chunk_metadata,
+                required_vram_gb=required_vram_gb,
+                model_profile_id=int(base_profile.get("id") or 0) or None,
+            )
+            repo.create_task(task)
+
+    # Create job-level tasks (one per job, not per chunk)
+    # Use chunk_id=0 as a sentinel for job-level tasks
+    if chunks:
+        first_chunk = chunks[0]
+        job_chunk_text = first_chunk.get("text") or first_chunk.get("content") or ""
+        job_metadata: Dict[str, Any] = dict(first_chunk)
+        job_metadata.update({
+            "chunk_number": 0,
+            "total_chunks": total_chunks,
+            "config_id": config_id,
+            "is_job_level": True,
+        })
+
+        for pass_id in job_passes:
+            required_vram_gb = pass_requirements.get(pass_id, 0.0)
+            task = AnalysisTask(
+                task_id=0,
+                job_id=job_id,
+                ytid=ytid,
+                chunk_id=0,  # Job-level tasks use chunk_id=0
+                pass_id=pass_id,
+                chunk_text=job_chunk_text,
+                chunk_metadata=job_metadata,
                 required_vram_gb=required_vram_gb,
                 model_profile_id=int(base_profile.get("id") or 0) or None,
             )

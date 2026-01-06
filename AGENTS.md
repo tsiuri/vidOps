@@ -77,6 +77,68 @@ Consult docs/CLI_COMMANDS.md for a concise list of overall functions.  Keep AGEN
 - Ollama runs via systemd with separate services: `ollama-nvidia.service` on `0.0.0.0:11434` and `ollama-amd.service` on `127.0.0.1:11435`.
 - Current Ollama settings live in the unit files under `/etc/systemd/system/`; NVIDIA unit sets `OLLAMA_KEEP_ALIVE=5m` and `OLLAMA_GPU_LAYERS=-1`, AMD unit sets `OLLAMA_KEEP_ALIVE=5m`, `OLLAMA_MAX_LOADED_MODELS=1`, and `OLLAMA_NUM_GPU=1`.
 
+## Shared Workspace Visibility (User + AI) - PREFERRED INTERACTION METHOD
+**The operator favors this tmux-based collaborative workflow for AI assistance.**
+
+This creates a truly shared interactive terminal where both user and AI can work together:
+
+### Quick Start (Getting to Shared Workspace)
+When starting a new session, the AI should proactively:
+1. **Create a named tmux session:** `tmux new-session -d -s <descriptive-name> -c /path/to/working/dir`
+2. **Give user the connect command:** `tmux attach -t <descriptive-name>`
+3. **Wait for user to connect** before sending commands
+4. **Always check state first:** `tmux capture-pane -t <name> -p | tail -20` before sending keys
+
+**User:** Just run the provided `tmux attach` command to join the shared workspace.
+
+**Setup:**
+- **Create shared session:** `tmux new-session -s shared-workspace` (or any name)
+- **User attaches:** `tmux attach -t shared-workspace`
+- **AI inspects output:** `tmux capture-pane -t shared-workspace -p | tail -50`
+- **AI types commands:** `tmux send-keys -t shared-workspace "command here"` (without Enter = types only)
+- **AI executes commands:** `tmux send-keys -t shared-workspace "command here" Enter`
+
+**Interactive Capabilities:**
+1. **AI can type at the prompt** - Commands appear as if AI is pressing keys; user can edit/delete before running
+2. **AI can execute commands** - Full command execution with real-time output visible to both parties
+3. **AI can respond to prompts** - Interactive confirmations (y/n), selections, etc.
+4. **Shared visibility** - Both see the same terminal state, output, errors, and progress
+5. **User can intervene** - Take over anytime by typing; AI sees what you type via capture-pane
+
+**Workflow Example:**
+```bash
+# AI checks current state
+tmux capture-pane -t shared-workspace -p | tail -20
+
+# AI types a command for review (no Enter)
+tmux send-keys -t shared-workspace "python vo_cli.py status"
+# User sees it typed, can edit/run/delete
+
+# AI executes a command
+tmux send-keys -t shared-workspace "ls -la" Enter
+# Both see output immediately
+```
+
+**Benefits:**
+- User maintains full control (can see/edit/stop anything AI does)
+- AI doesn't work blindly (sees exact terminal state and output)
+- Real-time collaboration on debugging, configuration, interactive prompts
+- No context loss - both parties share the same terminal history
+- Ideal for long-running processes, worker debugging, and exploratory work
+
+**Use Cases:**
+- Running and monitoring workers (`vidops-worker`, `analysis-worker`, etc.)
+- Collaborative debugging sessions
+- Interactive configuration/setup tasks
+- Reviewing and editing commands before execution
+- Responding to prompts that require user judgment
+
+**Session Management:**
+- Detach: `Ctrl+B` then `D`
+- List sessions: `tmux list-sessions`
+- Attach: `tmux attach -t <session-name>`
+- Kill session: `tmux kill-session -t <session-name>`
+
 ## Active Pipeline CLI Updates (2025-12-11)
 - New `vo pipeline enqueue` command creates a full processing pipeline (download → transcription → diarization → analysis) with automatic dependency management
 - Usage: `vo pipeline enqueue <YTID_or_URL> [--skip-diarization] [--transcription-model large-v3]`
