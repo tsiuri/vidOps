@@ -19,6 +19,8 @@ except ImportError:
     print("Error: 'requests' library not found. Install with: pip install requests", file=sys.stderr)
     sys.exit(1)
 
+import logging
+logger = logging.getLogger(__name__)
 
 class VTTParser:
     """Parse WebVTT or TSV transcript files"""
@@ -174,26 +176,62 @@ class OllamaAnalyzer:
         self.category_map = {k.lower(): v for k, v in (category_map or {}).items()}
         self._ensured_models: set[str] = set()
 
+    def check_connection(self) -> None:
+        """Check if the Ollama server is available."""
+        try:
+            response = requests.get(self.base_url, timeout=5)
+            response.raise_for_status()  # Raise an exception for bad status codes
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(f"Ollama server not available at {self.base_url}: {e}") from e
+
     def _ensure_model_available(self) -> None:
         if self.model in self._ensured_models:
             return
+
+        logger.info("Checking if model '%s' is available locally at %s...", self.model, self.base_url)
         tags_url = f"{self.base_url}/api/tags"
-        pull_url = f"{self.base_url}/api/pull"
         try:
-            resp = requests.get(tags_url, timeout=30)
-            if resp.status_code == 200:
-                names = [m.get("name") for m in resp.json().get("models", []) if m.get("name")]
-                if self.model in names:
+            resp = requests.get(tags_url, timeout=10)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+            for m in models:
+                if m.get("name") == self.model:
+                    logger.info("Model '%s' is available locally.", self.model)
                     self._ensured_models.add(self.model)
                     return
-        except Exception:
-            pass
+        except requests.exceptions.RequestException as e:
+            logger.warning("Could not check for existing models via /api/tags: %s. Will attempt to pull.", e)
+
+        # If we're here, the model isn't available locally, so we'll pull it.
+        logger.info("Model '%s' not found. Attempting to pull from Ollama registry...", self.model)
+        pull_url = f"{self.base_url}/api/pull"
         try:
-            pull = requests.post(pull_url, json={"name": self.model, "stream": False}, timeout=600)
-            if pull.status_code == 200:
+            with requests.post(pull_url, json={"name": self.model, "stream": True}, stream=True, timeout=600) as r:
+                r.raise_for_status()
+                # Print progress to stdout
+                for line in r.iter_lines():
+                    if line:
+                        data = json.loads(line)
+                        if 'error' in data:
+                            raise Exception(data['error'])
+                        if 'status' in data:
+                            status = data['status']
+                            progress_bar = ""
+                            if "total" in data and "completed" in data:
+                                total = data["total"]
+                                completed = data["completed"]
+                                if total > 0:
+                                    percent = (completed / total) * 100
+                                    progress_bar = f" {percent:.1f}%"
+                            sys.stdout.write(f"\r  -> Pulling {self.model}: {status}{progress_bar}")
+                            sys.stdout.flush()
+                sys.stdout.write("\n")
+                logger.info("Successfully pulled model '%s'.", self.model)
                 self._ensured_models.add(self.model)
-        except Exception:
-            pass
+        except Exception as e:
+            sys.stdout.write("\n")
+            logger.error("Failed to pull model '%s' from %s: %s", self.model, pull_url, e)
+            raise ConnectionError(f"Failed to pull ollama model '{self.model}'. Please ensure it is available.") from e
 
     def analyze_chunk(self, chunk_text: str, chunk_id: int) -> Dict[str, Any]:
         """Analyze a single chunk"""
