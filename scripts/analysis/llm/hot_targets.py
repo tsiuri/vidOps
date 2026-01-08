@@ -7,9 +7,12 @@ over already chunked transcript text.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 class HotTargetRunner:
@@ -166,6 +169,8 @@ Return only the JSON object."""
         results: Dict[str, Any] = {}
         if not targets or not chunks:
             return results
+        
+        total_chunks = len(chunks)
         for target in targets:
             name = target.get("name") or target.get("category") or "target"
             tgt_model = target.get("model") or self.model
@@ -178,8 +183,13 @@ Return only the JSON object."""
                 output_shapes=self.output_shapes,
             )
             entries: List[Dict[str, Any]] = []
-            for chunk in chunks:
+            
+            for i, chunk in enumerate(chunks, 1):
                 cid = chunk.get("chunk_id")
+                # Only log periodically or if debug is on
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"Drill '{name}': processing chunk {cid} ({i}/{total_chunks})")
+                
                 text = chunk.get("text") or ""
                 prompt = runner._build_prompt(target, text, cid)
                 data = runner._call_model(prompt, cid)

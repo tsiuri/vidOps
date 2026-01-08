@@ -49,10 +49,11 @@ class GenericWorker:
     can service any job type in the queue.
     """
 
-    def __init__(self, web_port: int = 5000, metrics_port: int = 8888):
+    def __init__(self, web_port: int = 5000, metrics_port: int = 8888, debug: bool = False):
         self.config = load_config()
         self.worker_repo = WorkerRepository()
         self.job_repo = JobRepository()
+        self.debug = debug
         self.worker_id = f"{self.config.workers.machine_alias}-general-{os.getpid()}"
         self.machine_alias = self.config.workers.machine_alias
         self.current_job_id: Optional[str] = None
@@ -121,11 +122,14 @@ class GenericWorker:
                 logger.debug("Skipping signal handler for %s: %s", sig, exc)
 
     def run(self):
+        log_level = logging.DEBUG if self.debug else logging.INFO
         logging.basicConfig(
-            level=logging.INFO,
+            level=log_level,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
-        logger.info("Generic worker %s starting on %s", self.worker_id, self.machine_alias)
+        logger.info("Generic worker %s starting on %s (debug=%s)", self.worker_id, self.machine_alias, self.debug)
+        if self.debug:
+            logger.setLevel(logging.DEBUG)
 
         # Pre-flight health checks
         if not self._preflight_checks():

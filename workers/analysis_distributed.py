@@ -21,7 +21,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Set
 import logging
 from pathlib import Path
 try:
@@ -121,7 +121,12 @@ class AnalysisWorker:
         db_password: Optional[str] = None,
         lease_duration_minutes: int = 60,
         metrics_port: int = 8888,
+        debug: bool = False,
     ) -> None:
+        if debug:
+            logger.setLevel(logging.DEBUG)
+            logger.debug("Debug logging enabled")
+
         self.machine_alias = machine_alias
         self.worker_type = worker_type
         self.model_url = model_url
@@ -765,6 +770,34 @@ class AnalysisWorker:
         context.chunk_texts[chunk_idx] = task.chunk_text or ""
         context.chunk_metadata_map[chunk_idx] = task.chunk_metadata or {}
 
+    def _load_all_chunk_texts(self, context: JobContext) -> None:
+        """
+        Ensure context.chunk_texts is populated for all chunks in the job.
+        Useful for job-level passes like hot_targets that need to scan the whole video.
+        """
+        # If we already have enough chunks, skip DB query
+        if len(context.chunk_texts) >= context.total_chunks:
+            return
+
+        tasks = self.task_repo.get_job_tasks(context.job_id)
+        for t in tasks:
+            if not t.chunk_text:
+                continue
+            
+            try:
+                cid = int(t.chunk_id)
+            except (ValueError, TypeError):
+                continue
+
+            # Prioritize chunk-level tasks (usually pass_id='chunk_analysis') for the text source
+            # as they are guaranteed to correspond to that specific chunk.
+            # However, any task with matching chunk_id should theoretically have the same text.
+            if cid not in context.chunk_texts:
+                context.chunk_texts[cid] = t.chunk_text
+            elif t.pass_id == "chunk_analysis":
+                # Overwrite with authoritative source if available
+                context.chunk_texts[cid] = t.chunk_text
+
     def _pass_sentiment(
         self,
         task: AnalysisTask,
@@ -851,14 +884,55 @@ class AnalysisWorker:
             }
 
         if pass_id == "hot_targets":
-            detections, llm_spans = self._detect_hot_targets(chunk_text, context.config, chunk_id=int(task.chunk_id))
-            return {
-                "pass_id": pass_id,
-                "status": "completed",
-                "targets": detections,
-                "llm_spans": llm_spans,
-                "metadata": metadata,
-            }
+            # Check if this is a job-level task (chunk_id=0) or a legacy chunk task
+            # New jobs have one hot_targets task with chunk_id=0.
+            # Legacy jobs have many tasks with chunk_id >= 0.
+            is_job_level_task = int(task.chunk_id) == 0 and metadata.get("is_job_level")
+
+            # Fallback: if 'is_job_level' is not explicitly set, assume chunk_id=0 implies
+            # job-level behavior ONLY if total_chunks > 1. If it's a 1-chunk video, it doesn't matter.
+            if not is_job_level_task and int(task.chunk_id) == 0 and context.total_chunks > 1:
+                # Heuristic: if we only see one hot_targets task in the DB, it's job level.
+                # But checking DB is expensive. We'll assume the new code convention.
+                # To be safe for legacy jobs (which might have a task for chunk 0),
+                # we should only force full scan if we are sure.
+                # However, the 'analyze_to_db.py' sets "is_job_level": True for the single task.
+                # So we rely on that flag or the fact that it's a known job-level pass in current code.
+                pass
+
+            if is_job_level_task:
+                # This is a single task meant to cover the whole video.
+                # We need all chunk texts.
+                self._load_all_chunk_texts(context)
+
+                all_detections = []
+                all_llm_spans = []
+
+                # Iterate over all available chunks
+                total_chunks = len(context.chunk_texts)
+                for i, (cid, text) in enumerate(sorted(context.chunk_texts.items()), start=1):
+                    logger.debug("Hot targets: scanning chunk %s (%d/%d)", cid, i, total_chunks)
+                    dets, spans = self._detect_hot_targets(text, context.config, chunk_id=cid)
+                    all_detections.extend(dets)
+                    all_llm_spans.extend(spans)
+
+                return {
+                    "pass_id": pass_id,
+                    "status": "completed",
+                    "targets": all_detections,
+                    "llm_spans": all_llm_spans,
+                    "metadata": metadata,
+                }
+            else:
+                # Legacy behavior: just scan the current chunk (task.chunk_text)
+                detections, llm_spans = self._detect_hot_targets(chunk_text, context.config, chunk_id=int(task.chunk_id))
+                return {
+                    "pass_id": pass_id,
+                    "status": "completed",
+                    "targets": detections,
+                    "llm_spans": llm_spans,
+                    "metadata": metadata,
+                }
 
         if pass_id == "drills":
             if not context.is_ready_for_aggregation():
@@ -868,14 +942,42 @@ class AnalysisWorker:
                     "note": "Aggregation not ready.",
                     "metadata": metadata,
                 }
-            drill_results, drill_summary, emitted_spans = self._run_drill_executor(context)
+            
+            # Determine if this is a job-level task or legacy chunk task
+            is_job_level_task = int(task.chunk_id) == 0 and metadata.get("is_job_level")
+            # Fallback for job-level inference if flag missing but chunk_id=0 on multi-chunk
+            if not is_job_level_task and int(task.chunk_id) == 0 and context.total_chunks > 1:
+                is_job_level_task = True
+
+            chunk_filter: Optional[Set[int]] = None
+            
+            if is_job_level_task:
+                # Load all texts for the global pass
+                self._load_all_chunk_texts(context)
+            else:
+                # Legacy: only run on this specific chunk
+                # Also ensure we have the text for this chunk (should be hydrated but safe to check)
+                cid = int(task.chunk_id)
+                if cid not in context.chunk_texts:
+                    context.chunk_texts[cid] = task.chunk_text or ""
+                chunk_filter = {cid}
+
+            drill_results, drill_summary, emitted_spans = self._run_drill_executor(context, chunk_filter=chunk_filter)
             if context.aggregated_result is not None:
                 if drill_results:
                     context.aggregated_result.setdefault("drill_results", drill_results)
                 if drill_summary:
                     context.aggregated_result.setdefault("drill_summary", drill_summary)
-            context.drill_results_map = drill_results
-            context.drill_summary = drill_summary
+            
+            # Merging results: careful not to overwrite if we are doing incremental updates?
+            # Actually, context.drill_results_map is accumulated.
+            # But here we just want to update what we found.
+            context.drill_results_map.update(drill_results)
+            # drill_summary is a list, extend it? 
+            # If we are running legacy per-chunk, we might get many small summaries.
+            # Ideally we'd merge them, but for now just appending is safer than losing data.
+            context.drill_summary.extend(drill_summary)
+            
             formatted = self._normalize_drill_spans(emitted_spans, context)
             if formatted:
                 context.drill_spans.extend(formatted)
@@ -939,7 +1041,7 @@ class AnalysisWorker:
         context.aggregated_result = aggregated
         return aggregated
 
-    def _run_drill_executor(self, context: JobContext) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    def _run_drill_executor(self, context: JobContext, chunk_filter: Optional[Set[int]] = None) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
         drills = getattr(context.config, "drills", []) or []
         if not drills:
             return {}, [], {}
@@ -971,6 +1073,9 @@ class AnalysisWorker:
         chunk_entries: List[Dict[str, Any]] = []
         chunk_text_map: Dict[int, str] = {}
         for chunk_id in sorted(context.chunk_results):
+            if chunk_filter is not None and chunk_id not in chunk_filter:
+                continue
+            
             text = context.chunk_texts.get(chunk_id, "")
             chunk_text_map[chunk_id] = text
             analysis = context.chunk_results.get(chunk_id) or {}
@@ -1549,8 +1654,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--db-user", default=None)
     parser.add_argument("--db-password", default=None)
     parser.add_argument("--lease-minutes", type=int, default=60)
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args(argv)
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        logger.debug("Debug logging enabled")
 
     worker = AnalysisWorker(
         machine_alias=args.machine_alias,
@@ -1564,6 +1674,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         db_user=args.db_user,
         db_password=args.db_password,
         lease_duration_minutes=args.lease_minutes,
+        debug=args.debug,
     )
     worker.run_forever()
     return 0

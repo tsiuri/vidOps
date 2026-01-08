@@ -230,6 +230,12 @@ def worker():
     help="GPU index to use (0, 1, 2...), 'cpu' for CPU-only, or 'auto' (default). "
          "Sets CUDA_VISIBLE_DEVICES and loads per-GPU config (VRAM, ollama URL)."
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Enable debug logging for the worker."
+)
 def start_worker(
     worker_type: str,
     machine_alias: str,
@@ -243,6 +249,7 @@ def start_worker(
     web_port: int,
     web_services: bool,
     gpu_flag: str,
+    debug: bool,
 ):
     """Start a worker process.
 
@@ -251,6 +258,10 @@ def start_worker(
     Example: --gpu 0 → :11434, --gpu 1 → :11435, etc.
     See config.yaml gpus.N.ollama_url to override defaults per GPU."""
     click.echo(f"Starting {worker_type} worker...")
+
+    if debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        click.echo("Debug logging enabled.")
 
     # Default project root to where the worker is launched (unless explicitly set)
     os.environ.setdefault("VIDOPS_PROJECT_ROOT", str(Path.cwd()))
@@ -353,7 +364,7 @@ def start_worker(
         os.environ["VIDOPS_WORKER_VRAM_GB"] = str(resolved_vram_gb)
         os.environ["VIDOPS_WORKER_MODEL_URL"] = resolved_model_url
         os.environ["VIDOPS_WORKER_MODEL_NAME"] = resolved_model_name
-        worker_instance = GenericWorker(web_port=0, metrics_port=metrics_port)
+        worker_instance = GenericWorker(web_port=0, metrics_port=metrics_port, debug=debug)
         worker_instance.run()
     elif worker_type == "download":
         worker_instance = DownloadWorker()
@@ -412,6 +423,7 @@ def start_worker(
                 db_password=config.database.password,
                 lease_duration_minutes=lease_minutes,
                 metrics_port=metrics_port,
+                debug=debug,
             )
             click.echo("Worker initialized. Starting main loop...")
             worker_instance.run_forever()
