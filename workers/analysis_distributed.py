@@ -204,12 +204,29 @@ class AnalysisWorker:
             category_suggestions=[],
             category_map={},
         )
+
+        try:
+            logger.info("Checking connection to Ollama server at %s...", self.analyzer.base_url)
+            self.analyzer.check_connection()
+            logger.info("Ollama connection successful.")
+        except ConnectionError as e:
+            logger.fatal("Ollama connection check failed: %s", e)
+            sys.exit(1)
+
         self.hot_target_runner = HotTargetRunner(
             model=model_name,
             base_url=model_url,
             options=getattr(self.analyzer, "options", {}) or {},
             log_mode="quiet",
         )
+
+        try:
+            logger.info("Checking connection to Ollama server at %s...", self.analyzer.base_url)
+            self.analyzer.check_connection()
+            logger.info("Ollama connection successful.")
+        except ConnectionError as e:
+            logger.fatal("Ollama connection check failed: %s", e)
+            sys.exit(1)
 
         self.should_exit: bool = False
         self.current_task: Optional[AnalysisTask] = None
@@ -611,14 +628,22 @@ class AnalysisWorker:
                     self._update_worker_status(WorkerStatus.IDLE)
                     worker_current_task_gauge.labels(worker_id=self.worker_id).set(0)
 
+                except ConnectionError as e:
+                    logger.fatal("Ollama connection error, terminating worker: %s", e)
+                    self.should_exit = True
+                    if self.current_task:
+                        self.task_repo.mark_failed(self.current_task.task_id, f"Ollama connection error: {e}")
                 except KeyboardInterrupt:
                     logger.info("Received KeyboardInterrupt, exiting loop...")
                     break
                 except Exception as exc:
                     logger.error("Unexpected error in worker loop: %s", exc)
                     import traceback
-
                     traceback.print_exc()
+
+                    if self.current_task:
+                        self.task_repo.mark_failed(self.current_task.task_id, str(exc))
+
                     try:
                         if self.db.conn:
                             self.db.conn.rollback()

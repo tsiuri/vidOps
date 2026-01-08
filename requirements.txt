@@ -168,7 +168,6 @@ tzdata==2025.2
 urllib3==2.6.0
 uvicorn==0.38.0
 webrtcvad==2.0.10 ; platform_system != "Windows"
-webrtcvad @ file:wrappers/webrtcvad_shim/webrtcvad-2.0.10-py3-none-any.whl ; platform_system == "Windows"
 webrtcvad-wheels==2.0.14 ; platform_system == "Windows"
 yarl==1.22.0
 yt-dlp==2025.11.12
