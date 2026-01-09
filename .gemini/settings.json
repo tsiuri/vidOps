@@ -1,0 +1,10 @@
+{
+  "general": {
+    "enablePromptCompletion": true
+  },
+  "security": {
+    "folderTrust": {
+      "enabled": true
+    }
+  }
+}

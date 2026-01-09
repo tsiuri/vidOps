@@ -265,10 +265,18 @@ class AnalysisWorker:
         if not self.is_bridge_mode:
             self.worker_obj.status = status
             self.worker_obj.current_job_id = current_job_id
+            
+            # Sanitize job_id: The 'workers' table has a foreign key to 'jobs'.
+            # Analysis IDs (legacy format with colons) are NOT in 'jobs', so using them
+            # causes a crash. Only pass job_ids that look like generic jobs (no colons).
+            safe_job_id = current_job_id
+            if safe_job_id and ":" in safe_job_id:
+                safe_job_id = None
+
             self.worker_repo.update_status(
                 self.worker_id,
                 status,
-                current_job_id=current_job_id,
+                current_job_id=safe_job_id,
                 worker_type=self.worker_type,
             )
 
