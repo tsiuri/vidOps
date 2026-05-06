@@ -36,7 +36,7 @@ What it does:
 
 ## Path/env expectations
 - TOOL_ROOT should point to the repo with `scripts/diarization/diarize_inference.py` (patches). Default is the parent of `scripts/`; if unset the worker now falls back to PROJECT_ROOT/workspace_root to avoid hardcoded paths.
-- PROJECT_ROOT should point to the runtime workspace (e.g., `/home/billie/tools/vidops`) when running workers; set `DIAR_PYTHON_BIN` to the venv python for workers if needed.
+- PROJECT_ROOT should point to the runtime workspace (e.g., `/home/billie/bq_netservices/vidops`) when running workers; set `DIAR_PYTHON_BIN` to the venv python for workers if needed.
 - Do not upgrade torch/torchaudio/pyannote; rerun the setup script if the venv drifts.
 
 ## Quick sanity checks

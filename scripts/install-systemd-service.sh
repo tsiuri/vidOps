@@ -414,7 +414,7 @@ ${BLUE}To Reinstall:${NC}
   sudo bash scripts/install-systemd-service.sh
 
 ${BLUE}To Run from CLI (Development):${NC}
-  cd ~/tools/vidops
+  cd ~/bq_netservices/vidops
   python3 vo_cli.py worker start analysis-distributed
 
 EOF

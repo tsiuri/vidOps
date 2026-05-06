@@ -1,20 +1,23 @@
+# Path convention: hardcodes /home/billie/bq_netservices/vidops to match
+# motherbase install. For deployment elsewhere, substitute the actual install
+# path or use systemd %h specifier (e.g. WorkingDirectory=%h/...) for portability.
+
 [Unit]
 Description=VidOps Distributed Analysis Worker
-Documentation=file:///home/billie/tools/vidops/docs/PHASE_3_COMPLETE.md
 After=network.target postgresql.service
 Wants=ollama.service
 
 [Service]
 Type=simple
 User=billie
-WorkingDirectory=/home/billie/tools/vidops
+WorkingDirectory=/home/billie/bq_netservices/vidops
 
 # Load environment variables from config file (optional)
 EnvironmentFile=-/etc/vidops/analysis-worker.env
 EnvironmentFile=-/home/billie/.vidops/analysis-worker.env
 
 # Set defaults if not in environment file
-Environment="VIDOPS_PROJECT_ROOT=/home/billie/tools/vidops"
+Environment="VIDOPS_PROJECT_ROOT=/home/billie/bq_netservices/vidops"
 Environment="PYTHONUNBUFFERED=1"
 
 # These can be overridden per instance (see INSTANCE CONFIGURATION below)
@@ -27,7 +30,7 @@ Environment="ANALYSIS_MODEL_PROFILE_ID=1"
 Environment="ANALYSIS_LEASE_MINUTES=60"
 
 # Main command - customize machine-alias and capabilities per instance
-ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start analysis-distributed \
+ExecStart=/usr/bin/python3 /home/billie/bq_netservices/vidops/vo_cli.py worker start analysis-distributed \
     --machine-alias %H-analysis-0 \
     --model-url ${OLLAMA_URL} \
     --model-name ${OLLAMA_MODEL} \
@@ -58,7 +61,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/home/billie/tools/vidops
+ReadWritePaths=/home/billie/bq_netservices/vidops
 
 [Install]
 WantedBy=multi-user.target

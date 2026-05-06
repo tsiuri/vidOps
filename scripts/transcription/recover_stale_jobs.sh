@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cron job to recover stale jobs (runs every 5 minutes)
-# Add to crontab: */5 * * * * /home/billie/tools/vidops/scripts/transcription/recover_stale_jobs.sh
+# Add to crontab: */5 * * * * /home/billie/bq_netservices/vidops/scripts/transcription/recover_stale_jobs.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

@@ -756,7 +756,7 @@ from vidops.utils.local_health import check_disk_space
 
 def test_disk_space_check():
     """Test that disk space check works."""
-    workspace = Path("/home/billie/tools/vidops")
+    workspace = Path("/home/billie/bq_netservices/vidops")
 
     try:
         check_disk_space(workspace, min_gb=30.0)

@@ -42,7 +42,7 @@ docker run -d \
   grafana/grafana:latest
 
 # 3. Start your worker with metrics enabled
-cd /home/billie/tools/vidops
+cd /home/billie/bq_netservices/vidops
 python3 vo_cli.py worker start analysis-distributed \
     --machine-alias local-gpu-0 \
     --metrics-port 8888
@@ -194,7 +194,7 @@ histogram_quantile(0.95,
 ### Step 1: Install prometheus-client
 
 ```bash
-cd /home/billie/tools/vidops
+cd /home/billie/bq_netservices/vidops
 pip install prometheus-client
 ```
 
@@ -257,7 +257,7 @@ docker run -d \
 
 ### Worker Configuration
 
-Edit `/home/billie/tools/vidops/configuration.py` (if needed) to adjust metrics:
+Edit `/home/billie/bq_netservices/vidops/configuration.py` (if needed) to adjust metrics:
 
 ```python
 # Metrics collection is enabled by default
@@ -267,7 +267,7 @@ Edit `/home/billie/tools/vidops/configuration.py` (if needed) to adjust metrics:
 
 ### Prometheus Configuration
 
-Edit `/home/billie/tools/vidops/config/prometheus.yml`:
+Edit `/home/billie/bq_netservices/vidops/config/prometheus.yml`:
 
 ```yaml
 # Change scrape interval (default: 15 seconds)
@@ -287,7 +287,7 @@ scrape_configs:
 
 ### AlertManager Configuration
 
-Create `/home/billie/tools/vidops/config/alertmanager.yml`:
+Create `/home/billie/bq_netservices/vidops/config/alertmanager.yml`:
 
 ```yaml
 global:
@@ -336,7 +336,7 @@ docker start grafana
 # or: Access http://localhost:3000
 
 # Terminal 3: Start worker with metrics
-cd /home/billie/tools/vidops
+cd /home/billie/bq_netservices/vidops
 python3 vo_cli.py worker start analysis-distributed \
     --machine-alias local-gpu-0 \
     --model-url http://localhost:11434 \

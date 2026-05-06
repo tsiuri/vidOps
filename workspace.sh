@@ -93,7 +93,7 @@ LOCATION
     media/      - Processed media files
 
 EXTRA UTILITIES (use: ./workspace.sh extra-utils)
-  Standalone scripts (see EXTRA_UTILS.md, e.g., ~/tools/vidops/EXTRA_UTILS.md):
+  Standalone scripts (see EXTRA_UTILS.md, e.g., ~/bq_netservices/vidops/EXTRA_UTILS.md):
     scripts/utilities/mark_success.sh
     scripts/utilities/quality_report.py
     scripts/utilities/repair_archive.sh

@@ -10,11 +10,11 @@ The distributed analysis worker can run as a systemd service for production depl
 
 ## Quick Reference
 
-**Service File:** `/home/billie/tools/vidops/analysis-distributed-worker.service`
+**Service File:** `/home/billie/bq_netservices/vidops/analysis-distributed-worker.service`
 
 **For Development:** Continue using CLI
 ```bash
-cd ~/tools/vidops
+cd ~/bq_netservices/vidops
 python3 vo_cli.py worker start analysis-distributed
 ```
 
@@ -35,7 +35,7 @@ sudo journalctl -u analysis-distributed-worker -f
 ```
 systemd service starts
   ↓
-ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start analysis-distributed [options]
+ExecStart=/usr/bin/python3 /home/billie/bq_netservices/vidops/vo_cli.py worker start analysis-distributed [options]
   ↓
 vo_cli.py (entry point)
   ↓
@@ -54,17 +54,17 @@ Infinite loop:
 
 ### Code Flow
 
-**Entry Point:** `/home/billie/tools/vidops/vo_cli.py`
+**Entry Point:** `/home/billie/bq_netservices/vidops/vo_cli.py`
 - Click CLI framework entry point
 - Routes to: `from vidops.cli.worker import worker`
 
-**CLI Handler:** `/home/billie/tools/vidops/cli/worker.py`
+**CLI Handler:** `/home/billie/bq_netservices/vidops/cli/worker.py`
 - Parses CLI arguments (machine-alias, model-url, model-profile-id, vram, legacy capability tags, etc.)
 - Loads vidops config via `load_config()`
 - Instantiates `AnalysisWorker` class
 - Calls `worker.run_forever()`
 
-**Worker Implementation:** `/home/billie/tools/vidops/workers/analysis_distributed.py`
+**Worker Implementation:** `/home/billie/bq_netservices/vidops/workers/analysis_distributed.py`
 - `__init__()` - Initialize with configuration, connect to DB
 - `run_forever()` - Main event loop (lines 107-187)
   - Sets up signal handlers for graceful shutdown
@@ -86,7 +86,7 @@ Infinite loop:
   - Sets `should_exit` flag
   - Completes current task before exiting
 
-**Data Access:** `/home/billie/tools/vidops/dal/analysis_task_repository.py`
+**Data Access:** `/home/billie/bq_netservices/vidops/dal/analysis_task_repository.py`
 - `claim_next()` - Atomic task claiming via PostgreSQL SELECT FOR UPDATE (VRAM-gated)
 - `mark_completed()` - Update task with results
 - `mark_failed()` - Mark task as failed
@@ -94,7 +94,7 @@ Infinite loop:
 - `get_job_progress()` - Get current progress counts
 - `get_job_tasks()` - Retrieve all tasks for aggregation
 
-**Configuration:** `/home/billie/tools/vidops/configuration.py`
+**Configuration:** `/home/billie/bq_netservices/vidops/configuration.py`
 - Loads from `vidops/config.yml` (YAML format)
 - Provides: database credentials, Ollama URL/model, analysis settings
 - Environment variable overrides supported
@@ -108,7 +108,7 @@ Infinite loop:
 ```ini
 [Unit]
 Description=VidOps Distributed Analysis Worker
-Documentation=file:///home/billie/tools/vidops/docs/PHASE_3_COMPLETE.md
+Documentation=file:///home/billie/bq_netservices/vidops/docs/PHASE_3_COMPLETE.md
 After=network.target postgresql.service
 Wants=ollama.service
 ```
@@ -130,7 +130,7 @@ Wants=ollama.service
 [Service]
 Type=simple
 User=billie
-WorkingDirectory=/home/billie/tools/vidops
+WorkingDirectory=/home/billie/bq_netservices/vidops
 ```
 
 - `Type=simple` - Process runs in foreground (systemd monitors it directly)
@@ -157,7 +157,7 @@ Environment="ANALYSIS_LEASE_MINUTES=60"
 ### Execution
 
 ```ini
-ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start analysis-distributed \
+ExecStart=/usr/bin/python3 /home/billie/bq_netservices/vidops/vo_cli.py worker start analysis-distributed \
     --machine-alias %H-analysis-0 \
     --model-url ${OLLAMA_URL} \
     --model-name ${OLLAMA_MODEL} \
@@ -218,14 +218,14 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/home/billie/tools/vidops
+ReadWritePaths=/home/billie/bq_netservices/vidops
 ```
 
 - `NoNewPrivileges=true` - Can't escalate privileges
 - `PrivateTmp=true` - Private /tmp (isolated filesystem)
 - `ProtectSystem=strict` - System files read-only
 - `ProtectHome=yes` - Home directory read-only
-- `ReadWritePaths=/home/billie/tools/vidops` - Except this path (can write here)
+- `ReadWritePaths=/home/billie/bq_netservices/vidops` - Except this path (can write here)
 - Effect: Sandboxed environment, limited blast radius
 
 ### Install Section
@@ -331,11 +331,11 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=billie
-WorkingDirectory=/home/billie/tools/vidops
+WorkingDirectory=/home/billie/bq_netservices/vidops
 Environment="OLLAMA_URL=http://localhost:11434"
 Environment="OLLAMA_MODEL=qwen2.5:7b-instruct"
 
-ExecStart=/usr/bin/python3 /home/billie/tools/vidops/vo_cli.py worker start analysis-distributed \
+ExecStart=/usr/bin/python3 /home/billie/bq_netservices/vidops/vo_cli.py worker start analysis-distributed \
     --machine-alias %H-analysis-%i \
     --model-url ${OLLAMA_URL} \
     --model-name ${OLLAMA_MODEL} \
@@ -484,7 +484,7 @@ sudo journalctl -u analysis-distributed-worker -n 100
 file /usr/bin/python3
 
 # Test CLI directly
-python3 /home/billie/tools/vidops/vo_cli.py worker start analysis-distributed --help
+python3 /home/billie/bq_netservices/vidops/vo_cli.py worker start analysis-distributed --help
 ```
 
 ### Worker Keeps Restarting
@@ -541,7 +541,7 @@ EOF
 ### Development (Use CLI)
 
 ```bash
-cd ~/tools/vidops
+cd ~/bq_netservices/vidops
 python3 vo_cli.py worker start analysis-distributed
 ```
 
@@ -640,7 +640,7 @@ Detect and restart unhealthy workers.
 
 ## References
 
-- Service File: `/home/billie/tools/vidops/analysis-distributed-worker.service`
+- Service File: `/home/billie/bq_netservices/vidops/analysis-distributed-worker.service`
 - Deployment Guide: `SYSTEMD_DEPLOYMENT_GUIDE.md`
 - Worker Code: `vidops/workers/analysis_distributed.py`
 - CLI Code: `vidops/cli/worker.py`

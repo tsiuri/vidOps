@@ -79,7 +79,7 @@ After=network.target postgresql.service
 [Service]
 Type=simple
 User=billie
-WorkingDirectory=/home/billie/tools/vidops
+WorkingDirectory=/home/billie/bq_netservices/vidops
 ExecStart=/usr/bin/python3 -m vidops.services.overlord
 Restart=always
 RestartSec=10

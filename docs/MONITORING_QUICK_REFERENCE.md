@@ -22,7 +22,7 @@
 
 ### Quick Start (All in Docker)
 ```bash
-cd /home/billie/tools/vidops
+cd /home/billie/bq_netservices/vidops
 docker-compose -f docker-compose.monitoring.yml up -d
 ```
 

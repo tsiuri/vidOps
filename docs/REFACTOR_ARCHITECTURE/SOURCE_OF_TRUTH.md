@@ -102,7 +102,7 @@ Each legacy command is invoked by a DB worker that: (1) reads `jobs.config`, (2)
 - Queue alignment & storage manager: See `logs/changelog/2025-11-29_claude_queue_storage.txt` for detailed changelog.
 - Overlord automation & monitoring: See `logs/changelog/2025-11-30_claude_overlord.txt` for the job chaining, stale lease recovery, and CLI work log.
 - Asset pipeline + CLI parity: See `logs/changelog/2025-12-01_claude_asset_cli.txt` plus `START_HERE.md` / `QUICK_REFERENCE.md` for the updated flows.
-- Remote worker onboarding guide: `docs/REFACTOR_ARCHITECTURE/REMOTE_WORKER_BOOTSTRAP.md` (code stays under `/home/billie/tools/vidops`; `/mnt/mainroot/mnt/13tb_sas/vidops/storage` is for media).
+- Remote worker onboarding guide: `docs/REFACTOR_ARCHITECTURE/REMOTE_WORKER_BOOTSTRAP.md` (code stays under `/home/billie/bq_netservices/vidops`; `/mnt/mainroot/mnt/13tb_sas/vidops/storage` is for media).
 - Storage broker trust installer: `scripts/deploy/worker_trust_broker.sh` plus docs in `docs/REFACTOR_ARCHITECTURE/REMOTE_WORKER_BOOTSTRAP.md` and `WORKER_STORAGE_BROKER_SETUP.md` describe the standard way to provision broker certs/hosts on every worker.
 - Download configuration plan: `docs/REFACTOR_ARCHITECTURE/DOWNLOAD_ENQUEUE_CONFIG.md` covers playlist explosion (one job per entry), storing all yt-dlp arguments inside `job.config`, rate-limited enqueue flow, batch inserts + `enqueue_batch_id` management commands, and the requirement that workers fail loudly if the config JSON is malformed/missing.
 - Manual operations checklist: `docs/REFACTOR_ARCHITECTURE/OPERATIONS_CHECKLIST.md`.

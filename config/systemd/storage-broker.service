@@ -1,3 +1,7 @@
+# Path convention: hardcodes /home/billie/bq_netservices/vidops to match
+# motherbase install. For deployment elsewhere, substitute the actual install
+# path or use systemd %h specifier (e.g. WorkingDirectory=%h/...) for portability.
+
 [Unit]
 Description=VidOps Storage Broker
 After=network-online.target
@@ -6,9 +10,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=billie
-WorkingDirectory=/home/billie/tools/vidops
-Environment=PYTHONPATH=/home/billie/tools/vidops
-ExecStart=/home/billie/tools/vidops/.venv/bin/python scripts/storage_broker_server.py
+WorkingDirectory=/home/billie/bq_netservices/vidops
+Environment=PYTHONPATH=/home/billie/bq_netservices/vidops
+ExecStart=/home/billie/bq_netservices/vidops/.venv/bin/python scripts/storage_broker_server.py
 Restart=on-failure
 RestartSec=3
 
