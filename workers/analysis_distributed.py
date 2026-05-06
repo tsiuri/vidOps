@@ -43,8 +43,8 @@ from workers.heartbeat import WorkerHeartbeat
 from scripts.analysis.analysis_config import AnalysisConfig, HotTargetRule, Drill
 from scripts.analysis.drills import DrillExecutor
 from scripts.analysis.llm.hot_targets import HotTargetRunner
-from monitoring.exporter import start_metrics_server, stop_metrics_server
-from monitoring.metrics import (
+from web.monitoring.exporter import start_metrics_server, stop_metrics_server
+from web.monitoring.metrics import (
     tasks_claimed_total,
     tasks_completed_total,
     tasks_failed_total,

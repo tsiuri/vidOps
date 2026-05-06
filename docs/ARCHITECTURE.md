@@ -131,17 +131,19 @@ Session-based workflow where an operator picks spans from a video and produces c
 
 ## Web UI
 
-Flask app at `web/web_app.py`, run as `vidops-webui.service` (user systemd) on motherbase. Bound to `:5000`. The monitoring UI runs separately on `:8000`.
+Flask app at `web/web_interface/web_app.py`, run as `vidops-webui.service` (user systemd) on motherbase. Bound to `:5000`. The monitoring UI runs separately on `:8000`.
 
 Routes cover: video listing and per-video pages (overview, analysis, streaming, transcode-progress), jobs browser with retry, DBSearch, analysis configs (with drill / hot-target editors), QuickClip create/list/show, Hits & Clips project pages.
 
-Templates inherit from `web/templates/base.html`. The web UI is intended to become the primary operator surface; the CLI is being repositioned as a thin client over the same `services/` layer (see in-progress design docs in `docs/superpowers/specs/`).
+Templates inherit from `web/web_interface/templates/base.html`. The web UI is intended to become the primary operator surface; the CLI is being repositioned as a thin client over the same `services/` layer (see in-progress design docs in `docs/superpowers/specs/`).
 
-## Storage broker
+## Storage broker (incomplete / not in use)
 
-The storage broker is an HTTP service that proxies asset uploads/downloads (intended for remote workers that can't directly access the central storage mount). It's an internal HTTPS service with mTLS or bearer-token auth, optionally behind nginx.
+The storage broker was an attempted HTTP service that would proxy asset uploads/downloads for remote workers unable to mount central storage directly. Server source lives in `web/broker/server.py` (FastAPI app: `POST /v1/assets/upload`, `GET /v1/assets/download`, `GET /healthz`, bearer-token auth). The launcher is `scripts/storage_broker_server.py` (now imports from `web.broker.server`).
 
-**Currently disabled** in `config.yaml` (`storage_broker.enabled: false`). Direct filesystem copies into `/mnt/mainroot/mnt/13tb_sas/vidops/storage/` are used instead. Server source lives in `broker/server.py` and `scripts/storage_broker_server.py`. Historical design notes: `docs/archive/REFACTOR_ARCHITECTURE/STORAGE_BROKER_DESIGN.md`, `STORAGE_BROKER_HTTPS.md`, `STORAGE_BROKER_HTTPS_HOWTO.md`.
+**Status: never fully working, not in use.** `config.yaml` has `storage_broker.enabled: false`, so `FilesystemCache` skips the broker and uses direct filesystem copies into `/mnt/mainroot/mnt/13tb_sas/vidops/storage/`. The systemd unit `/etc/systemd/system/storage-broker.service` is installed but inactive. The client side in `dal/cache.py` (`StorageBrokerClient`) gracefully falls back to direct copies on any broker failure or when the broker is disabled.
+
+The code is left in place for future revival but should be treated as incomplete infrastructure, not a current production component. Historical design notes (which describe the *intended* architecture, not the current behaviour): `docs/archive/REFACTOR_ARCHITECTURE/STORAGE_BROKER_DESIGN.md`, `STORAGE_BROKER_HTTPS.md`, `STORAGE_BROKER_HTTPS_HOWTO.md`.
 
 ## Configuration
 

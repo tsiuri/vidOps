@@ -270,7 +270,7 @@ def search_sessions(query: str):
 def browse_web(host: str, port: int, debug: bool):
     """Launch web browser for QuickClip sessions."""
     try:
-        from web.app import app
+        from web.web_interface.app import app
 
         base_url = f"http://{host}:{port}"
         quickclip_url = f"{base_url}/quickclip"

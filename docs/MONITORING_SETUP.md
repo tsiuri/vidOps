@@ -50,7 +50,7 @@ python3 vo_cli.py worker start analysis-distributed \
 # 4. Import dashboard
 # - Open http://localhost:3000
 # - Login with admin/admin
-# - Import JSON from: vidops/monitoring/dashboards/analysis_worker_dashboard.json
+# - Import JSON from: vidops/web/monitoring/dashboards/analysis_worker_dashboard.json
 ```
 
 ---
@@ -385,7 +385,7 @@ python3 vo_cli.py worker start analysis-distributed \
 **Method 1: Direct Import**
 
 1. Click **+** → **Import**
-2. Upload JSON file: `vidops/monitoring/dashboards/analysis_worker_dashboard.json`
+2. Upload JSON file: `vidops/web/monitoring/dashboards/analysis_worker_dashboard.json`
 3. Select Prometheus data source
 4. Click **Import**
 
@@ -395,7 +395,7 @@ python3 vo_cli.py worker start analysis-distributed \
 curl -X POST \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer YOUR_API_TOKEN' \
-  -d @vidops/monitoring/dashboards/analysis_worker_dashboard.json \
+  -d @vidops/web/monitoring/dashboards/analysis_worker_dashboard.json \
   http://localhost:3000/api/dashboards/db
 ```
 

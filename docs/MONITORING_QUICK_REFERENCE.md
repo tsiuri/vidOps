@@ -230,7 +230,7 @@ sum(rate(analysis_worker_llm_inference_total{status="failed"}[5m])) by (model_na
 ### Import Dashboard
 1. Click **+** (top menu)
 2. Select **Import**
-3. Choose file: `vidops/monitoring/dashboards/analysis_worker_dashboard.json`
+3. Choose file: `vidops/web/monitoring/dashboards/analysis_worker_dashboard.json`
 4. Select Prometheus data source
 5. Click **Import**
 
@@ -459,8 +459,8 @@ docker rm prometheus grafana alertmanager
 
 | Path | Purpose |
 |------|---------|
-| `vidops/monitoring/metrics.py` | Metric definitions |
-| `vidops/monitoring/exporter.py` | HTTP metrics server |
+| `vidops/web/monitoring/metrics.py` | Metric definitions |
+| `vidops/web/monitoring/exporter.py` | HTTP metrics server |
 | `config/prometheus.yml` | Scrape configuration |
 | `config/alert_rules.yml` | Alert definitions |
 | `docker-compose.monitoring.yml` | Full stack compose |

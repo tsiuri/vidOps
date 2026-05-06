@@ -2676,7 +2676,7 @@ def api_video_transcript_txt(ytid: str):
         return Response("No transcript metadata found for this video.\n", status=404, mimetype="text/plain")
 
     try:
-        from web.scripts.export_subtitles import group_words, detok
+        from web.web_interface.scripts.export_subtitles import group_words, detok
     except Exception:
         # Fallback: inline minimal detok/group to avoid import issues
         def detok(words):

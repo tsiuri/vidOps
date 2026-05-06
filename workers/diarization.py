@@ -18,7 +18,7 @@ from models import Worker, WorkerStatus, JobStatus
 from dal import WorkerRepository, JobRepository
 from services import get_diarization_service
 from workers.heartbeat import WorkerHeartbeat
-from monitoring.metrics import (
+from web.monitoring.metrics import (
     jobs_claimed_total,
     jobs_completed_total,
     job_processing_duration_seconds,
@@ -74,7 +74,7 @@ class DiarizeWorker:
         self.metrics_server = None
         if metrics_port > 0:
             try:
-                from monitoring.exporter import MetricsServer
+                from web.monitoring.exporter import MetricsServer
                 self.metrics_server = MetricsServer(port=metrics_port)
                 self.metrics_server.start()
                 logger.info("Metrics server started on port %d", metrics_port)

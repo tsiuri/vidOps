@@ -285,7 +285,7 @@ class GenericWorker:
     def _run_metrics_server(self):
         """Run Prometheus metrics server (runs in background thread)."""
         try:
-            from monitoring.exporter import start_metrics_server
+            from web.monitoring.exporter import start_metrics_server
 
             # Start metrics server (blocking call, runs in this thread)
             start_metrics_server(host="0.0.0.0", port=self.metrics_port)

@@ -123,7 +123,7 @@ def run():
 
     broker_cfg, _ = get_settings()
     config = Config(
-        app="broker.server:app",
+        app="web.broker.server:app",
         host=broker_cfg.listen_host,
         port=broker_cfg.listen_port,
         log_level="info",

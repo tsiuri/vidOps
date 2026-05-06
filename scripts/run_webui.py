@@ -117,7 +117,7 @@ def parse_command(command_str: Optional[str], default: Sequence[str]) -> List[st
 def build_specs(args: argparse.Namespace) -> Dict[str, WebUISpec]:
     analysis_cmd = parse_command(
         args.analysis_cmd,
-        [PYTHON, "-m", "web.app"],
+        [PYTHON, "-m", "web.web_interface.app"],
     )
     analysis_spec = WebUISpec(
         name="analysis",
@@ -142,7 +142,7 @@ def build_specs(args: argparse.Namespace) -> Dict[str, WebUISpec]:
             str(args.monitoring_port),
         ]
 
-    monitoring_cwd = PROJECT_ROOT / "monitoring"
+    monitoring_cwd = PROJECT_ROOT / "web" / "monitoring"
     if not monitoring_cwd.exists():
         monitoring_cwd = PROJECT_ROOT
 
@@ -258,7 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Launch VidOps web UIs.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host for health checks (default: 127.0.0.1)")
     parser.add_argument("--analysis-port", type=int, default=5000, help="Port for analysis/QuickClip UI (default: 5000)")
-    parser.add_argument("--analysis-cmd", help="Override command for the analysis UI (default: python -m web.app)")
+    parser.add_argument("--analysis-cmd", help="Override command for the analysis UI (default: python -m web.web_interface.app)")
     parser.add_argument("--monitoring-port", type=int, default=8000, help="Port for monitoring UI health checks (default: 8000)")
     parser.add_argument("--monitoring-cmd", help="Command to start monitoring UI (default: python -m http.server from ./monitoring or VIDOPS_MONITORING_CMD)")
     parser.add_argument("--skip", action="append", help="Skip launching specific apps (comma-separated list or repeat flag)")

@@ -24,8 +24,8 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - `monitor` — `cli/monitor.py`
 - Monitoring/ops scripts (non-Click)
   - `scripts/management/watch_jobs.py` — curses TUI to watch `jobs` table (q to quit)
-  - Prometheus/Grafana: `docker-compose.monitoring.yml`; metrics emitted from workers via `monitoring/metrics.py` and exposed by `monitoring/exporter.py` (see `docs/MONITORING_QUICK_REFERENCE.md`)
-  - Deployment helpers: `scripts/deploy/*.sh` (storage broker certs/nginx, config setup)
+  - Prometheus/Grafana: `docker-compose.monitoring.yml`; metrics emitted from workers via `web/monitoring/metrics.py` and exposed by `web/monitoring/exporter.py` (see `docs/MONITORING_QUICK_REFERENCE.md`)
+  - Deployment helpers: `docs/deprecated_scripts/scripts/deploy/*.sh` (storage broker certs/nginx, config setup)
   - Analysis TUI: `scripts/analysis/analysis_tui.py` (curses config browser)
   - Web drill helpers: `scripts/web_app/*.py` (drill APIs/views)
   - Job reset: `scripts/utilities/reset_stuck_jobs.py`
@@ -119,8 +119,8 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 
 ## Monitoring & Utilities (manual)
 - `vo monitor` — Live DB queue TUI (preferred); or run directly: `PYTHONPATH=. python scripts/management/watch_jobs.py`
-- Metrics: start Prometheus/Grafana via `docker-compose -f docker-compose.monitoring.yml up -d`; workers expose metrics on `--metrics-port` (default 8888) using `monitoring/exporter.py` + `monitoring/metrics.py`.
-- Deploy/ops: storage broker & worker trust scripts under `scripts/deploy/` (nginx TLS, cert reissue, broker diagnostics).
+- Metrics: start Prometheus/Grafana via `docker-compose -f docker-compose.monitoring.yml up -d`; workers expose metrics on `--metrics-port` (default 8888) using `web/monitoring/exporter.py` + `web/monitoring/metrics.py`.
+- Deploy/ops: storage broker & worker trust scripts under `docs/deprecated_scripts/scripts/deploy/` (nginx TLS, cert reissue, broker diagnostics).
 - Analysis/UI: `scripts/analysis/analysis_tui.py`, `scripts/web_app/` (drill APIs/views)
 - Unified web UI launcher: `python scripts/run_webui.py` (starts analysis/QuickClip UI on :5000 plus optional monitoring UI on :8000; supports `--skip/--only` and custom commands via `--monitoring-cmd`)
 - Job maintenance: `scripts/utilities/reset_stuck_jobs.py`
@@ -141,7 +141,7 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
     - `clips.sh` (root wrapper) and the `scripts/utilities/{clips.sh, convert-captions.sh, repair_archive.sh}` chain plus the `clips_templates/` subsystem (`pull.sh`, `hits.sh`, `cut_local.sh`, `cut_net.sh`, `refine.sh`, `common.sh`, `transcripts.sh`)
     - The `scripts/video_processing/stitch_videos*.sh` family
     - The legacy `scripts/transcription/` pipeline (CPU/NVIDIA bash workers, `db_queue.py`, `queue_cli.py`, `fragmented_transcribe.py`, `fragment_runner.py`, `recover_stale_jobs.sh`, `batch_retry*`, `detect_dupe_hallu.py`, `watch_cuda_error.sh`, plus several `.backup*` snapshots) — superseded by `services/transcription.py` + faster-whisper
-    - The `scripts/deploy/` broker setup helpers (`worker_trust_broker.sh`, `setup_broker_nginx.sh`, `reissue_broker_cert.sh`, `collect_broker_diagnostics.sh`, `setup_config.sh`) — paired with the incomplete storage-broker subsystem
+    - The `docs/deprecated_scripts/scripts/deploy/` broker setup helpers (`worker_trust_broker.sh`, `setup_broker_nginx.sh`, `reissue_broker_cert.sh`, `collect_broker_diagnostics.sh`, `setup_config.sh`) — paired with the incomplete storage-broker subsystem
     - `scripts/test_broker.py`, `scripts/start_worker_with_tunnel.sh`, `scripts/filter_tsv_by_existing_segments.py`, `scripts/list_overlaps_and_filter_tsv.py`
     - The `wrappers/` shim directory and the `scripts/management/{reorganize,fix_paths,test_scripts,test_clips_wrapper,set_paths,find_path_references}.sh` migration scripts
     - All preserved at their original-relative paths under `docs/deprecated_scripts/` so relative `source` and `exec` references continue to work.
