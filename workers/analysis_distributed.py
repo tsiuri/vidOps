@@ -243,29 +243,6 @@ class AnalysisWorker:
         except Exception:
             pass
 
-    def _is_job_complete(self, analysis_job_id: str) -> bool:
-        """True iff every analysis_tasks row for this job_id is terminal.
-
-        Mirrors the canonical AnalysisTaskRepository.is_job_complete contract
-        (tasks in pending/claimed are still running). Used after a single
-        successful task completion to decide whether to trigger aggregation.
-        """
-        cur = self.db.cursor
-        cur.execute(
-            "SELECT COUNT(*) FROM analysis_tasks "
-            "WHERE job_id = %s AND status NOT IN ('completed', 'failed')",
-            (analysis_job_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return False
-        # cursor returns dict-like rows when configured; fall back to index
-        try:
-            count = int(row[0])
-        except (KeyError, TypeError):
-            count = int(list(row.values())[0])
-        return count == 0
-
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
@@ -388,7 +365,7 @@ class AnalysisWorker:
 
                     # After finishing the task, check if we can aggregate the job
                     try:
-                        if self._is_job_complete(task.job_id):
+                        if self.task_repo.is_job_complete(task.job_id):
                             logger.info("Job %s appears complete – aggregating results", task.job_id)
                             agg_start = datetime.now(timezone.utc)
                             try:
