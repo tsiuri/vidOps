@@ -9,6 +9,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import subprocess
+
 import yt_dlp
 from yt_dlp.utils import DownloadError
 
@@ -17,6 +19,41 @@ from models import Video, Job, JobStatus
 from configuration import load_config, get_project_root
 
 logger = logging.getLogger(__name__)
+
+
+def _transcode_to_h264(src: Path) -> Path:
+    """
+    Re-encode src to H.264+AAC in-place if its video codec is not already H.264.
+    Returns the (possibly new) path. The original AV1 file is deleted on success.
+    Skips audio-only files silently.
+    """
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
+        capture_output=True, text=True
+    )
+    codec = probe.stdout.strip()
+    if not codec or codec == "h264":
+        return src
+
+    dst = src.with_stem(src.stem + "__h264")
+    logger.info("Transcoding %s (%s) → H.264: %s", src.name, codec, dst.name)
+    result = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(src),
+         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+         "-c:a", "aac", "-b:a", "192k",
+         "-movflags", "+faststart",
+         str(dst)],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg transcode failed: {result.stderr[-500:]}")
+    src.unlink()
+    dst.rename(src)
+    logger.info("Transcode complete, replaced %s", src.name)
+    return src
+
 
 class DownloadService:
     """
@@ -35,6 +72,26 @@ class DownloadService:
         self.fs_cache = fs_cache
         self.config = load_config()
 
+    def find_active_download(self, url: str) -> "Job | None":
+        """Return an existing pending/claimed/running download job for this URL, or None."""
+        from db import get_connection
+        active = ('pending', 'PENDING', 'claimed', 'CLAIMED', 'running', 'RUNNING')
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT * FROM jobs
+                    WHERE job_type = 'download'
+                      AND media_path = %s
+                      AND status = ANY(%s)
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (url, list(active))
+                )
+                row = cur.fetchone()
+                return Job.from_row(row) if row else None
+
     def enqueue_download(
         self,
         url: str,
@@ -43,6 +100,7 @@ class DownloadService:
         upload_type: str | None = None,
         ytdlp_overrides: dict[str, Any] | None = None,
         force_download: bool = False,
+        allow_duplicate: bool = False,
     ) -> Job:
         """
         Enqueues a video download job.
@@ -57,6 +115,16 @@ class DownloadService:
         Returns:
             Created Job object
         """
+        # Dedup: refuse to enqueue if an active job already exists for this URL
+        if not allow_duplicate:
+            existing = self.find_active_download(url)
+            if existing:
+                logger.info(
+                    "Skipping duplicate download enqueue for %s — job %s already %s",
+                    url, existing.job_id, existing.status,
+                )
+                return existing
+
         # Extract ytid from URL
         ytid = self._extract_ytid(url)
 
@@ -229,6 +297,9 @@ class DownloadService:
                 "writeinfojson": True,
                 "quiet": False,
                 "no_warnings": False,
+                # For channels/playlists, skip individual unavailable videos (members-only,
+                # private, deleted) rather than aborting the whole job.
+                "ignoreerrors": not is_single_video,
             }
             if use_archive and archive_path:
                 ydl_opts["download_archive"] = str(project_root / archive_path)
@@ -576,8 +647,33 @@ class DownloadService:
                 raise RuntimeError("Download produced no media entries to register")
 
         except Exception as e:
-            # Add guidance for common auth/age-restrict failures
             msg = str(e)
+
+            # Detect permanently unretriable conditions and cancel rather than fail,
+            # so they don't get swept up in bulk failed-job resets.
+            # Note: ignoreerrors=True already silently skips individual unavailable videos
+            # within a channel/playlist; these patterns catch failures on the URL itself.
+            _PERMANENT_PATTERNS = [
+                ("Join this channel to get access to members-only", "members-only content"),
+                ("members only", "members-only content"),
+                ("This video is private", "private video"),
+                ("This video has been removed", "removed video"),
+                ("This video is no longer available", "removed video"),
+                ("account associated with this video has been terminated", "terminated account"),
+                ("Video unavailable", "video unavailable"),
+                ("This video is not available", "video unavailable"),
+                ("The playlist does not exist", "playlist does not exist"),
+                ("playlist does not exist", "playlist does not exist"),
+                ("This playlist type is unviewable", "playlist unavailable"),
+            ]
+            for pattern, label in _PERMANENT_PATTERNS:
+                if pattern.lower() in msg.lower():
+                    error_msg = f"[PERMANENT] {label} — {msg}"
+                    logger.warning("Cancelling job %s (permanent failure: %s): %s", job.job_id, label, msg)
+                    self.job_repo.update_status(job.job_id, JobStatus.CANCELLED, error_msg)
+                    return
+
+            # Transient or unknown failure
             hint = ""
             if "Sign in to confirm your age" in msg or "age-restricted" in msg:
                 hint = " (set download.cookies_browser in config.yaml or pass --cookies-browser to use your browser cookies)"

@@ -1,5 +1,33 @@
 {% extends "base.html" %}
 
+{% macro error_label(msg) %}
+  {%- if msg -%}
+    {%- if 'members' in msg.lower() or 'membership' in msg.lower() -%}
+      <span class="errlabel" style="background:#fff3cd;color:#856404;">Members only</span>
+    {%- elif 'video unavailable' in msg.lower() or 'has been removed' in msg.lower() or 'private video' in msg.lower() -%}
+      <span class="errlabel" style="background:#f8d7da;color:#842029;">Unavailable</span>
+    {%- elif '403' in msg or 'forbidden' in msg.lower() -%}
+      <span class="errlabel" style="background:#ffe5cc;color:#a04000;">Blocked (403)</span>
+    {%- elif 'playlist does not exist' in msg.lower() -%}
+      <span class="errlabel" style="background:#e2e3e5;color:#41464b;">Playlist gone</span>
+    {%- elif 'reference.json missing' in msg.lower() -%}
+      <span class="errlabel" style="background:#e2d9f3;color:#432874;">Missing reference</span>
+    {%- elif 'current transaction is aborted' in msg.lower() -%}
+      <span class="errlabel" style="background:#cfe2ff;color:#084298;">DB txn aborted</span>
+    {%- elif 'takes no arguments' in msg.lower() -%}
+      <span class="errlabel" style="background:#d1e7dd;color:#0a3622;">Code bug</span>
+    {%- elif 'no such file or directory' in msg.lower() or 'file not found' in msg.lower() -%}
+      <span class="errlabel" style="background:#ffe5cc;color:#a04000;">File missing</span>
+    {%- elif 'chunk' in msg.lower() and 'diarization failed' in msg.lower() -%}
+      <span class="errlabel" style="background:#f8d7da;color:#842029;">Diarization err</span>
+    {%- elif 'no config' in msg.lower() -%}
+      <span class="errlabel" style="background:#e2e3e5;color:#41464b;">No config</span>
+    {%- else -%}
+      <span class="errlabel" style="background:#f8d7da;color:#842029;">Error</span>
+    {%- endif -%}
+  {%- endif -%}
+{% endmacro %}
+
 {% block title %}Jobs Browser{% endblock %}
 
 {% block content %}
@@ -94,6 +122,7 @@
                     <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='created_at', dir='ASC' if sort_by!='created_at' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Created</a></th>
                     <th style="font-size: 0.95rem;"><a href="{{ url_for('jobs_browser', status=status_filter, job_type=job_type_filter, ytid=ytid_filter, q=q_filter, sort='updated_at', dir='ASC' if sort_by!='updated_at' or sort_dir=='DESC' else 'DESC', limit=limit) }}" class="text-light text-decoration-none">Updated</a></th>
                     <th style="font-size: 0.95rem;">Error</th>
+                    <th style="font-size: 0.95rem;"></th>
                 </tr>
             </thead>
             <tbody>
@@ -156,20 +185,33 @@
                         <td style="font-size: 0.9rem;">
                             {{ job.updated_at.strftime('%m-%d %H:%M:%S') if job.updated_at else '-' }}
                         </td>
-                        <td>
+                        <td style="max-width:320px;">
                             {% if job.error_message %}
-                                <span class="text-danger" style="font-size: 0.85rem; cursor: help;" title="{{ job.error_message }}">
-                                    {{ job.error_message[:40] }}{% if job.error_message|length > 40 %}...{% endif %}
-                                </span>
+                                <details>
+                                  <summary style="cursor:pointer;list-style:none;">
+                                    {{ error_label(job.error_message) }}
+                                    <span style="font-size:0.75rem;color:#999;">{{ job.error_message[:55] }}{% if job.error_message|length > 55 %}…{% endif %}</span>
+                                  </summary>
+                                  <pre style="margin:6px 0 0;padding:8px;background:#f8f9fa;border-radius:4px;font-size:0.72rem;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;">{{ job.error_message }}</pre>
+                                </details>
                             {% else %}
                                 <span class="text-muted">-</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if job.status in ('FAILED', 'CANCELLED') %}
+                                <button class="btn btn-sm btn-outline-warning retry-btn"
+                                        data-job-id="{{ job.job_id }}"
+                                        style="font-size:0.8rem; white-space:nowrap;">
+                                    ↺ Retry
+                                </button>
                             {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
                 {% else %}
                 <tr>
-                    <td colspan="9" class="text-center text-muted py-4">
+                    <td colspan="10" class="text-center text-muted py-4">
                         No jobs found
                     </td>
                 </tr>
@@ -185,7 +227,31 @@
     </div>
 </div>
 
+<script>
+document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.retry-btn');
+    if (!btn) return;
+    const jobId = btn.dataset.jobId;
+    btn.disabled = true;
+    btn.textContent = '…';
+    const res = await fetch(`/api/job/${jobId}/retry`, { method: 'POST' });
+    if (res.ok) {
+        const row = btn.closest('tr');
+        const statusCell = row.querySelector('.badge.bg-danger, .badge.bg-secondary');
+        if (statusCell) { statusCell.className = 'badge bg-warning text-dark'; statusCell.textContent = 'PENDING'; }
+        btn.remove();
+    } else {
+        const d = await res.json().catch(() => ({}));
+        btn.textContent = '↺ Retry';
+        btn.disabled = false;
+        alert(d.error || 'Retry failed');
+    }
+});
+</script>
+
 <style>
+    .errlabel { display:inline-block; padding:1px 7px; border-radius:10px; font-size:0.72rem; font-weight:700; margin-right:5px; vertical-align:middle; }
+    details summary::-webkit-details-marker { display:none; }
     .text-monospace {
         font-family: 'Courier New', monospace;
     }

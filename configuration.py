@@ -178,6 +178,7 @@ class DownloadConfig:
     write_auto_subs: bool = True
     sub_langs: str = "en"
     no_transcript_log: str = "logs/no_transcripts_available.txt"
+    transcode_to_h264: bool = False
 
 @dataclass
 class OllamaConfig:

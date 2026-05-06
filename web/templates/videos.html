@@ -33,10 +33,9 @@
     tbody.innerHTML = '';
     rows.forEach(r => {
       const tr = document.createElement('tr');
-      const url = `https://youtube.com/watch?v=${r.ytid}`;
       tr.innerHTML = `
-        <td><a href="${url}" target="_blank" rel="noopener">${r.ytid}</a></td>
-        <td>${escapeHtml(r.title || '')}</td>
+        <td><a href="/video/${r.ytid}">${r.ytid}</a></td>
+        <td><a href="/video/${r.ytid}" style="color:#333;">${escapeHtml(r.title || '')}</a></td>
         <td class="muted">${r.title_date || ''}</td>
         <td class="muted">${r.upload_date || ''}</td>
         <td class="muted">${r.duration_sec ?? ''}</td>

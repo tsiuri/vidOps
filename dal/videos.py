@@ -2,6 +2,7 @@
 
 from typing import Optional, List
 from psycopg2.extras import Json
+from psycopg2 import errors as pg_errors
 from db import get_connection
 from models import Video, Asset
 
@@ -45,36 +46,62 @@ class VideoRepository:
         if 'categories' in video_dict and video_dict['categories'] is not None:
             video_dict['categories'] = Json(video_dict['categories'])
 
+        # Two workers can race on the same ytid/url and both attempt INSERT
+        # simultaneously. If the second hits the url unique constraint before
+        # ON CONFLICT (ytid) fires, we catch it and fall back to a plain UPDATE.
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO videos (
-                        ytid, url, title, upload_date, duration_sec, channel,
-                        channel_id, extractor_key, tags, categories, upload_type, title_date
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO videos (
+                            ytid, url, title, upload_date, duration_sec, channel,
+                            channel_id, extractor_key, tags, categories, upload_type, title_date
+                        )
+                        VALUES (
+                            %(ytid)s, %(url)s, %(title)s, %(upload_date)s, %(duration_sec)s, %(channel)s,
+                            %(channel_id)s, %(extractor_key)s, %(tags)s, %(categories)s, %(upload_type)s,
+                            %(title_date)s
+                        )
+                        ON CONFLICT (ytid) DO UPDATE SET
+                            url = EXCLUDED.url,
+                            title = EXCLUDED.title,
+                            upload_date = EXCLUDED.upload_date,
+                            duration_sec = EXCLUDED.duration_sec,
+                            channel = EXCLUDED.channel,
+                            channel_id = EXCLUDED.channel_id,
+                            extractor_key = EXCLUDED.extractor_key,
+                            tags = EXCLUDED.tags,
+                            categories = EXCLUDED.categories,
+                            upload_type = EXCLUDED.upload_type,
+                            title_date = EXCLUDED.title_date,
+                            updated_at = NOW()
+                        RETURNING *;
+                        """,
+                        video_dict
                     )
-                    VALUES (
-                        %(ytid)s, %(url)s, %(title)s, %(upload_date)s, %(duration_sec)s, %(channel)s,
-                        %(channel_id)s, %(extractor_key)s, %(tags)s, %(categories)s, %(upload_type)s,
-                        %(title_date)s
+                except pg_errors.UniqueViolation:
+                    # Race on the url unique constraint — row exists now, just update it
+                    conn.rollback()
+                    cur.execute(
+                        """
+                        UPDATE videos SET
+                            title = %(title)s,
+                            upload_date = %(upload_date)s,
+                            duration_sec = %(duration_sec)s,
+                            channel = %(channel)s,
+                            channel_id = %(channel_id)s,
+                            extractor_key = %(extractor_key)s,
+                            tags = %(tags)s,
+                            categories = %(categories)s,
+                            upload_type = COALESCE(%(upload_type)s, upload_type),
+                            title_date = %(title_date)s,
+                            updated_at = NOW()
+                        WHERE ytid = %(ytid)s OR url = %(url)s
+                        RETURNING *;
+                        """,
+                        video_dict
                     )
-                    ON CONFLICT (ytid) DO UPDATE SET
-                        url = EXCLUDED.url,
-                        title = EXCLUDED.title,
-                        upload_date = EXCLUDED.upload_date,
-                        duration_sec = EXCLUDED.duration_sec,
-                        channel = EXCLUDED.channel,
-                        channel_id = EXCLUDED.channel_id,
-                        extractor_key = EXCLUDED.extractor_key,
-                        tags = EXCLUDED.tags,
-                        categories = EXCLUDED.categories,
-                        upload_type = EXCLUDED.upload_type,
-                        title_date = EXCLUDED.title_date,
-                        updated_at = NOW()
-                    RETURNING *;
-                    """,
-                    video_dict
-                )
                 updated_row = cur.fetchone()
                 return Video.from_row(updated_row)
 

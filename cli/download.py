@@ -27,20 +27,31 @@ def download():
     is_flag=True,
     help="Force re-download even if media is already present in pull/ or download archive.",
 )
-def enqueue_download(url: str, priority: int, cookies_browser: str | None, upload_type: str | None, force: bool):
+@click.option(
+    "--no-transcode",
+    is_flag=True,
+    help="Store the original file as-is (AV1/VP9/etc) without transcoding to H.264.",
+)
+def enqueue_download(url: str, priority: int, cookies_browser: str | None, upload_type: str | None, force: bool, no_transcode: bool):
     """Enqueue a video URL for download."""
     click.echo(f"Enqueuing download for URL: {url} (Priority: {priority}, Force: {force})...")
 
     upload_type = (upload_type or "").strip() or None
     try:
         service = get_download_service()
+        overrides = {}
+        if force:
+            overrides.update({"force_download": True, "no_overwrites": False})
+        if no_transcode:
+            overrides["transcode_to_h264"] = False
         job = service.enqueue_download(
             url,
             priority,
             cookies_browser=cookies_browser,
             upload_type=upload_type,
-            ytdlp_overrides={"force_download": True, "no_overwrites": False} if force else None,
+            ytdlp_overrides=overrides or None,
             force_download=force,
+            allow_duplicate=force,
         )
         click.echo(click.style(f"✓ Download job enqueued: {job.job_id}", fg="green"))
     except Exception as e:

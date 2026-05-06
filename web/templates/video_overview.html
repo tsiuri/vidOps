@@ -1,0 +1,333 @@
+{% extends 'base.html' %}
+{% block title %}Video — {{ ytid }}{% endblock %}
+
+{% block head %}
+<style>
+  .meta-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:12px; margin-top:14px; }
+  .meta-item label { display:block; font-size:0.72rem; text-transform:uppercase; letter-spacing:.06em; color:#888; margin-bottom:2px; }
+  .meta-item span { font-size:0.95rem; font-weight:500; }
+
+  .section-title { font-size:1rem; font-weight:700; margin:0 0 12px 0; color:#2c3e50; }
+
+  /* player */
+  #player-wrap video, #player-wrap audio {
+    width:100%; border-radius:6px; background:#000; display:block;
+  }
+  #player-wrap .no-stream {
+    padding:28px; text-align:center; color:#aaa; background:#fafafa;
+    border:2px dashed #ddd; border-radius:6px; font-size:0.9rem;
+  }
+
+  /* status badges */
+  .badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:600; text-transform:uppercase; }
+  .badge-pending   { background:#fff3cd; color:#856404; }
+  .badge-running   { background:#cfe2ff; color:#084298; }
+  .badge-claimed   { background:#e2d9f3; color:#432874; }
+  .badge-completed { background:#d1e7dd; color:#0a3622; }
+  .badge-failed    { background:#f8d7da; color:#842029; }
+  .badge-cancelled { background:#e2e3e5; color:#41464b; }
+
+  /* jobs table */
+  .jobs-table { width:100%; border-collapse:collapse; font-size:0.88rem; }
+  .jobs-table th { background:#f8f9fa; font-weight:600; padding:8px 10px; border-bottom:2px solid #dee2e6; text-align:left; }
+  .jobs-table td { padding:7px 10px; border-bottom:1px solid #f0f0f0; vertical-align:top; }
+  .jobs-table tr:hover td { background:#fafafa; }
+  .job-id   { font-family:monospace; font-size:0.78rem; color:#888; }
+  .job-err  { font-size:0.78rem; color:#842029; max-width:360px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:help; }
+
+  /* transcode progress */
+  #transcode-progress-wrap { margin-top:8px; display:none; }
+  #transcode-bar-outer { background:#e9ecef; border-radius:4px; height:10px; overflow:hidden; width:100%; }
+  #transcode-bar-inner { background:#3498db; height:100%; width:0%; transition:width 0.4s ease; border-radius:4px; }
+  #transcode-label { font-size:0.8rem; color:#555; margin-top:4px; }
+
+  /* analysis card */
+  .analysis-card { border-left:4px solid #3498db; padding:14px 18px; background:#f0f7ff; border-radius:0 6px 6px 0; }
+  .analysis-card h3 { margin:0 0 6px 0; font-size:1rem; }
+  .analysis-card p { margin:0 0 10px 0; color:#555; font-size:0.9rem; }
+  .btn { display:inline-block; padding:7px 16px; border-radius:5px; font-size:0.88rem; font-weight:600; cursor:pointer; text-decoration:none; }
+  .btn-primary { background:#3498db; color:#fff; }
+  .btn-primary:hover { background:#2980b9; text-decoration:none; }
+  .btn-sm { padding:4px 10px; font-size:0.8rem; }
+  .btn-outline { border:1px solid #3498db; color:#3498db; background:#fff; }
+  .btn-outline:hover { background:#ebf5fb; text-decoration:none; }
+
+  .gap { margin-top:16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="page-root">
+  <div class="card" style="margin-bottom:16px;" id="header-card">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:8px;">
+      <div>
+        <div style="font-size:0.8rem; color:#888; margin-bottom:4px;">
+          <a href="/videos">Videos</a> /
+        </div>
+        <h2 id="video-title" style="margin:0; font-size:1.4rem;">Loading…</h2>
+        <div id="video-channel" style="color:#666; margin-top:4px; font-size:0.9rem;"></div>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;" id="header-links">
+        <a class="btn btn-outline btn-sm" id="yt-link" href="https://youtube.com/watch?v={{ ytid }}" target="_blank" rel="noopener">YouTube ↗</a>
+      </div>
+    </div>
+    <div class="meta-grid" id="meta-grid"></div>
+  </div>
+
+  <!-- media player -->
+  <div class="card gap" id="player-card">
+    <div class="section-title">Media</div>
+    <div id="player-wrap"><div class="no-stream">Checking for local file…</div></div>
+  </div>
+
+  <!-- analysis -->
+  <div class="card gap" id="analysis-card" style="display:none;">
+    <div class="section-title">Analysis</div>
+    <div class="analysis-card">
+      <h3>Transcript Analysis Available</h3>
+      <p>This video has completed transcript analysis including summaries, topics, people, key points, and more.</p>
+      <a class="btn btn-primary" href="/video/{{ ytid }}/analysis">Open Analysis Detail →</a>
+    </div>
+  </div>
+
+  <!-- jobs -->
+  <div class="card gap">
+    <div class="section-title">Processing Jobs</div>
+    <div style="overflow:auto;">
+      <table class="jobs-table">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Job ID</th>
+            <th>Created</th>
+            <th>Updated</th>
+            <th>Error</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="jobs-body">
+          <tr><td colspan="6" style="color:#aaa; text-align:center; padding:20px;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- data links -->
+  <div class="card gap" style="font-size:0.85rem; color:#666;">
+    <div class="section-title">Data</div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <a href="/api/video/{{ ytid }}/transcript.txt">Transcript .txt</a>
+      <a href="/api/video/{{ ytid }}/segments">Segments JSON</a>
+      <a href="/api/video/{{ ytid }}/detail">Detail JSON</a>
+      <a href="/api/video/{{ ytid }}/overview">Overview JSON</a>
+      <a href="/jobs?ytid={{ ytid }}">All Jobs ↗</a>
+    </div>
+  </div>
+</div>
+
+<script>
+const ytid = {{ ytid | tojson }};
+
+const ERROR_CLASSES = [
+  [/members.only|membership required/i,          {label:'Members only',      bg:'#fff3cd', fg:'#856404'}],
+  [/video unavailable|has been removed|no longer available|private video/i, {label:'Unavailable', bg:'#f8d7da', fg:'#842029'}],
+  [/http error 403|403.*forbidden/i,             {label:'Blocked (403)',     bg:'#ffe5cc', fg:'#a04000'}],
+  [/playlist does not exist|playlist.*removed/i, {label:'Playlist gone',     bg:'#e2e3e5', fg:'#41464b'}],
+  [/reference\.json missing/i,                   {label:'Missing reference', bg:'#e2d9f3', fg:'#432874'}],
+  [/current transaction is aborted/i,            {label:'DB txn aborted',    bg:'#cfe2ff', fg:'#084298'}],
+  [/takes no arguments/i,                        {label:'Code bug',          bg:'#d1e7dd', fg:'#0a3622'}],
+  [/no such file or directory|file not found/i,  {label:'File missing',      bg:'#ffe5cc', fg:'#a04000'}],
+  [/chunk.*diarization failed/i,                 {label:'Diarization err',   bg:'#f8d7da', fg:'#842029'}],
+  [/no config|pre.refactor/i,                    {label:'No config',         bg:'#e2e3e5', fg:'#41464b'}],
+  [/\[Errno 2\]|rename.*no such/i,               {label:'Race / file gone',  bg:'#e2e3e5', fg:'#41464b'}],
+];
+
+function classifyError(msg) {
+  if (!msg) return null;
+  for (const [re, cls] of ERROR_CLASSES) {
+    if (re.test(msg)) return cls;
+  }
+  return {label:'Error', bg:'#f8d7da', fg:'#842029'};
+}
+
+function errorCell(msg) {
+  if (!msg) return '<span style="color:#ccc;">—</span>';
+  const cls = classifyError(msg);
+  const badge = cls
+    ? `<span style="display:inline-block;padding:1px 7px;border-radius:10px;font-size:0.72rem;font-weight:700;background:${cls.bg};color:${cls.fg};margin-bottom:4px;">${cls.label}</span>`
+    : '';
+  return `<details style="max-width:340px;">
+    <summary style="cursor:pointer;list-style:none;font-size:0.78rem;color:#888;">
+      ${badge}
+      <span style="color:#999;font-size:0.75rem;">${escapeHtml(msg.slice(0,60))}${msg.length>60?'…':''}</span>
+    </summary>
+    <pre style="margin:6px 0 0;padding:8px;background:#f8f9fa;border-radius:4px;font-size:0.72rem;white-space:pre-wrap;word-break:break-word;max-height:200px;overflow-y:auto;">${escapeHtml(msg)}</pre>
+  </details>`;
+}
+
+function badge(status) {
+  const s = (status || '').toLowerCase();
+  return `<span class="badge badge-${s}">${s}</span>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return iso.replace('T', ' ').slice(0, 16);
+}
+
+async function load() {
+  const res = await fetch(`/api/video/${ytid}/overview`);
+  const d = await res.json();
+
+  // Header
+  const v = d.video;
+  if (v) {
+    document.getElementById('video-title').textContent = v.title || ytid;
+    document.getElementById('video-channel').textContent = v.channel || '';
+    document.title = (v.title || ytid) + ' — VidOps';
+
+    const grid = document.getElementById('meta-grid');
+    const items = [
+      ['YTID', `<span style="font-family:monospace">${ytid}</span>`],
+      ['Date', v.title_date || v.upload_date || '—'],
+      ['Duration', v.duration_fmt || '—'],
+    ];
+    grid.innerHTML = items.map(([label, val]) =>
+      `<div class="meta-item"><label>${label}</label><span>${val}</span></div>`
+    ).join('');
+  } else {
+    document.getElementById('video-title').textContent = ytid;
+  }
+
+  // Player
+  const pw = document.getElementById('player-wrap');
+  if (d.has_stream) {
+    const isAudio = d.stream_kind === 'audio';
+    const tag = isAudio ? 'audio' : 'video';
+    const filename = escapeHtml(d.media_filename || '');
+    const fullpath = escapeHtml(d.media_path || '');
+    pw.innerHTML = `
+      <${tag} controls preload="metadata" src="/video/${ytid}/stream" style="margin-bottom:10px;"></${tag}>
+      <div style="margin-top:8px; font-size:0.82rem; color:#555; line-height:1.6;">
+        <div><strong>File:</strong> ${filename}</div>
+        <div style="font-family:monospace; font-size:0.78rem; color:#888; word-break:break-all; margin-bottom:6px;">${fullpath}</div>
+        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+          <a href="/video/${ytid}/stream" download="${filename}">⬇ Original (AV1)</a>
+          <a href="#" id="dl-h264-btn" style="cursor:pointer;">⬇ Download H.264</a>
+        </div>
+        <div id="transcode-progress-wrap">
+          <div id="transcode-bar-outer"><div id="transcode-bar-inner"></div></div>
+          <div id="transcode-label">Transcoding…</div>
+        </div>
+      </div>`;
+  } else {
+    pw.innerHTML = `<div class="no-stream">No local media file found for this video.</div>`;
+  }
+
+  // Analysis card
+  const hasAnalysis = d.jobs.some(j => j.job_type === 'analysis-distributed' && j.status === 'completed');
+  if (hasAnalysis) {
+    document.getElementById('analysis-card').style.display = '';
+  }
+
+  // Jobs table
+  const tbody = document.getElementById('jobs-body');
+  if (!d.jobs.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="color:#aaa; text-align:center; padding:20px;">No jobs found for this video.</td></tr>';
+    return;
+  }
+
+  // Group by type for ordering: show most recent per type at top, then rest
+  tbody.innerHTML = d.jobs.map(j => {
+    const errCell = errorCell(j.error_message);
+    const retryable = ['failed', 'cancelled'].includes((j.status || '').toLowerCase());
+    const retryBtn = retryable
+      ? `<button class="retry-btn" data-job-id="${escapeHtml(j.job_id)}" style="padding:3px 9px; font-size:0.78rem; border:1px solid #e6a817; background:#fff8e6; color:#a06000; border-radius:4px; cursor:pointer;">↺ Retry</button>`
+      : '';
+    return `<tr data-job-id="${escapeHtml(j.job_id)}">
+      <td><strong>${escapeHtml(j.job_type || '—')}</strong></td>
+      <td class="status-cell">${badge(j.status)}</td>
+      <td class="job-id">${escapeHtml(j.job_id || '—')}</td>
+      <td style="white-space:nowrap; color:#888;">${fmtDate(j.created_at)}</td>
+      <td style="white-space:nowrap; color:#888;">${fmtDate(j.updated_at)}</td>
+      <td>${errCell}</td>
+      <td>${retryBtn}</td>
+    </tr>`;
+  }).join('');
+}
+
+load();
+
+document.addEventListener('click', (e) => {
+  const dlBtn = e.target.closest('#dl-h264-btn');
+  if (dlBtn) {
+    e.preventDefault();
+    const wrap = document.getElementById('transcode-progress-wrap');
+    const bar  = document.getElementById('transcode-bar-inner');
+    const lbl  = document.getElementById('transcode-label');
+    if (wrap.style.display === 'block') return; // already running
+    wrap.style.display = 'block';
+    bar.style.width = '0%';
+    lbl.textContent = 'Transcoding… 0%';
+    dlBtn.style.opacity = '0.4';
+    dlBtn.style.pointerEvents = 'none';
+
+    const es = new EventSource(`/video/${ytid}/transcode-progress`);
+    es.onmessage = (ev) => {
+      const d = JSON.parse(ev.data);
+      if (d.error) {
+        lbl.textContent = 'Error: ' + d.error;
+        es.close();
+        dlBtn.style.opacity = '';
+        dlBtn.style.pointerEvents = '';
+        return;
+      }
+      bar.style.width = d.pct + '%';
+      if (d.ready) {
+        lbl.textContent = 'Done! Starting download…';
+      } else {
+        const fmt = s => `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+        const timeStr = d.total ? `${fmt(d.elapsed)} / ${fmt(d.total)}` : '';
+        lbl.textContent = `Transcoding… ${d.pct.toFixed(1)}%${timeStr ? '  (' + timeStr + ')' : ''}`;
+      }
+      if (d.ready) {
+        es.close();
+        window.location = `/video/${ytid}/download`;
+        setTimeout(() => {
+          wrap.style.display = 'none';
+          dlBtn.style.opacity = '';
+          dlBtn.style.pointerEvents = '';
+        }, 2000);
+      }
+    };
+    es.onerror = () => {
+      lbl.textContent = 'Connection lost — try again';
+      es.close();
+      wrap.style.display = 'none';
+      dlBtn.style.opacity = '';
+      dlBtn.style.pointerEvents = '';
+    };
+  }
+});
+
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.retry-btn');
+  if (!btn) return;
+  const jobId = btn.dataset.jobId;
+  btn.disabled = true;
+  btn.textContent = '…';
+  const res = await fetch(`/api/job/${jobId}/retry`, { method: 'POST' });
+  if (res.ok) {
+    const row = btn.closest('tr');
+    row.querySelector('.status-cell').innerHTML = badge('pending');
+    btn.remove();
+  } else {
+    const d = await res.json().catch(() => ({}));
+    btn.textContent = '↺ Retry';
+    btn.disabled = false;
+    alert(d.error || 'Retry failed');
+  }
+});
+</script>
+{% endblock %}

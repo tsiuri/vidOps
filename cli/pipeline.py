@@ -238,6 +238,7 @@ def enqueue_pipeline(
             priority=priority,
             force_download=force,
             ytdlp_overrides={"force_download": True, "no_overwrites": False} if force else None,
+            allow_duplicate=force,
         )
 
         download_job.config["pipeline_id"] = pipeline_id

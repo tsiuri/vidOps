@@ -204,3 +204,36 @@ tmux send-keys -t shared-workspace "ls -la" Enter
 - Database migrations added: `db/migrations/006_clip_transcription.sql` adds `transcripts` JSONB to `quickclip_clips` and `clip_id` nullable column to `assets` table
 - ClippingService flow: QuickClipService passes `session_id`, `transcribe_clips`, and transcription params → ClippingService.enqueue_manifest_job() stores them in job config → process_job() calls `_enqueue_clip_transcriptions()` after clip extraction
 - Transcription jobs inherit video's ytid and clip metadata for proper isolation (clip transcripts stored separately from full-video transcripts, preventing housekeeping confusion)
+
+## Current System State (2026-05-01)
+
+This system is a work in progress. The architecture is sound but the codebase has accumulated technical debt and rough edges from rapid iteration. Expect spaghetti in places — the goal going forward is to untangle it incrementally while keeping the pipeline running.
+
+### Infrastructure
+
+- **Primary host:** `motherbase-pc` (192.168.0.187) — Ryzen 9 5900X, RTX 3090 + RTX 3060, 96GB RAM
+- **Secondary host:** `7700k-pc` (192.168.0.180) — separate worker machine, also running Python 3.14 with same venv problem (not yet fixed as of this writing)
+- **Database:** PostgreSQL on 192.168.0.187:5432, database `transcripts`. Has a collation version mismatch warning (created under glibc 2.42, now on 2.43) — non-breaking but worth resolving with `ALTER DATABASE transcripts REFRESH COLLATION VERSION;`
+- **Storage broker:** Running from `vidops-server/` (separate repo/venv), handles the two-tier storage layer
+
+### Python / Venv Situation
+
+The system was designed for **Python 3.13** and all packages were installed against it. In February 2026 the Arch system upgraded `python3` → Python 3.14, which broke the venv silently: the symlinks followed the system default, Python 3.14 found no packages, and workers stopped being startable. The fix applied 2026-05-01: reinstalled `python313` from AUR (3.13.13) and relinked `.venv/bin/python3` to `/usr/bin/python3.13`. **Do not upgrade this venv to Python 3.14** — the ML/CUDA stack (torch 2.8.0+cu128, ctranslate2, faster-whisper, pyannote) would need to be re-validated and likely re-pinned. If the system Python changes again, re-check `.venv/bin/python3` points to the right binary.
+
+### Services (motherbase-pc)
+
+- `vidops-webui.service` (user systemd) — web UI on :5000 (analysis + QuickClip) and :8000 (monitoring). Running and enabled.
+- `vidops-overlord.service` (user systemd) — orchestration/heartbeat service. Running and enabled as of 2026-05-01 (was disabled/dead before the fix).
+- Workers are **not managed by systemd** — they are started manually in tmux sessions with `vo worker start general`. None were running as of the fix; queue had ~3,460 pending and ~1,225 failed jobs accumulated during the downtime.
+
+### Job Queue State
+
+As of 2026-05-01: ~3,460 pending, ~19 stale-running (cleaned by overlord on restart), ~1,225 failed, ~5,370 completed. The failed jobs predate the downtime and need triage — some may be retriable, others may reflect real pipeline errors that were never addressed.
+
+### Known Issues / Things to Dig Into
+
+- **1,225 failed jobs** — causes unknown, need to sample errors and categorize
+- **Secondary machine (192.168.0.180)** — same Python venv problem as primary, not yet fixed; `python313` needs to be installed there too and its venv relinked
+- **Collation mismatch** — cosmetic for now but should be fixed before any major DB work
+- **No worker auto-restart** — workers die and nothing brings them back; a systemd unit or overlord-managed restart would help
+- **Codebase has no current audit** — large portions of the pipeline have not been end-to-end tested since the refactor; treat anything outside the happy path with skepticism until verified

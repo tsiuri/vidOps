@@ -179,28 +179,65 @@ _ensure_modules(
 
 import click
 from db import close_pool
-from cli.status import status
-from cli.worker import worker
-from cli.download import download
-from cli.transcribe import transcribe
-from cli.clipping import clip
-from cli.overlord import overlord
-from cli.analysis import analyze
-from cli.diarization import diarize
-from cli.clips import clips
-from cli.dl_subs import dl_subs
-from cli.stitch import stitch
-from cli.voice import voice
-from cli.query_ids import query_ids
-from cli.convert_captions import convert_captions
-from cli.dates import dates
-from cli.extra_utils import extra_utils
-from cli.quickclip import quickclip
-from cli.pipeline import pipeline
-from cli.webui import webui
-from cli.hc_export import hc_export
-from cli.monitor import monitor
 from __init__ import __version__  # Import the version from the package
+
+
+def _webui_only_mode() -> bool:
+    """Avoid importing the full command graph when only the web UI is needed."""
+    if len(sys.argv) < 2:
+        return False
+    return sys.argv[1] == "webui"
+
+
+if _webui_only_mode():
+    from cli.webui import webui
+    _REGISTERED_COMMANDS = [webui]
+else:
+    from cli.status import status
+    from cli.worker import worker
+    from cli.download import download
+    from cli.transcribe import transcribe
+    from cli.clipping import clip
+    from cli.overlord import overlord
+    from cli.analysis import analyze
+    from cli.diarization import diarize
+    from cli.clips import clips
+    from cli.dl_subs import dl_subs
+    from cli.stitch import stitch
+    from cli.voice import voice
+    from cli.query_ids import query_ids
+    from cli.convert_captions import convert_captions
+    from cli.dates import dates
+    from cli.extra_utils import extra_utils
+    from cli.quickclip import quickclip
+    from cli.pipeline import pipeline
+    from cli.webui import webui
+    from cli.hc_export import hc_export
+    from cli.monitor import monitor
+
+    _REGISTERED_COMMANDS = [
+        status,
+        worker,
+        download,
+        transcribe,
+        clip,
+        overlord,
+        analyze,
+        diarize,
+        clips,
+        stitch,
+        dl_subs,
+        voice,
+        query_ids,
+        dates,
+        extra_utils,
+        convert_captions,
+        quickclip,
+        pipeline,
+        webui,
+        hc_export,
+        monitor,
+    ]
 
 @click.group(
     help="""
@@ -223,28 +260,8 @@ def cli():
     """VidOps - Unified Video Processing Toolkit"""
     pass
 
-# Register commands
-cli.add_command(status)
-cli.add_command(worker)
-cli.add_command(download)
-cli.add_command(transcribe)
-cli.add_command(clip)
-cli.add_command(overlord)
-cli.add_command(analyze)
-cli.add_command(diarize)
-cli.add_command(clips)
-cli.add_command(stitch)
-cli.add_command(dl_subs)
-cli.add_command(voice)
-cli.add_command(query_ids)
-cli.add_command(dates)
-cli.add_command(extra_utils)
-cli.add_command(convert_captions)
-cli.add_command(quickclip)
-cli.add_command(pipeline)
-cli.add_command(webui)
-cli.add_command(hc_export)
-cli.add_command(monitor)
+for _command in _REGISTERED_COMMANDS:
+    cli.add_command(_command)
 
 if __name__ == '__main__':
     try:

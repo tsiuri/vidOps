@@ -11,7 +11,7 @@ import uuid
 import json
 from datetime import datetime, timezone
 from typing import Optional
-from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort, Response
+from flask import Flask, render_template, request, jsonify, g, redirect, url_for, send_file, abort, Response, stream_with_context
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -48,12 +48,6 @@ from dal import (
 )
 from models import Job, JobStatus
 from configuration import get_project_root, load_config
-from services.download import DownloadService
-from services.clipping import ClippingService
-from services.quickclip import QuickClipService
-from services.hc_clip_render import HCClipRenderService
-from services.hc_finalization import HCProjectFinalizationService
-from services.hc_export import HCProjectExportService
 from db import get_connection
 
 
@@ -149,6 +143,10 @@ def _collect_quickclip_videos(sessions):
 
 def _create_quickclip_session(**kwargs):
     """Run QuickClipService.create_quickclip with fresh repositories/services."""
+    from services.download import DownloadService
+    from services.clipping import ClippingService
+    from services.quickclip import QuickClipService
+
     with QuickClipRepository() as quickclip_repo:
         video_repo = VideoRepository()
         job_repo = JobRepository()
@@ -904,7 +902,287 @@ def api_browse_videos():
 
 @app.route('/video/<ytid>')
 def video_detail_page(ytid: str):
+    return render_template('video_overview.html', ytid=ytid)
+
+
+@app.route('/video/<ytid>/analysis')
+def video_analysis_page(ytid: str):
     return render_template('video_detail.html', ytid=ytid)
+
+
+@app.route('/video/<ytid>/stream')
+def video_stream(ytid: str):
+    """Stream local video/audio file with range request support for seeking."""
+    import mimetypes
+    from pathlib import Path
+    video_repo = VideoRepository()
+    asset = video_repo.get_primary_asset(ytid, 'media')
+    if not asset:
+        asset = video_repo.get_primary_asset(ytid, 'audio')
+    if not asset:
+        abort(404, "No local media file for this video")
+
+    # Try the absolute path first (fast, no copy needed)
+    abs_path = Path(asset.path) if asset.path else None
+    if abs_path and abs_path.exists():
+        local_path = abs_path
+    else:
+        # Fall back to FilesystemCache for remote/relative paths
+        rel = asset.rel_path or asset.path
+        if not rel:
+            abort(404, "Asset has no path")
+        fs_cache = FilesystemCache()
+        try:
+            local_path = fs_cache.pull_to_cache(rel)
+        except FileNotFoundError:
+            abort(404, "Media file not found on disk")
+
+    mime, _ = mimetypes.guess_type(str(local_path))
+    return send_file(local_path, mimetype=mime or 'video/mp4', conditional=True)
+
+
+import threading
+_transcode_locks: dict[str, threading.Lock] = {}
+_transcode_locks_mutex = threading.Lock()
+
+def _get_transcode_lock(ytid: str) -> threading.Lock:
+    with _transcode_locks_mutex:
+        if ytid not in _transcode_locks:
+            _transcode_locks[ytid] = threading.Lock()
+        return _transcode_locks[ytid]
+
+
+def _resolve_media_path(ytid: str):
+    """Resolve the local filesystem path for a video's media asset."""
+    video_repo = VideoRepository()
+    asset = video_repo.get_primary_asset(ytid, 'media')
+    if not asset:
+        return None, None
+    abs_path = Path(asset.path) if asset.path else None
+    if abs_path and abs_path.exists():
+        return abs_path, asset
+    rel = asset.rel_path or asset.path
+    if not rel:
+        return None, asset
+    fs_cache = FilesystemCache()
+    try:
+        return fs_cache.pull_to_cache(rel), asset
+    except FileNotFoundError:
+        return None, asset
+
+
+@app.route('/sse-test')
+def sse_test():
+    import time
+    @stream_with_context
+    def gen():
+        for i in range(5):
+            yield f"data: {json.dumps({'i': i})}\n\n"
+            time.sleep(1)
+    return Response(gen(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/video/<ytid>/transcode-progress')
+def video_transcode_progress(ytid: str):
+    """SSE: transcode media to H.264 in a temp file, stream % progress events."""
+    import subprocess
+
+    local_path, asset = _resolve_media_path(ytid)
+    if not local_path:
+        def err():
+            yield f"data: {json.dumps({'error': 'Media file not found'})}\n\n"
+        return Response(err(), mimetype='text/event-stream')
+
+    tmp_path = Path(f'/tmp/vidops_h264_{ytid}.mp4')
+    stem = local_path.stem
+
+    # Get duration for progress calculation
+    dur_probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(local_path)],
+        capture_output=True, text=True
+    )
+    try:
+        duration_sec = float(dur_probe.stdout.strip())
+    except (ValueError, TypeError):
+        duration_sec = 0
+
+    # Check codec — skip transcode if already H.264
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(local_path)],
+        capture_output=True, text=True
+    )
+    codec = probe.stdout.strip()
+
+    lock = _get_transcode_lock(ytid)
+    if not lock.acquire(blocking=False):
+        def busy():
+            yield f"data: {json.dumps({'error': 'Transcode already in progress for this video'})}\n\n"
+        return Response(busy(), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @stream_with_context
+    def generate():
+        import shutil
+        if not codec or codec == "h264":
+            shutil.copy2(str(local_path), str(tmp_path))
+            lock.release()
+            yield f"data: {json.dumps({'pct': 100, 'ready': True})}\n\n"
+            return
+
+        proc = subprocess.Popen(
+            ["ffmpeg", "-y", "-i", str(local_path),
+             "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+             "-c:a", "aac", "-b:a", "192k",
+             "-movflags", "+faststart",
+             "-progress", "pipe:1",
+             str(tmp_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        current = {}
+        try:
+            for line_bytes in iter(proc.stdout.readline, b''):
+                line = line_bytes.decode('utf-8', errors='replace')
+                k, _, v = line.strip().partition('=')
+                current[k] = v.strip()
+                if k == 'progress':
+                    raw_us = current.get('out_time_us', '0') or '0'
+                    out_us = int(raw_us) if raw_us.lstrip('-').isdigit() else 0
+                    frame = int(current.get('frame', 0) or 0)
+                    elapsed = out_us / 1_000_000
+                    done = v.strip() == 'end'
+                    if done:
+                        pct = 100.0
+                    elif duration_sec and elapsed > 0:
+                        pct = min(99.9, elapsed / duration_sec * 100)
+                    else:
+                        pct = 0.0
+                    yield f"data: {json.dumps({'pct': round(pct, 2), 'elapsed': int(elapsed), 'total': int(duration_sec), 'frame': frame})}\n\n"
+                    if done:
+                        break
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+            proc.kill()
+            lock.release()
+            return
+        proc.wait()
+        lock.release()
+        if proc.returncode != 0:
+            yield f"data: {json.dumps({'error': 'ffmpeg transcode failed'})}\n\n"
+            return
+        yield f"data: {json.dumps({'pct': 100, 'ready': True})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/video/<ytid>/download')
+def video_download(ytid: str):
+    """Serve the pre-transcoded H.264 temp file."""
+    tmp_path = Path(f'/tmp/vidops_h264_{ytid}.mp4')
+    if not tmp_path.exists():
+        abort(404, "Transcoded file not ready — trigger via transcode-progress first")
+    local_path, _ = _resolve_media_path(ytid)
+    stem = local_path.stem if local_path else ytid
+    return send_file(tmp_path, mimetype='video/mp4', as_attachment=True,
+                     download_name=f'{stem}.mp4')
+
+
+@app.route('/api/video/<ytid>/overview')
+def api_video_overview(ytid: str):
+    """Return video metadata, all jobs, and stream availability for the overview page."""
+    from db import get_connection
+    data = {'ytid': ytid, 'video': None, 'jobs': [], 'has_stream': False}
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT ytid, title, upload_date, title_date, channel, duration_sec FROM videos WHERE ytid = %s",
+                (ytid,)
+            )
+            row = cur.fetchone()
+            if row:
+                dur = row[5]
+                if dur:
+                    h, rem = divmod(int(dur), 3600)
+                    m, s = divmod(rem, 60)
+                    duration_fmt = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+                else:
+                    duration_fmt = None
+                data['video'] = {
+                    'ytid': row[0],
+                    'title': row[1],
+                    'upload_date': str(row[2]) if row[2] else None,
+                    'title_date': str(row[3]) if row[3] else None,
+                    'channel': row[4],
+                    'duration_sec': dur,
+                    'duration_fmt': duration_fmt,
+                }
+
+            cur.execute(
+                """
+                SELECT job_id, job_type, status, error_message, created_at, updated_at, priority
+                FROM jobs WHERE ytid = %s ORDER BY created_at DESC
+                """,
+                (ytid,)
+            )
+            for r in cur.fetchall():
+                data['jobs'].append({
+                    'job_id': r[0],
+                    'job_type': r[1],
+                    'status': r[2],
+                    'error_message': r[3],
+                    'created_at': r[4].isoformat() if r[4] else None,
+                    'updated_at': r[5].isoformat() if r[5] else None,
+                    'priority': r[6],
+                })
+
+    try:
+        video_repo = VideoRepository()
+        asset = video_repo.get_primary_asset(ytid, 'media') or video_repo.get_primary_asset(ytid, 'audio')
+        data['has_stream'] = asset is not None
+        if asset:
+            data['stream_kind'] = asset.kind if hasattr(asset, 'kind') else 'media'
+            data['media_path'] = asset.path or None
+            data['media_filename'] = Path(asset.path).name if asset.path else None
+    except Exception:
+        pass
+
+    return jsonify(data)
+
+
+@app.route('/api/job/<job_id>/retry', methods=['POST'])
+def api_job_retry(job_id: str):
+    """Reset a failed or cancelled job back to pending so workers can pick it up."""
+    from db import get_connection
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status FROM jobs WHERE job_id = %s",
+                (job_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({'error': 'Job not found'}), 404
+            if row[0] not in ('failed', 'FAILED', 'cancelled', 'CANCELLED'):
+                return jsonify({'error': f"Job is {row[0]}, only failed/cancelled jobs can be retried"}), 400
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    error_message = NULL,
+                    claimed_by = NULL,
+                    claimed_at = NULL,
+                    updated_at = NOW()
+                WHERE job_id = %s
+                """,
+                (job_id,)
+            )
+        conn.commit()
+    return jsonify({'ok': True, 'job_id': job_id})
 
 
 @app.route('/api/video/<ytid>/detail')
@@ -3124,6 +3402,8 @@ def hc_clip_render_action(clip_id: str):
     output_root = (request.form.get('output_root') or '').strip() or None
     mode = (request.form.get('mode') or 'copy').strip()
     fmt = (request.form.get('format') or 'mp4').strip()
+    from services.hc_clip_render import HCClipRenderService
+
     svc = HCClipRenderService()
     try:
         svc.render_clip(
@@ -3149,6 +3429,8 @@ def hc_clip_rebuild_action(clip_id: str):
     mode = (request.form.get('mode') or 'copy').strip()
     fmt = (request.form.get('format') or 'mp4').strip()
     render_now = (request.form.get('render_now') or '').strip() == '1'
+    from services.hc_clip_render import HCClipRenderService
+
     svc = HCClipRenderService()
     try:
         svc.rebuild_clip(
@@ -3219,6 +3501,8 @@ def hc_project_create_run(project_id: str):
 @app.route('/hc/projects/<project_id>/finalize', methods=['POST'])
 def hc_project_finalize_action(project_id: str):
     reason = (request.form.get('reason') or '').strip() or None
+    from services.hc_finalization import HCProjectFinalizationService
+
     svc = HCProjectFinalizationService()
     try:
         svc.finalize_project(project_id, actor='webui', reason=reason)
@@ -3237,6 +3521,8 @@ def hc_project_export_action(project_id: str):
     output_root = (request.form.get('output_root') or '').strip() or None
     allow_nonfinalized = (request.form.get('allow_nonfinalized') or '').strip() == '1'
     no_assets = (request.form.get('no_assets') or '').strip() == '1'
+
+    from services.hc_export import HCProjectExportService
 
     svc = HCProjectExportService()
     try:
@@ -3266,6 +3552,8 @@ def api_hc_project_finalize(project_id: str):
     reason = payload.get('reason') or None
     policy = payload.get('policy') or None
     force = bool(payload.get('force', False))
+    from services.hc_finalization import HCProjectFinalizationService
+
     svc = HCProjectFinalizationService()
     try:
         result = svc.finalize_project(project_id, actor=str(actor), reason=reason, policy=policy, force=force)
@@ -3421,6 +3709,8 @@ def api_hc_clip_render(clip_id: str):
     actor = (request.json or {}).get('actor') or 'user'
     output_root = (request.json or {}).get('output_root')
     render_params = (request.json or {}).get('render_params')
+    from services.hc_clip_render import HCClipRenderService
+
     svc = HCClipRenderService()
     try:
         result = svc.render_clip(clip_id=clip_id, actor=actor, output_root=output_root, render_params=render_params)
@@ -3436,6 +3726,8 @@ def api_hc_clip_rebuild(clip_id: str):
     output_root = (request.json or {}).get('output_root')
     render_params = (request.json or {}).get('render_params')
     render_now = bool((request.json or {}).get('render_now', True))
+    from services.hc_clip_render import HCClipRenderService
+
     svc = HCClipRenderService()
     try:
         result = svc.rebuild_clip(
