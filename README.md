@@ -102,3 +102,5 @@ Two user systemd services on motherbase: `vidops-webui.service` (web UI on `:500
 ## Status
 
 Architecture is settled and the pipeline runs end-to-end. The operator surfaces are mid-consolidation: CLI and web UI duplicate work in places, and the goal is for the web UI to become the primary surface with the CLI staying as a thin client over the same `services/` layer. In-progress design and implementation plans live in `docs/superpowers/specs/` and `docs/superpowers/plans/` once written.
+
+Legacy scripts and bash bridges are being progressively retired in favour of native Python implementations. **If you find yourself missing a piece of functionality, search the codebase (and `git log`) for the keywords, command names, or method names you remember** — most things have a native replacement, and deprecated bash scripts have been moved to [`docs/deprecated_scripts/`](docs/deprecated_scripts/) rather than deleted, so they remain accessible if a workflow truly relies on them.

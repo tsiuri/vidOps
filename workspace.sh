@@ -96,7 +96,6 @@ EXTRA UTILITIES (use: ./workspace.sh extra-utils)
   Standalone scripts (see EXTRA_UTILS.md, e.g., ~/bq_netservices/vidops/EXTRA_UTILS.md):
     scripts/utilities/mark_success.sh
     scripts/utilities/quality_report.py
-    scripts/utilities/repair_archive.sh
     scripts/utilities/map_ids_to_files.py
     scripts/utilities/sort_clips.py
     scripts/video_processing/concat_filter_from_list.sh
@@ -121,7 +120,6 @@ TOOLS
   See EXTRA_UTILS.md for the full list and usage details.
 
 EXAMPLES
-  ./workspace.sh extra-utils repair_archive.sh --report
   ./workspace.sh extra-utils map_ids_to_files.py
 EOF
             ;;
@@ -951,9 +949,6 @@ cmd_extra_utils() {
             ;;
         quality_report.py)
             python3 "$TOOL_ROOT/scripts/utilities/quality_report.py" "$@"
-            ;;
-        repair_archive.sh)
-            "$TOOL_ROOT/scripts/utilities/repair_archive.sh" "$@"
             ;;
         map_ids_to_files.py)
             python3 "$TOOL_ROOT/scripts/utilities/map_ids_to_files.py" "$@"
