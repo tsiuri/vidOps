@@ -125,12 +125,14 @@ fi
 
 # Optional provenance regeneration (before any reporting/cleaning)
 if [[ "${REGEN_PROV:-0}" -eq 1 ]]; then
-  # Source common helpers to get ensure_src_json
-  if [[ -f scripts/utilities/clips_templates/common.sh ]]; then
+  # Source common helpers to get ensure_src_json. Resolve relative to this
+  # script's own location so the path survives the script being moved.
+  COMMON_SH="$(dirname "$(readlink -f "$0")")/clips_templates/common.sh"
+  if [[ -f "$COMMON_SH" ]]; then
     # shellcheck source=/dev/null
-    source scripts/utilities/clips_templates/common.sh
+    source "$COMMON_SH"
   else
-    echo "common.sh not found at scripts/utilities/clips_templates/common.sh" >&2
+    echo "common.sh not found at $COMMON_SH" >&2
     exit 1
   fi
   created=0; present=0; checked=0

@@ -39,44 +39,31 @@ workspace.sh - Unified CLI for video processing workspace
 USAGE
   ./workspace.sh <command> [options]
 
-COMMANDS
-  download <url>              Download videos from YouTube
-  clips <subcommand>          Clip operations (hits, cut-local, cut-net, refine)
-  dl-subs <action>            Download auto-generated subtitles/captions
+COMMANDS (legacy bash bridges — most operator-facing flows are now in `vo` CLI)
+  analyze <transcripts...>    AI-powered transcript analysis (Ollama bridge)
   extra-utils <tool|help>     Run extra utilities (see EXTRA_UTILS.md)
-  voice <action>              Voice filtering operations
-  diarize [options]           Reference-guided diarization (Resemblyzer)
-  transcribe [options]        Multi-GPU transcription with Whisper (auto-detects NVIDIA GPUs)
-  analyze <transcripts...>    AI-powered transcript analysis
-  convert-captions            Convert VTT captions to words.yt.tsv
-  stitch <method>             Stitch videos together
-  dates <action>              Date-based file management
-  gpu <action>                GPU binding management (to-nvidia requires sudo)
   dbupdate [database]         Full DB ingest/update pipeline (prompts)
+  gpu <action>                GPU binding management (to-nvidia requires sudo)
   info                        Show workspace information
   help [command]              Show help for a command
 
+The download / clips / cuts / transcribe / diarize / dl-subs / voice / stitch /
+dates / convert-captions subcommands have been removed from this script —
+they are now native Python implementations reachable via `vo <subcommand>`.
+See README.md for the equivalents.
+
 EXAMPLES
-  # Download a video
-  ./workspace.sh download "https://youtube.com/watch?v=..."
+  # AI transcript analysis (still bridged from this script)
+  ./workspace.sh analyze pull/*.transcript.en.vtt
 
-  # Find clips with phrases
-  ./workspace.sh clips hits -q "phrase1,phrase2"
+  # Run an extra utility
+  ./workspace.sh extra-utils map_ids_to_files.py
 
-  # Filter by Hasan's voice
-  ./workspace.sh voice filter --clips-dir media/clips/raw
-
-  # Reference-guided diarization (Resemblyzer)
-  ./workspace.sh diarize --ytids-file ytids.txt --workers 3 --device cuda --verbose
-
-  # Stitch videos (batch method)
-  ./workspace.sh stitch batch media/clips/input/ media/final/output.mp4
-
-  # Find missing dates
-  ./workspace.sh dates find-missing data/dates.txt /path/to/search
+  # Show GPU binding status
+  ./workspace.sh gpu status
 
   # Show help for specific command
-  ./workspace.sh help voice
+  ./workspace.sh help analyze
 
 For detailed help on any command, use: ./workspace.sh help <command>
 
@@ -123,216 +110,6 @@ EXAMPLES
   ./workspace.sh extra-utils map_ids_to_files.py
 EOF
             ;;
-        download)
-            cat <<'EOF'
-DOWNLOAD - Download videos from YouTube
-
-USAGE
-  ./workspace.sh download <url> [--force|--no-download-archive]
-  ./workspace.sh download <channel-handle> [--force]
-  ./workspace.sh download --from-list <file>
-  ./workspace.sh download --retry-failed [<failed_urls.txt>] [extra yt-dlp flags]
-
-OPTIONS
-  --force                Force redownload even if in archive
-  --no-download-archive  Same as --force
-  --retry-failed         Retry the most recent logs/pull/*.failed_urls.txt (or provided file)
-
-EXAMPLES
-  # Download single video
-  ./workspace.sh download "https://youtube.com/watch?v=VIDEO_ID"
-
-  # Download from channel
-  ./workspace.sh download "@channelhandle"
-
-  # Force redownload a video already in archive
-  ./workspace.sh download "URL" --force
-
-  # Download from list
-  ./workspace.sh download --from-list data/download_list.txt
-
-  # Retry failed entries from last run (forces reattempt)
-  ./workspace.sh download --retry-failed --force
-
-OUTPUT
-  Downloads go to: pull/
-EOF
-            ;;
-        clips)
-            cat <<'EOF'
-CLIPS - Clip detection and extraction
-
-USAGE
-  ./workspace.sh clips <subcommand> [options]
-
-SUBCOMMANDS
-  hits [-q "phrase"] [-o output.tsv]    Find clips with phrases
-  cut-local <tsv> [outdir]              Cut from local files
-  cut-net <tsv> [outdir]                Cut from network
-  refine -q WORD [indir] [outdir]       Refine existing clips
-
-EXAMPLES
-  # Find clips with phrases
-  ./workspace.sh clips hits -q "interesting,phrase" -o results/wanted.tsv
-
-  # Exact hits using words timestamps with padding
-  PAD_START=0.25 PAD_END=0.50 \
-    ./workspace.sh clips hits --words --exact -q "hasan abi"
-
-  # Cut from local files
-  ./workspace.sh clips cut-local results/wanted.tsv media/clips/raw
-
-  # Refine clips
-  ./workspace.sh clips refine -q "hasan" media/clips/raw media/clips/refined
-
-For full clips.sh documentation, see scripts/utilities/clips.sh help
-EOF
-            ;;
-        dl-subs)
-            cat <<'EOF'
-DL-SUBS - Download auto-generated subtitles
-
-USAGE
-  ./workspace.sh dl-subs <action> [options]
-
-ACTIONS
-  subs-only <URL> [format]    Download only subtitles for a single video
-  batch <file> [format]       Batch download subtitles from URL list
-  from-dir <dir> [format]     Discover video IDs from media files in a directory and download subs for each
-
-FORMATS
-  vtt     Video Text Tracks (default, includes timestamps)
-  srt     SubRip format (includes timestamps)
-  json3   JSON format (structured data)
-
-EXAMPLES
-  # Download subs for a single video
-  ./workspace.sh dl-subs subs-only "https://www.youtube.com/watch?v=VIDEO_ID"
-
-  # Batch download subs from a list
-  ./workspace.sh dl-subs batch url_list.txt vtt
-
-  # Download subs for all media files in a directory
-  ./workspace.sh dl-subs from-dir pull/ vtt
-
-NOTES
-  from-dir:
-    - Scans only the top-level of <dir> (non-recursive)
-    - Expects filenames to start with the 11-char YouTube ID followed by "__"
-      e.g., ObWv-_aPiXI__2025-11-19 - Title.ext
-    - Deduplicates IDs discovered in the directory
-    - Supports common media extensions (mp4, mkv, mov, avi, mp3, wav, m4a, opus, webm)
-    - Saves subtitles into pull/ matching the standard naming scheme
-
-OUTPUT
-  Subtitles saved to: pull/
-  Filename format: {video_id}__{upload_date} - {title}.transcript.{lang}.{format}
-  Example: Bldyb2JvaF0__2019-05-21 - Title Here.transcript.en.vtt
-
-NOTE
-  Videos downloaded via ./workspace.sh download now automatically include auto-generated subtitles.
-EOF
-            ;;
-        voice)
-            cat <<'EOF'
-VOICE - Voice filtering operations
-
-USAGE
-  ./workspace.sh voice <action> [options]
-
-ACTIONS
-  filter              Run voice filter (prompts for method)
-  filter-simple       Simple single-threaded filter
-  filter-parallel     Parallel filter (fast)
-  filter-chunked      Chunked parallel filter (most reliable)
-  extract             Extract matching clips from results
-
-EXAMPLES
-  # Filter clips (interactive - will prompt for method)
-  ./workspace.sh voice filter \
-    --clips-dir media/clips/raw \
-    --reference-dir data/reference_clips
-
-  # Use specific method (chunked, recommended)
-  ./workspace.sh voice filter-chunked \
-    --clips-dir media/clips/raw \
-    --reference-dir data/reference_clips \
-    --output results/voice_filtered/results.json \
-    --threshold 0.65 \
-    --chunk-size 200
-
-  # Filter with glob pattern and custom workers
-  ws voice filter \
-    --reference voice_reference/* \
-    --output filtered \
-    --workers 23 \
-    --chunk-size 200 \
-    filter_source
-
-  # Extract matching clips to text file
-  ./workspace.sh voice extract results/voice_filtered/results.json
-
-OUTPUT
-  Results go to: results/voice_filtered/
-  Extracted list: results/voice_filtered/hasan_clips.txt
-EOF
-            ;;
-        diarize)
-            cat <<'EOF'
-DIARIZE - Reference-guided diarization (Resemblyzer)
-
-USAGE
-  ./workspace.sh diarize --ytid <id[,id2,...]> [options]
-  ./workspace.sh diarize --ytids-file ytids.txt [options]
-
-DESCRIPTION
-  Wrapper for scripts/diarization/run_resemblyzer_diarization.py.
-  Requires audio in pull/ (or --audio) and a reference under
-  generated/diary_reference/<ytid>/reference.json. Words can come from local
-  generated/*.words.tsv (default) or directly from PostgreSQL via
-  --use-db-words. You can also send spans to the DB with --write-db. When
-  reading from DB, local outputs are written to generated/from-db/<subdir>/.
-  If missing, you will be prompted to build reference clips interactively.
-  Multiple speakers are supported in a single pass when reference.json has
-  multiple speaker entries; the interactive helper gathers one named speaker
-  at a time, so add more clips/speakers to the reference if you want
-  multi-speaker labeling.
-
-OPTIONS
-  --ytid <id[,id2,...]>         Single or comma-separated YouTube ID(s) to process
-  --ytids-file <file>           File with one ytid per line (batch)
-  --ytids-from-dir <dir>        Derive ytids from media filenames in a directory
-  --audio <path>                Override audio path (single ytid runs)
-  --words <path>                Override words TSV path (local mode)
-  --use-db-words                Pull words from Postgres instead of local TSVs
-  --db-words-source <src>       Preferred words.source (whisper|yt) when using DB
-  --db-host <host>              DB host [default: ${DB_HOST:-192.168.0.187}]
-  --db-port <port>              DB port [default: ${DB_PORT:-5432}]
-  --db-name <name>              DB name [default: ${DB_NAME:-transcripts}]
-  --db-user <user>              DB user (optional)
-  --db-password <pw>            DB password (optional)
-  --db-path-prefix <path>       Prefix to prepend to DB transcript paths (e.g., /mnt)
-  --write-db                    Insert spans into diarized_timestamps table (requires --use-db-words)
-  --db-append                   Keep existing DB spans (default replaces per ytid)
-  --device <auto|cuda|cpu>      Encoder device [default: auto]
-  --workers <n>                 Parallel workers for batch runs [default: config diarization-workers or 3]
-  --build-reference             Force building reference clips before run
-  --chunk-seconds <sec>         Chunk length [default: 6.0]
-  --overlap-seconds <sec>       Chunk overlap [default: 1.0]
-  --similarity-threshold <f>    Cosine similarity threshold [default: 0.6]
-  --gap-threshold <sec>         Slack matching words to segments [default: 0.15]
-  --verbose                     Verbose logging
-
-EXAMPLE
-  ./workspace.sh diarize --ytids-file ytids.txt --workers 3 --device cuda --verbose
-  ./workspace.sh diarize --ytids-file ytids.txt --use-db-words --db-host 192.168.0.187 --write-db --verbose
-
-OUTPUT
-  generated/diarization_resemblyzer/<ytid>/diarized_timestamps.tsv
-  generated/diarization_resemblyzer/<ytid>/speaker_words.tsv
-  generated/diarization_resemblyzer/<ytid>/diarization.json
-EOF
-            ;;
         dbupdate)
             cat <<'EOF'
 DBUPDATE - Full Postgres ingest/update pipeline
@@ -356,77 +133,6 @@ OUTPUTS
 
 NOTE
   You can run steps individually via scripts/db/* if you prefer.
-EOF
-            ;;
-        stitch)
-            cat <<'EOF'
-STITCH - Concatenate videos
-
-USAGE
-  ./workspace.sh stitch <method> <input-dir> <output-file> [sort-method]
-
-METHODS
-  batch               Batch approach (most reliable, recommended)
-  cfr                 Constant frame rate (fast)
-  simple              Simple re-encode
-
-SORT METHODS
-  date_timestamp      Sort by date then timestamp (recommended)
-  timestamp           Sort by timestamp only
-  name                Sort alphabetically
-  time                Sort by file modification time
-
-EXAMPLES
-  # Stitch with batch method (recommended)
-  ./workspace.sh stitch batch \
-    media/clips/confirmedPiker1/ \
-    media/final/output.mp4 \
-    date_timestamp
-
-  # Stitch with CFR method (faster, may have issues)
-  ./workspace.sh stitch cfr \
-    media/clips/confirmedPiker1/ \
-    media/final/output.mp4 \
-    date_timestamp
-
-OUTPUT
-  Final videos go to specified path (recommend: media/final/)
-EOF
-            ;;
-        dates)
-            cat <<'EOF'
-DATES - Date-based file management
-
-USAGE
-  ./workspace.sh dates <action> [options]
-
-ACTIONS
-  find-missing        Find + print text list of which dates, of a list of dates in a textfile, don't have a corresponding youtube video file of that date.  (ex, check every calendar day for a VOD)
-  create-list         Creates a download list of videos from missing dates NOTE: for fixing files with metadata and no corresponding video!  For fixing partial downloads!
-  move                Moves .opus files whose filenames contain a specific “Month Day, Year” date that matches a provided list, plus any sidecar .json files sharing the same base name.
-  compare               - Compares dates present in your local “podcasts” (.opus files under pull/) against dates present in a txt list of YouTube video IDs. Outputs three sets: only in podcasts, only in archive, and in both.  For deduplicating VODs from overlapping sources.
-
-
-EXAMPLES
-  # Find missing dates
-  ./workspace.sh dates find-missing \
-    --dates-file data/dates_to_pull.txt \
-    --search-dir /path/to/existing/files \
-    --output data/missing_dates.txt
-
-  # Create download list
-  ./workspace.sh dates create-list \
-    data/missing_dates.txt \
-    /path/to/archive_metadata_cache.json
-
-  # Move files by date
-  ./workspace.sh dates move \
-    --dates-file data/dates.txt \
-    --source-dir /path/to/source \
-    --dest-dir media/clips/selected
-
-OUTPUT
-  Results go to: data/ (lists) or specified paths
 EOF
             ;;
         gpu)
@@ -453,95 +159,6 @@ NOTE
   - Rebinding will affect running GPU applications
   - After rebinding to nvidia, you may need to restart display manager
   - Only affects GPU at 0000:05:00.0 and its audio cohort at 0000:05:00.1
-EOF
-            ;;
-        transcribe)
-            cat <<'EOF'
-TRANSCRIBE - Multi-GPU batch transcription with Whisper
-
-USAGE
-  ./workspace.sh transcribe [options]
-
-DESCRIPTION
-  Transcribes all media files in pull/ using NVIDIA GPUs in parallel (with optional CPU workers)
-  Automatically detects and uses all available NVIDIA GPUs
-  Outputs transcriptions to generated/ directory
-  NEW: Fragmentation is enabled by default to split long files into chunks (sequential, single GPU, one model load).
-
-COMMON OPTIONS
-  --model <size>              Whisper model (tiny|base|small|medium|large) [default: medium]
-  --language <code>           Force language (en, es, etc) or empty for auto [default: en]
-  --force                     Re-transcribe even if .txt already exists
-  --outfmt <format>           Output format: vtt|srt|both [default: vtt]
-  --filelist <file>           Read media paths from file (one per line, bypasses directory search)
-  --batch-retry               Process retry manifests (re-transcribe low-confidence segments)
-  --follow / --no-follow      Live-tail logs [default: --follow]
-  --setup-venvs               Create/update virtual environments (first-time setup)
-  --no-fragment               Disable chunked mode and use legacy whole-file path
-  --chunk-len <seconds>       Chunk length (default: CHUNK_LEN=3600)
-  --chunk-overlap <seconds>   Overlap between chunks (default: CHUNK_OVERLAP=5)
-  --tmp-dir <path>            Temp dir for chunk media (default: PROJECT_ROOT/tmp/transcribe_chunks)
-
-MULTI-GPU CONTROL
-  NUM_GPU_WORKERS=auto        auto=use all detected GPUs, or specify number (1, 2, 3, etc.)
-  GPU_DEVICES=0,1             Comma-separated GPU indices to use (empty=use all detected)
-  FRAGMENT=0                  Disable fragmentation globally (defaults to on)
-  FRAG_TMPDIR=/path           Override temp chunk root
-  KEEP_FRAGMENTS=1            Keep extracted chunk media (debugging)
-
-EXAMPLES
-  # First-time setup (creates virtual environments)
-  ./workspace.sh transcribe --setup-venvs
-
-  # Regular transcription (auto-detects and uses all GPUs)
-  ./workspace.sh transcribe
-
-  # Use only first 2 GPUs
-  NUM_GPU_WORKERS=2 ./workspace.sh transcribe
-
-  # Use specific GPUs (e.g., GPU 0 and GPU 2)
-  GPU_DEVICES=0,2 ./workspace.sh transcribe
-
-  # Transcribe specific files from a list
-  ./workspace.sh transcribe --filelist my_videos.txt
-
-  # Use larger model for better accuracy
-  ./workspace.sh transcribe --model large
-
-  # Force re-transcribe with SRT format
-  ./workspace.sh transcribe --force --outfmt srt
-
-  # Process retry manifests to fix low-confidence segments
-  ./workspace.sh transcribe --batch-retry
-
-  # Dry run to see what would be retried
-  ./workspace.sh transcribe --batch-retry --dry-run
-
-  # Enable CPU worker alongside GPUs
-  ENABLE_CPU=1 ./workspace.sh transcribe
-
-  # Enable legacy AMD/ROCm worker (deprecated, disabled by default)
-  ENABLE_AMD=1 ./workspace.sh transcribe
-
-INPUT
-  Searches for media in: pull/ (or current dir if pull/ doesn't exist)
-  Or use --filelist to specify exact files to transcribe
-  Supported formats: mp4, mkv, mov, avi, mp3, wav, m4a, opus
-
-OUTPUT
-  Transcriptions go to: generated/
-  Logs go to: logs/nv0.log, logs/nv1.log, logs/cpu.log (per-GPU logs for multi-GPU)
-  Retry manifests: generated/*.retry_manifest.tsv (low-confidence segments)
-
-NOTE
-  Requires GPU access. For NVIDIA multi-GPU setup, see the script help:
-  ./scripts/transcription/dual_gpu_transcribe.sh --help
-
-  To re-transcribe low-confidence segments, use --batch-retry after transcription
-  After transcription completes, this command also runs:
-    ./scripts/transcription/detect_dupe_hallu.py
-  to generate an additional dupe_hallu.retry_manifest.tsv (when seed manifests exist),
-  which you can include in a subsequent --batch-retry.
 EOF
             ;;
         analyze)
@@ -614,40 +231,6 @@ NOTE
     4. Install Python deps: pip install -r scripts/analysis/requirements.txt
 EOF
             ;;
-        convert-captions)
-            cat <<'EOF'
-CONVERT-CAPTIONS - Convert VTT captions to words.yt.tsv
-
-USAGE
-  ./workspace.sh convert-captions [options] [files...]
-
-DESCRIPTION
-  Converts YouTube VTT subtitle files (pull/*.transcript.en.vtt) into the
-  words.yt.tsv format used by other tools. Each cue is split into words and
-  timestamps are distributed evenly per word. Confidence defaults to 0.0
-  unless present as a preceding "NOTE Confidence:" line in the VTT.
-
-OPTIONS
-  --source-dir <dir>     Source directory (default: pull)
-  --dest-dir <dir>       Destination directory (default: generated)
-  --overwrite            Overwrite existing *.words.yt.tsv
-  --dry-run              Show actions without writing
-
-EXAMPLES
-  # Convert all VTTs in pull/ to generated/*.words.yt.tsv
-  ./workspace.sh convert-captions
-
-  # Overwrite existing outputs
-  ./workspace.sh convert-captions --overwrite
-
-  # Convert specific files
-  ./workspace.sh convert-captions pull/VIDEO__*.transcript.en.vtt
-
-OUTPUT
-  Writes: generated/{BASE}.words.yt.tsv
-  BASE: filename without .transcript.en.vtt
-EOF
-            ;;
         info)
             cat <<'EOF'
 INFO - Show workspace information
@@ -688,252 +271,8 @@ show_info() {
     echo ""
 }
 
-cmd_download() {
-    if [[ "${1:-}" == "--from-list" ]]; then
-        local list_file="${2:-}"
-        shift 2 || true
-        if [[ -z "$list_file" ]]; then
-            echo "Error: --from-list requires a file path"
-            exit 1
-        fi
-        echo "Downloading from list: $list_file"
-        # Consolidate logs across this batch using a shared prefix
-        mkdir -p "$PROJECT_ROOT/logs/pull" 2>/dev/null || true
-        local ts lp
-        ts="$(date -u '+%Y%m%d_%H%M%SZ')"
-        lp="$PROJECT_ROOT/logs/pull/${ts}"
-        export PULL_LOG_PREFIX="$lp"
-        # Enable cookies-first for from-list when the list likely contains failed URLs
-        if [[ "$list_file" == *"failed_urls.txt"* ]]; then
-            export PULL_COOKIES_FIRST=1
-        fi
-        # Ensure fresh files for this prefix
-        rm -f "${lp}.requested.tsv" "${lp}.succeeded.tsv" "${lp}.failed.tsv" "${lp}.failed_urls.txt" 2>/dev/null || true
-        while read -r url; do
-            [[ -z "$url" ]] && continue
-            [[ "$url" =~ ^# ]] && continue
-            "$TOOL_ROOT/clips.sh" pull "$url" "$@"
-        done < "$list_file"
-    elif [[ "${1:-}" == "--retry-failed" ]]; then
-        shift || true
-        local list_file="${1:-}"
-        # If a file path isn't provided or doesn't exist, pick the latest logs/pull/*.failed_urls.txt
-        if [[ -z "$list_file" || ! -f "$list_file" ]]; then
-            # pick the latest non-empty failed_urls file
-            list_file=""
-            for f in $(ls -1t "$PROJECT_ROOT/logs/pull"/*.failed_urls.txt 2>/dev/null || true); do
-                if [[ -s "$f" ]]; then list_file="$f"; break; fi
-            done
-        else
-            # consume the explicit file arg
-            shift || true
-        fi
-        if [[ -z "$list_file" || ! -f "$list_file" ]]; then
-            echo "Error: No failed_urls.txt found. Run a download first to generate logs under logs/pull/."
-            exit 1
-        fi
-        if [[ ! -s "$list_file" ]]; then
-            echo "Found failed list but it is empty: $list_file"
-            echo "Looking for previous non-empty failed list..."
-            alt=""
-            for f in $(ls -1t "$PROJECT_ROOT/logs/pull"/*.failed_urls.txt 2>/dev/null || true); do
-                [[ "$f" == "$list_file" ]] && continue
-                if [[ -s "$f" ]]; then alt="$f"; break; fi
-            done
-            if [[ -n "$alt" ]]; then
-                echo "Using previous non-empty list: $alt"
-                list_file="$alt"
-            else
-                echo "No non-empty failed list found. Nothing to retry."
-                exit 0
-            fi
-        fi
-        echo "Retrying failed URLs from: $list_file"
-        # Consolidate logs across this retry batch
-        mkdir -p "$PROJECT_ROOT/logs/pull" 2>/dev/null || true
-        local ts lp
-        ts="$(date -u '+%Y%m%d_%H%M%SZ')"
-        lp="$PROJECT_ROOT/logs/pull/${ts}"
-        export PULL_LOG_PREFIX="$lp"
-        export PULL_COOKIES_FIRST=1
-        rm -f "${lp}.requested.tsv" "${lp}.succeeded.tsv" "${lp}.failed.tsv" "${lp}.failed_urls.txt" 2>/dev/null || true
-        while read -r url; do
-            [[ -z "$url" ]] && continue
-            [[ "$url" =~ ^# ]] && continue
-            # Always force for retries; also forward any extra args after --retry-failed
-            "$TOOL_ROOT/clips.sh" pull "$url" --force "$@"
-        done < "$list_file"
-    else
-        "$TOOL_ROOT/clips.sh" pull "$@"
-    fi
-}
-
-cmd_clips() {
-    "$TOOL_ROOT/clips.sh" "$@"
-}
-
-cmd_dl_subs() {
-    local action="${1:-}"
-    if [[ -z "$action" ]]; then
-        "$TOOL_ROOT/clips.sh" transcripts help
-        return
-    fi
-    if [[ "$action" == "from-dir" ]]; then
-        shift || true
-        local dir="${1:-}"
-        local format="${2:-vtt}"
-        if [[ -z "$dir" || ! -d "$dir" ]]; then
-            echo "Error: from-dir requires a valid directory"
-            echo "Usage: ./workspace.sh dl-subs from-dir <dir> [format]"
-            exit 1
-        fi
-        echo "Discovering media in: $dir"
-        # Ensure output location exists when clips layer writes to pull/
-        mkdir -p "$PROJECT_ROOT/pull" 2>/dev/null || true
-        # Supported media extensions (align with transcribe)
-        local exts=(mp4 mkv mov avi mp3 wav m4a opus webm)
-        declare -A seen
-        local total=0 ok=0 fail=0
-        while IFS= read -r -d '' f; do
-            local bn id url
-            bn="$(basename "$f")"
-            id="$(printf '%s' "$bn" | sed -nE 's/^([A-Za-z0-9_-]{11})__.*/\1/p')"
-            if [[ -z "$id" ]]; then
-                continue
-            fi
-            if [[ -n "${seen[$id]:-}" ]]; then
-                continue
-            fi
-            seen[$id]=1
-            url="https://www.youtube.com/watch?v=$id"
-            (( total++ ))
-            echo "[$total] Downloading subs for $id ($bn)"
-            if "$TOOL_ROOT/clips.sh" transcripts subs-only "$url" "$format"; then
-                (( ok++ ))
-            else
-                (( fail++ ))
-            fi
-        done < <(find "$dir" -maxdepth 1 -type f \( -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.avi' -o -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' -o -iname '*.opus' -o -iname '*.webm' \) -print0)
-        echo "Done. Processed: $total, Succeeded: $ok, Failed: $fail"
-        return
-    fi
-    "$TOOL_ROOT/clips.sh" transcripts "$@"
-}
-
-cmd_voice() {
-    local action="${1:-}"
-    shift || true
-    local VENV_WRAPPER="$TOOL_ROOT/scripts/voice_filtering/voicefil_w_venv.sh"
-
-    case "$action" in
-        filter)
-            echo "Select voice filter method:"
-            echo "  1) Simple (single-threaded)"
-            echo "  2) Parallel (fast, multi-core)"
-            echo "  3) Chunked (most reliable, recommended)"
-            read -p "Choice [3]: " choice
-            choice=${choice:-3}
-
-            case "$choice" in
-                1) "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@" ;;
-                2) "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@" ;;
-                3) "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@" ;;
-                *) echo "Invalid choice"; exit 1 ;;
-            esac
-            ;;
-        filter-simple)
-            "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice.py" "$@"
-            ;;
-        filter-parallel)
-            "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel.py" "$@"
-            ;;
-        filter-chunked)
-            "$VENV_WRAPPER" "$TOOL_ROOT/scripts/voice_filtering/filter_voice_parallel_chunked.py" "$@"
-            ;;
-        extract)
-            local results_file="${1:-$PROJECT_ROOT/results/voice_filtered/results.json}"
-            local output_file="${2:-$PROJECT_ROOT/results/voice_filtered/matched_clips.txt}"
-
-            echo "Extracting matching clips from: $results_file"
-            # Ensure output directory exists
-            mkdir -p "$(dirname "$output_file")" 2>/dev/null || true
-            python3 -c "
-import json
-with open('$results_file') as f:
-    data = json.load(f)
-with open('$output_file', 'w') as out:
-    for clip in data['results']:
-        if clip.get('is_match', clip.get('is_hasan', False)):
-            out.write(f\"{clip['clip_path']}\n\")
-print(f\"Extracted to: $output_file\")
-"
-            ;;
-        *)
-            echo "Error: Unknown voice action: $action"
-            echo "Use: ./workspace.sh help voice"
-            exit 1
-            ;;
-    esac
-}
-
-cmd_diarize() {
-    python3 "$TOOL_ROOT/scripts/diarization/run_resemblyzer_diarization.py" "$@"
-}
-
-cmd_transcribe() {
-    # Helper: run hallucination detection to generate dupe_hallu retry manifests
-    run_dupe_hallu_detection() {
-        # Collect unprocessed retry manifests to seed media discovery
-        local manifests
-        mapfile -t manifests < <(find "$PROJECT_ROOT/generated" -maxdepth 1 -type f -name "*.retry_manifest.tsv" ! -name "*.processed" 2>/dev/null | sort || true)
-        if [[ ${#manifests[@]} -eq 0 ]]; then
-            # Nothing to seed from; skip silently
-            return 0
-        fi
-        echo "Detecting repeated-phrase hallucinations (dupe hallu)…"
-        # Best-effort: do not fail overall flow if detector exits non-zero
-        python3 "$TOOL_ROOT/scripts/transcription/detect_dupe_hallu.py" "${manifests[@]}" || true
-    }
-
-    local use_fragment=1
-    if [[ "${FRAGMENT:-1}" == "0" ]]; then
-        use_fragment=0
-    fi
-    local _args=()
-    for a in "$@"; do
-        case "$a" in
-            --no-fragment|--no-fragments|--no-chunk|--no-fragmented)
-                use_fragment=0
-                ;;
-            --fragment|--fragmented|--chunked)
-                use_fragment=1
-                ;;
-            *)
-                _args+=("$a")
-                ;;
-        esac
-    done
-    set -- "${_args[@]}"
-
-    # Check if --batch-retry is requested
-    for arg in "$@"; do
-        if [[ "$arg" == "--batch-retry" ]]; then
-            "$TOOL_ROOT/scripts/transcription/batch_retry.sh" "$@"
-            return
-        fi
-    done
-    # Normal transcription: use multi-worker pipeline; fragmentation happens inside workers when needed
-    "$TOOL_ROOT/scripts/transcription/dual_gpu_transcribe.sh" "$@"
-    # Post-processing: generate dupe_hallu retry manifests (if any seed manifests exist)
-    run_dupe_hallu_detection
-}
-
 cmd_analyze() {
     python3 "$TOOL_ROOT/scripts/analysis/analyze_transcript.py" "$@"
-}
-
-cmd_convert_captions() {
-    "$TOOL_ROOT/scripts/utilities/convert-captions.sh" "$@"
 }
 
 cmd_extra_utils() {
@@ -971,60 +310,6 @@ cmd_extra_utils() {
         *)
             echo "Error: Unknown extra utility: $tool"
             echo "Use: ./workspace.sh help extra-utils"
-            exit 1
-            ;;
-    esac
-}
-
-cmd_stitch() {
-    # If no args, show help instead of defaulting silently
-    if [[ $# -eq 0 ]]; then
-        show_command_help stitch
-        return 0
-    fi
-
-    local method="${1:-batch}"
-    shift || true
-
-    case "$method" in
-        batch|batched)
-            "$TOOL_ROOT/scripts/video_processing/stitch_videos_batched.sh" "$@"
-            ;;
-        cfr)
-            "$TOOL_ROOT/scripts/video_processing/stitch_videos_cfr.sh" "$@"
-            ;;
-        simple)
-            "$TOOL_ROOT/scripts/video_processing/stitch_videos.sh" "$@" 1
-            ;;
-        *)
-            echo "Error: Unknown stitch method: $method"
-            echo "Available: batch, cfr, simple"
-            echo "Use: ./workspace.sh help stitch"
-            exit 1
-            ;;
-    esac
-}
-
-cmd_dates() {
-    local action="${1:-}"
-    shift || true
-
-    case "$action" in
-        find-missing)
-            python3 "$TOOL_ROOT/scripts/date_management/find_missing_dates.py" "$@"
-            ;;
-        create-list)
-            python3 "$TOOL_ROOT/scripts/date_management/create_download_list.py" "$@"
-            ;;
-        move)
-            python3 "$TOOL_ROOT/scripts/date_management/move_files_by_date.py" "$@"
-            ;;
-        compare)
-            python3 "$TOOL_ROOT/scripts/date_management/extract_and_compare_dates.py" "$@"
-            ;;
-        *)
-            echo "Error: Unknown dates action: $action"
-            echo "Use: ./workspace.sh help dates"
             exit 1
             ;;
     esac
@@ -1085,24 +370,6 @@ main() {
                 show_command_help "$1"
             fi
             ;;
-        download|dl)
-            cmd_download "$@"
-            ;;
-        clips|clip)
-            cmd_clips "$@"
-            ;;
-        dl-subs)
-            cmd_dl_subs "$@"
-            ;;
-        voice|filter)
-            cmd_voice "$@"
-            ;;
-        diarize)
-            cmd_diarize "$@"
-            ;;
-        transcribe|trans)
-            cmd_transcribe "$@"
-            ;;
         analyze)
             cmd_analyze "$@"
             ;;
@@ -1111,15 +378,6 @@ main() {
             ;;
         dbupdate)
             bash "$TOOL_ROOT/scripts/db/import_videos.sh" "${1:-transcripts}"
-            ;;
-        convert-captions)
-            cmd_convert_captions "$@"
-            ;;
-        stitch|concat)
-            cmd_stitch "$@"
-            ;;
-        dates|date)
-            cmd_dates "$@"
             ;;
         gpu)
             cmd_gpu "$@"

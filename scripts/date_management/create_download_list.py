@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Create a download list from missing dates by matching against archive metadata cache.
-Output format: YouTube URLs for clips.sh pull
+Output format: YouTube URLs (one per line) suitable for `vo download enqueue`.
 """
 
 import sys
@@ -90,10 +90,10 @@ def main():
     print(f"  Download list written to: {output_file}")
     print(f"  Total URLs: {len(matched_videos)}")
     print(f"\n[USAGE]")
-    print(f"  You can now download these with:")
-    print(f"    while read url; do ./clips.sh pull \"$url\"; done < {output_file}")
-    print(f"  Or download one at a time:")
-    print(f"    ./clips.sh pull \"$(head -1 {output_file})\"")
+    print(f"  You can now enqueue these via the vo CLI:")
+    print(f"    while read url; do vo download enqueue \"$url\"; done < {output_file}")
+    print(f"  Or one at a time:")
+    print(f"    vo download enqueue \"$(head -1 {output_file})\"")
 
     # Show sample
     if matched_videos:
