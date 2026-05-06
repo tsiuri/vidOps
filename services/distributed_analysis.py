@@ -3,9 +3,10 @@
 """
 Distributed analysis service for GenericWorker integration.
 
-This is now a thin bridge that delegates to the full-featured AnalysisWorker
-implementation so the dedicated worker CLI and the GenericWorker path share
-one code path (DB store, spans, drills, etc.).
+This is a thin bridge that delegates directly to ``services.analysis_engine.AnalysisEngine``.
+The dedicated worker CLI (``workers/analysis_distributed.py``) and this bridge are both
+thin clients of the same engine; all DB store / spans / drills / aggregation logic lives
+in the engine.
 """
 
 import logging
@@ -14,13 +15,13 @@ from typing import List, Optional
 from pathlib import Path
 
 from models import Job, JobStatus
-from workers.analysis_distributed import AnalysisWorker
 from configuration import load_config
 from dal import TranscriptRepository
 from utils.path_utils import resolve_db_path
 from scripts.analysis.analyze_to_db import create_analysis_job, export_vtt_from_db
 from scripts.analysis.analyze_transcript import TranscriptChunker, VTTParser
 from scripts.analysis.analysis_config import AnalysisConfig
+from services.analysis_engine import AnalysisEngine
 from db import get_connection
 
 logger = logging.getLogger(__name__)
@@ -28,12 +29,12 @@ logger = logging.getLogger(__name__)
 
 class DistributedAnalysisService:
     """
-    Bridge between GenericWorker (jobs table) and the distributed analysis worker.
+    Bridge between GenericWorker (jobs table) and the distributed analysis engine.
 
     When GenericWorker claims a job with job_type="analysis-distributed" (or the
-    legacy "analysis" alias), we hydrate an AnalysisWorker instance and run the
-    job's analysis_tasks through the same pass implementations used by the
-    dedicated distributed worker.
+    legacy "analysis" alias), we instantiate an ``AnalysisEngine`` directly and
+    run the job's analysis_tasks through the same pass implementations used by
+    the dedicated distributed worker.
     """
 
     def __init__(
@@ -63,9 +64,9 @@ class DistributedAnalysisService:
     def process_job(self, job: Job) -> None:
         """
         Main entry point for GenericWorker.
-        Processes a distributed analysis job using the shared AnalysisWorker.
+        Processes a distributed analysis job by invoking AnalysisEngine directly.
         """
-        worker: Optional[AnalysisWorker] = None
+        engine: Optional[AnalysisEngine] = None
         if not job.ytid:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job missing ytid.")
             return
@@ -84,36 +85,28 @@ class DistributedAnalysisService:
                 except Exception:
                     logger.warning("Failed to persist analysis_job_id for %s", job.job_id, exc_info=True)
 
-            # Worker's settings take precedence over job config (for multi-GPU setups)
-            # This allows workers with --gpu flags to override job defaults
+            # Worker's settings take precedence over job config (for multi-GPU setups).
+            # This allows workers with --gpu flags to override job defaults.
             model_url = self.model_url or job.config.get("model_url")
             model_name = self.model_name or job.config.get("model_name")
             model_profile_id = self.model_profile_id or job.config.get("model_profile_id")
-            machine_alias = self.machine_alias or job.claimed_by or self.db_host
-            # VRAM filtering now happens at claim time via jobs.config->>'required_vram_gb'
-            # No need to check again here - if we claimed it, we have enough VRAM
+            # VRAM filtering now happens at claim time via jobs.config->>'required_vram_gb'.
+            # No need to check again here - if we claimed it, we have enough VRAM.
             task_profile_id = self._get_model_profile_for_job(analysis_job_id)
 
-            worker = AnalysisWorker(
-                machine_alias=machine_alias,
-                worker_type="analysis_bridge",
-                model_url=model_url,
+            engine = AnalysisEngine(
                 model_name=model_name,
-                available_vram_gb=self.available_vram_gb,
+                model_url=model_url,
                 model_profile_id=model_profile_id or task_profile_id,
-                db_host=self.db_host,
-                db_name=self.db_name,
-                db_user=self.db_user,
-                db_password=self.db_password,
-                lease_duration_minutes=60,
-                metrics_port=0,  # disable metrics server for the bridge path
+                machine_alias=self.machine_alias,
             )
 
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING)
 
-            job_result = worker.engine.process_job(
+            worker_id = job.claimed_by or self.machine_alias or "bridge"
+            job_result = engine.process_job(
                 analysis_job_id,
-                worker_id=worker.worker_id,
+                worker_id=worker_id,
                 force_job_level=True,
             )
             success = job_result.aggregate_status in ("ok", "partial")
@@ -154,8 +147,8 @@ class DistributedAnalysisService:
 
         finally:
             try:
-                if worker:
-                    worker.shutdown()
+                if engine:
+                    engine.shutdown()
             except Exception:
                 pass
 

@@ -97,32 +97,24 @@ class AnalysisWorker:
 
         self.worker_id = f"{machine_alias}:{worker_type}:{model_name}:{os.getpid()}"
         self.config = load_config()
-        self.is_bridge_mode = worker_type == "analysis_bridge"
 
-        # Only create worker registration if not running as bridge
-        # (Bridge mode = running within GenericWorker, which handles worker registration)
-        if not self.is_bridge_mode:
-            self.worker_repo = WorkerRepository()
-            self.worker_obj = Worker(
-                worker_id=self.worker_id,
-                machine_alias=self.machine_alias,
-                worker_type=self.worker_type,
-                status=WorkerStatus.REGISTERING,
-                vram_gb=self.available_vram_gb,
-                pid=os.getpid(),
-                hostname=platform.node(),
-            )
-            self.heartbeat = WorkerHeartbeat(
-                worker_repo=self.worker_repo,
-                worker_id=self.worker_id,
-                interval_seconds=self.config.workers.heartbeat_interval,
-                job_repo=None,
-                logger=logger,
-            )
-        else:
-            self.worker_repo = None
-            self.worker_obj = None
-            self.heartbeat = None
+        self.worker_repo = WorkerRepository()
+        self.worker_obj = Worker(
+            worker_id=self.worker_id,
+            machine_alias=self.machine_alias,
+            worker_type=self.worker_type,
+            status=WorkerStatus.REGISTERING,
+            vram_gb=self.available_vram_gb,
+            pid=os.getpid(),
+            hostname=platform.node(),
+        )
+        self.heartbeat = WorkerHeartbeat(
+            worker_repo=self.worker_repo,
+            worker_id=self.worker_id,
+            interval_seconds=self.config.workers.heartbeat_interval,
+            job_repo=None,
+            logger=logger,
+        )
 
         # DB + repos
         self.db = AnalysisDatabase(
@@ -197,37 +189,33 @@ class AnalysisWorker:
         worker_vram_gb_gauge.labels(worker_id=self.worker_id).set(self.available_vram_gb)
 
         self._register_worker()
-        if self.heartbeat:
-            self.heartbeat.start()
+        self.heartbeat.start()
 
     def _register_worker(self) -> None:
-        if not self.is_bridge_mode:
-            self.worker_repo.register(self.worker_obj)
-            self._update_worker_status(WorkerStatus.IDLE)
+        self.worker_repo.register(self.worker_obj)
+        self._update_worker_status(WorkerStatus.IDLE)
 
     def _update_worker_status(self, status: WorkerStatus, current_job_id: Optional[str] = None) -> None:
-        if not self.is_bridge_mode:
-            self.worker_obj.status = status
-            self.worker_obj.current_job_id = current_job_id
-            
-            # Sanitize job_id: The 'workers' table has a foreign key to 'jobs'.
-            # Analysis IDs (legacy format with colons) are NOT in 'jobs', so using them
-            # causes a crash. Only pass job_ids that look like generic jobs (no colons).
-            safe_job_id = current_job_id
-            if safe_job_id and ":" in safe_job_id:
-                safe_job_id = None
+        self.worker_obj.status = status
+        self.worker_obj.current_job_id = current_job_id
 
-            self.worker_repo.update_status(
-                self.worker_id,
-                status,
-                current_job_id=safe_job_id,
-                worker_type=self.worker_type,
-            )
+        # Sanitize job_id: The 'workers' table has a foreign key to 'jobs'.
+        # Analysis IDs (legacy format with colons) are NOT in 'jobs', so using them
+        # causes a crash. Only pass job_ids that look like generic jobs (no colons).
+        safe_job_id = current_job_id
+        if safe_job_id and ":" in safe_job_id:
+            safe_job_id = None
+
+        self.worker_repo.update_status(
+            self.worker_id,
+            status,
+            current_job_id=safe_job_id,
+            worker_type=self.worker_type,
+        )
 
     def shutdown(self) -> None:
         """Clean up resources when used outside the long-running loop."""
-        if self.heartbeat:
-            self.heartbeat.stop()
+        self.heartbeat.stop()
         self._update_worker_status(WorkerStatus.STOPPING)
         if self.metrics_server:
             try:
@@ -283,8 +271,7 @@ class AnalysisWorker:
                         continue
 
                     self.current_task = task
-                    if self.heartbeat:
-                        self.heartbeat.set_current_job(task.job_id)
+                    self.heartbeat.set_current_job(task.job_id)
                     self._update_worker_status(WorkerStatus.BUSY, task.job_id)
 
                     # Record task claim in metrics
@@ -399,8 +386,7 @@ class AnalysisWorker:
                         ).set(datetime.now(timezone.utc).timestamp())
 
                     self.current_task = None
-                    if self.heartbeat:
-                        self.heartbeat.set_current_job(None)
+                    self.heartbeat.set_current_job(None)
                     self._update_worker_status(WorkerStatus.IDLE)
                     worker_current_task_gauge.labels(worker_id=self.worker_id).set(0)
 
@@ -428,8 +414,7 @@ class AnalysisWorker:
                     time.sleep(5)
         finally:
             logger.info("Worker %s shutting down", self.worker_id)
-            if self.heartbeat:
-                self.heartbeat.stop()
+            self.heartbeat.stop()
             self._update_worker_status(WorkerStatus.STOPPING)
             if self.metrics_server:
                 try:

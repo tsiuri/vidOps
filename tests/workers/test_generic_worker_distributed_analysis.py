@@ -59,7 +59,11 @@ def test_generic_worker_can_get_distributed_analysis_service():
 
 
 def test_distributed_analysis_job_handling(test_analysis_job):
-    """Test that a distributed analysis job is properly handled by the service."""
+    """Test that a distributed analysis job is properly handled by the service.
+
+    The bridge must instantiate AnalysisEngine directly (not AnalysisWorker) and
+    call engine.process_job(...) with the analysis_job_id.
+    """
     from services.analysis_engine import JobResult
 
     service = get_distributed_analysis_service()
@@ -72,25 +76,64 @@ def test_distributed_analysis_job_handling(test_analysis_job):
         duration_s=0.42,
     )
 
-    # Mock the database operations
+    # Patch AnalysisEngine inside the bridge so we don't touch DB / Ollama.
+    fake_engine = MagicMock()
+    fake_engine.process_job.return_value = fake_result
+
     with patch.object(service, "job_repo") as mock_job_repo:
         with patch(
-            "services.analysis_engine.AnalysisEngine.process_job",
-            return_value=fake_result,
-        ) as mock_process:
-            with patch("services.distributed_analysis.AnalysisWorker.shutdown"):
+            "services.distributed_analysis.AnalysisEngine",
+            return_value=fake_engine,
+        ) as mock_engine_cls:
+            service.process_job(test_analysis_job)
+
+            # Engine was constructed once (not AnalysisWorker)
+            mock_engine_cls.assert_called_once()
+            # Engine.process_job called with the analysis_job_id from job.config
+            fake_engine.process_job.assert_called_once()
+            args, kwargs = fake_engine.process_job.call_args
+            analysis_job_id = (args[0] if args else kwargs.get("analysis_job_id"))
+            assert analysis_job_id == "test_ytid:test_config:1234567890"
+            assert "worker_id" in kwargs
+            # Engine cleanup should happen in the finally block
+            fake_engine.shutdown.assert_called_once()
+
+            # Verify job status was updated to RUNNING
+            mock_job_repo.update_status.assert_any_call(
+                test_analysis_job.job_id,
+                JobStatus.RUNNING,
+            )
+
+            # Verify job status was updated to COMPLETED
+            calls = [call[0] for call in mock_job_repo.update_status.call_args_list]
+            assert any(JobStatus.COMPLETED == call[1] for call in calls)
+
+
+def test_bridge_does_not_construct_analysis_worker(test_analysis_job):
+    """Bridge must not instantiate AnalysisWorker — it goes through AnalysisEngine directly."""
+    from services.analysis_engine import JobResult
+
+    service = get_distributed_analysis_service()
+    fake_result = JobResult(
+        job_id="test_ytid:test_config:1234567890",
+        tasks_total=1,
+        tasks_ok=1,
+        tasks_failed=0,
+        aggregate_status="ok",
+        duration_s=0.01,
+    )
+    fake_engine = MagicMock()
+    fake_engine.process_job.return_value = fake_result
+
+    # If the bridge were still instantiating AnalysisWorker, this patch would fire.
+    with patch.object(service, "job_repo"):
+        with patch(
+            "services.distributed_analysis.AnalysisEngine",
+            return_value=fake_engine,
+        ):
+            with patch("workers.analysis_distributed.AnalysisWorker") as mock_worker_cls:
                 service.process_job(test_analysis_job)
-
-                mock_process.assert_called_once()
-                # Verify job status was updated to RUNNING
-                mock_job_repo.update_status.assert_any_call(
-                    test_analysis_job.job_id,
-                    JobStatus.RUNNING,
-                )
-
-                # Verify job status was updated to COMPLETED
-                calls = [call[0] for call in mock_job_repo.update_status.call_args_list]
-                assert any(JobStatus.COMPLETED == call[1] for call in calls)
+                mock_worker_cls.assert_not_called()
 
 
 def test_distributed_analysis_service_missing_ytid():

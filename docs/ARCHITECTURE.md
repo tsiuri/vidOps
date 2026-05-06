@@ -89,7 +89,7 @@ Skip flags (`--skip-download`, `--skip-transcription`, `--skip-diarization`, `--
 | Stitch | `vo stitch enqueue` | Native ffmpeg concat |
 | dl-subs | `vo dl-subs enqueue` | Native yt-dlp |
 | Voice filter | `vo voice enqueue` | Native Python (`scripts/voice_filtering/filter_voice_*.py`) |
-| Analyze (distributed) | `vo analyze enqueue-distributed` | Native (`workers/analysis_distributed.py` + `services/distributed_analysis.py`) |
+| Analyze (distributed) | `vo analyze enqueue-distributed` | Native (`services/analysis_engine.py:AnalysisEngine` is the single home of analysis logic; both `workers/analysis_distributed.py` and `services/distributed_analysis.py` are thin clients that instantiate it) |
 | QuickClip | `vo quickclip create` | Native pipeline + optional per-clip transcription |
 | Hits & Clips DAG | web UI / `vo worker start` | Native (`workers/general.py` claims `hc_project_run`) |
 | **Analyze (legacy)** | `vo analysis enqueue` | **Bridges to `workspace.sh analyze`** |
