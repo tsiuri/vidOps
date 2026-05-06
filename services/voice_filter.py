@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -75,7 +74,7 @@ class VoiceFilterService:
 
     def process_job(self, job: Job) -> None:
         """
-        Execute voice filtering for a claimed job via the legacy workspace.sh bridge.
+        Execute voice filtering for a claimed job via the native runner.
         """
         if not job.ytid:
             self.job_repo.update_status(job.job_id, JobStatus.FAILED, "Job missing ytid.")

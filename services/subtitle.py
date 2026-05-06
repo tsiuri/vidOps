@@ -451,6 +451,3 @@ class SubtitleService:
             if os.environ.get("VIDOPS_PROJECT_ROOT")
             else Path(__file__).resolve().parents[1]
         )
-
-    def _workspace_sh(self) -> Path:
-        return Path(__file__).resolve().parents[1] / "workspace.sh"

@@ -232,9 +232,9 @@ class TranscriptionService:
             vtt_path.write_text(vtt_content, encoding="utf-8")
             words_path.write_text(words_tsv_content, encoding="utf-8")
 
-            # 4a. Maintain legacy layout/naming under generated/ for downstream tools
-            legacy_root = self._ensure_legacy_workspace_dirs()
-            generated_dir = legacy_root / "generated"
+            # 4a. Write outputs under generated/ so downstream tools find them
+            workspace_root = self._ensure_workspace_dirs()
+            generated_dir = workspace_root / "generated"
             legacy_vtt = generated_dir / vtt_path.name
             legacy_words = generated_dir / words_path.name
             try:
@@ -713,10 +713,10 @@ class TranscriptionService:
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def _ensure_legacy_workspace_dirs(self) -> Path:
+    def _ensure_workspace_dirs(self) -> Path:
         """
-        Ensure legacy workspace directories (pull/generated/logs/tmp) exist and
-        return the workspace root. This preserves legacy layouts for downstream tools.
+        Ensure workspace directories (pull/generated/logs/tmp) exist and return
+        the workspace root. Downstream tools expect outputs at these paths.
         """
         workspace_root = Path(
             os.environ.get("VIDOPS_PROJECT_ROOT")
@@ -730,151 +730,6 @@ class TranscriptionService:
         for d in (pull_dir, generated_dir, logs_dir, tmp_dir):
             d.mkdir(parents=True, exist_ok=True)
         return workspace_root
-
-    def _prepare_legacy_inputs(self, media_local_path: Path, job: Job) -> Tuple[Path, Path, Path]:
-        """
-        Place media where legacy scripts expect it (PROJECT_ROOT/pull) and build a filelist for workspace.sh.
-        Returns (workspace_root, legacy_media_path, filelist_path).
-        """
-        # Reconstruct exactly where legacy expects files: under the worker's project root, not the repo root
-        workspace_root = Path(
-            os.environ.get("VIDOPS_PROJECT_ROOT")
-            or os.environ.get("PWD")
-            or Path.cwd()
-        ).resolve()
-        logger.info("Transcribe staging workspace_root=%s", workspace_root)
-
-        pull_dir = workspace_root / "pull"
-        generated_dir = workspace_root / "generated"
-        logs_dir = workspace_root / "logs" / "transcribe"
-        tmp_dir = workspace_root / "tmp"
-
-        for d in (pull_dir, generated_dir, logs_dir, tmp_dir):
-            d.mkdir(parents=True, exist_ok=True)
-
-        legacy_media_path = pull_dir / media_local_path.name
-        if not legacy_media_path.exists():
-            shutil.copy2(media_local_path, legacy_media_path)
-
-        filelist_path = tmp_dir / f"{job.job_id}_filelist.txt"
-        filelist_path.write_text(str(legacy_media_path) + "\n", encoding="utf-8")
-        return workspace_root, legacy_media_path, filelist_path
-
-    def _run_legacy_transcribe(
-        self,
-        workspace_root: Path,
-        filelist_path: Path,
-        model_name: str,
-        language: Optional[str],
-        job: Job,
-    ) -> subprocess.CompletedProcess:
-        """Invoke the legacy workspace.sh transcribe path with DB-provided args."""
-        tool_root = Path(__file__).resolve().parents[1]
-        workspace_sh = tool_root / "workspace.sh"
-        cmd = [
-            "bash",
-            str(workspace_sh),
-            "transcribe",
-            "--model",
-            model_name,
-            "--filelist",
-            str(filelist_path),
-            "--outfmt",
-            "both",
-            "--force",
-        ]
-        if language:
-            cmd.extend(["--language", language])
-
-        env = os.environ.copy()
-        # Keep PROJECT_ROOT aligned with the legacy path (project root, not cache)
-        env["PROJECT_ROOT"] = str(workspace_root)
-        logger.info("Running legacy transcribe command: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_root,
-            env=env,
-            capture_output=False,  # inherit stdout/stderr so operators can see progress
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            logger.info("Legacy transcribe completed for job %s", job.job_id)
-        else:
-            logger.warning(
-                "Legacy transcribe returned %s for job %s",
-                result.returncode,
-                job.job_id,
-            )
-        return result
-
-    def _locate_legacy_outputs(self, workspace_root: Path, ytid: str) -> Tuple[Path, Path]:
-        """Find VTT and words outputs produced by the legacy runner."""
-        generated_dir = workspace_root / "generated"
-        if not generated_dir.exists():
-            raise FileNotFoundError(f"Legacy generated dir missing: {generated_dir}")
-
-        vtt_candidates = list(generated_dir.rglob(f"*{ytid}*.vtt"))
-        words_candidates = []
-        words_candidates.extend(generated_dir.rglob(f"*{ytid}*.words.tsv"))
-        words_candidates.extend(generated_dir.rglob(f"*{ytid}*.words.yt.tsv"))
-        words_candidates.extend(generated_dir.rglob(f"*{ytid}*.words.*.tsv"))
-
-        if not vtt_candidates:
-            raise FileNotFoundError(f"No VTT output found for {ytid} in {generated_dir}")
-        if not words_candidates:
-            raise FileNotFoundError(f"No words TSV output found for {ytid} in {generated_dir}")
-
-        vtt_path = max(vtt_candidates, key=lambda p: p.stat().st_mtime)
-        words_path = max(words_candidates, key=lambda p: p.stat().st_mtime)
-        return vtt_path, words_path
-
-    def _parse_legacy_words(self, words_path: Path, ytid: str, model_name: str) -> List[Word]:
-        """Parse a legacy words TSV into Word models."""
-        lines = [ln.strip() for ln in words_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        if not lines:
-            return []
-
-        header = lines[0].split("\t")
-        has_header = all(k.lower() in {h.lower() for h in header} for k in ("start", "end", "word"))
-        rows = lines[1:] if has_header else lines
-        col_index = {name.lower(): idx for idx, name in enumerate(header)} if has_header else {}
-
-        def _get(row_parts: List[str], key: str, default_idx: Optional[int] = None) -> Optional[str]:
-            key = key.lower()
-            if key in col_index:
-                idx = col_index[key]
-                return row_parts[idx] if idx < len(row_parts) else None
-            if default_idx is not None and default_idx < len(row_parts):
-                return row_parts[default_idx]
-            return None
-
-        words: List[Word] = []
-        for idx, row in enumerate(rows):
-            parts = row.split("\t")
-            start_val = _get(parts, "start", 0)
-            end_val = _get(parts, "end", 1)
-            token_val = _get(parts, "word", 2)
-            if not (start_val and end_val and token_val):
-                continue
-            confidence_val = _get(parts, "confidence")
-            segment_val = _get(parts, "seg", 3)
-            try:
-                word = Word(
-                    ytid=ytid,
-                    source=f"whisper-{model_name}",
-                    idx=idx,
-                    word=token_val.strip(),
-                    start_sec=float(start_val),
-                    end_sec=float(end_val),
-                    confidence=float(confidence_val) if confidence_val else None,
-                    segment_id=int(segment_val) if segment_val is not None and segment_val != "" else None,
-                )
-                words.append(word)
-            except ValueError:
-                logger.warning("Skipping malformed legacy word row: %s", row)
-                continue
-        return words
 
     def _estimate_segments(self, words: List[Word]) -> int:
         """Approximate segment count from word segment IDs."""

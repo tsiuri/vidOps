@@ -339,18 +339,6 @@ class ClippingService:
             shutil.copy2(cached_media, target)
         return target
 
-    def _run_legacy_cut(self, manifest: Path, output_dir: Path, project_root: Path, job: Job) -> None:
-        workspace_sh = Path(__file__).resolve().parents[1] / "workspace.sh"
-        mode = job.config.get("mode", "net")
-        subcmd = "cut-net" if mode == "net" else "cut-local"
-        cmd = ["bash", str(workspace_sh), "clips", subcmd, str(manifest), str(output_dir)]
-        env = os.environ.copy()
-        env["PROJECT_ROOT"] = str(project_root)
-        logger.info("Running legacy clips %s: %s", subcmd, " ".join(cmd))
-        result = subprocess.run(cmd, cwd=project_root, env=env, text=True, capture_output=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"Legacy clips {subcmd} failed (exit {result.returncode})")
-
     def _find_new_clips(self, output_dir: Path, since: float, ytids: List[str]) -> List[Path]:
         exts = ["mp4", "mkv", "webm", "mp3", "mka", "opus"]
         candidates: List[Path] = []
