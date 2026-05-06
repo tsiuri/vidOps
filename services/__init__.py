@@ -10,7 +10,7 @@ between the CLI, DAL, and workers.
 from __future__ import annotations
 
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from dal import (
     VideoRepository,
@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from .extra_utils import ExtraUtilsService
     from .hc_project import HitsClipsProjectService
     from .hc_clip_render import HCClipRenderService
+    from .analysis_engine import AnalysisEngine
 
 __all__ = [
     "TranscriptionService",
@@ -67,6 +68,7 @@ __all__ = [
     "get_dates_service",
     "get_extra_utils_service",
     "get_distributed_analysis_service",
+    "get_analysis_engine",
 ]
 
 _SERVICE_IMPORTS = {
@@ -314,4 +316,25 @@ def get_distributed_analysis_service() -> "DistributedAnalysisService":
         available_vram_gb=vram_gb,
         model_profile_id=None,  # Worker accepts any profile; tasks define their own requirements
         machine_alias=config.workers.machine_alias,
+    )
+
+
+def get_analysis_engine(
+    *,
+    model_name: str,
+    model_url: str,
+    model_profile_id: Optional[int],
+    ollama_options: Optional[dict] = None,
+) -> "AnalysisEngine":
+    """
+    Returns a configured AnalysisEngine instance (stateful, owns DB + analyzer).
+    Caller is responsible for the claim loop and shutdown.
+    """
+    from .analysis_engine import AnalysisEngine
+
+    return AnalysisEngine(
+        model_name=model_name,
+        model_url=model_url,
+        model_profile_id=model_profile_id,
+        ollama_options=ollama_options,
     )
