@@ -125,11 +125,11 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - Unified web UI launcher: `python scripts/run_webui.py` (starts analysis/QuickClip UI on :5000 plus optional monitoring UI on :8000; supports `--skip/--only` and custom commands via `--monitoring-cmd`)
 - Job maintenance: `scripts/utilities/reset_stuck_jobs.py`
 - Smoke harness: `scripts/smoke/run_smoke_suite.sh`
-- Broker test tool: `scripts/test_broker.py`
+- Broker test tool: `docs/deprecated_scripts/scripts/test_broker.py` *(broker subsystem is incomplete; test tool archived)*
 
 ## Domain Utilities & Scripts (non-Click, by area)
 - **Diarization (scripts/diarization/ + scripts/examples/)**: `scripts/examples/diarize_batch_best.sh`, `batch_diarize.py`, `diarize_inference.py`, `chunk_audio.py`, `parallel_vad_preprocess.py`, `postprocess_and_map.py`, `validate_diarization.py`, `build_reference.py` (curses picker), `run_resemblyzer_diarization.py`, `combine_chunks.py`, `match_reference.py`, `labels_to_rttm.py`
-- **Transcription (scripts/transcription/)**: `transcribe_worker_*` (cpu/nvidia/db), `db_queue.py`, `queue_cli.py`, `recover_stale_jobs.sh`, `fragmented_transcribe.py`, `fragment_runner.py`, `dual_gpu_transcribe.sh`, `batch_retry.sh` / `batch_retry_worker.py`, `detect_dupe_hallu.py`, `watch_cuda_error.sh`
+- **Transcription**: *(empty — the legacy bash CPU/NVIDIA worker pipeline has been retired in favour of `services/transcription.py` + `faster-whisper`; archived under `docs/deprecated_scripts/scripts/transcription/`)*
 - **Voice Filtering (scripts/voice_filtering/)**: `filter_voice.py`, `filter_voice_parallel*.py`, `voicefil_w_venv.sh`
 - **Video processing (scripts/video_processing/)**: *(empty — bash stitch helpers retired in favour of `services/stitching_native.VideoStitcher`; archived under `docs/deprecated_scripts/scripts/video_processing/`)*
 - **DB tools (scripts/db/)**: export/import helpers (`export_transcripts_and_words*.py`, `export_videos_from_info.py`, `export_media_assets.py`, `export_ytids_by_upload_type.sh`, `annotate_upload_type.sh`, `import_videos.sh`, `load_hits.sh`)
@@ -137,7 +137,13 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - **GPU helpers (scripts/gpu_tools/)**: `gpu-bind-status.sh`, `gpu-to-nvidia.sh`
 - **Management/maintenance (scripts/management/)**: `watch_jobs.py` *(historical migration / wrapper-test scripts archived under `docs/deprecated_scripts/scripts/management/`)*
 - **Utilities (scripts/utilities/)**: `quality_report.py`, `sort_clips.py`, `map_ids_to_files.py`, `monitor_transcription_memory.sh`, `mark_success.sh`, `detailed_proc_watch.sh`, `reset_stuck_jobs.py`
-- **TSV helpers (scripts/)**: `filter_tsv_by_existing_segments.py`, `list_overlaps_and_filter_tsv.py`
-- **Deprecated scripts (docs/deprecated_scripts/)**: legacy bash bridges retired after the workspace.sh trim. Includes the root `clips.sh` wrapper, `scripts/utilities/{clips.sh, convert-captions.sh, repair_archive.sh}`, the `clips_templates/` subsystem (`pull.sh`, `hits.sh`, `cut_local.sh`, `cut_net.sh`, `refine.sh`, `common.sh`, `transcripts.sh`), the `scripts/video_processing/stitch_videos*.sh` family, and the `wrappers/` shim directory. All preserved at their original-relative paths under `docs/deprecated_scripts/` so relative `source` and `exec` references continue to work.
+- **Deprecated scripts (docs/deprecated_scripts/)**: archived bash and python helpers no longer reached by the active vo CLI / queue path. Includes:
+    - `clips.sh` (root wrapper) and the `scripts/utilities/{clips.sh, convert-captions.sh, repair_archive.sh}` chain plus the `clips_templates/` subsystem (`pull.sh`, `hits.sh`, `cut_local.sh`, `cut_net.sh`, `refine.sh`, `common.sh`, `transcripts.sh`)
+    - The `scripts/video_processing/stitch_videos*.sh` family
+    - The legacy `scripts/transcription/` pipeline (CPU/NVIDIA bash workers, `db_queue.py`, `queue_cli.py`, `fragmented_transcribe.py`, `fragment_runner.py`, `recover_stale_jobs.sh`, `batch_retry*`, `detect_dupe_hallu.py`, `watch_cuda_error.sh`, plus several `.backup*` snapshots) — superseded by `services/transcription.py` + faster-whisper
+    - The `scripts/deploy/` broker setup helpers (`worker_trust_broker.sh`, `setup_broker_nginx.sh`, `reissue_broker_cert.sh`, `collect_broker_diagnostics.sh`, `setup_config.sh`) — paired with the incomplete storage-broker subsystem
+    - `scripts/test_broker.py`, `scripts/start_worker_with_tunnel.sh`, `scripts/filter_tsv_by_existing_segments.py`, `scripts/list_overlaps_and_filter_tsv.py`
+    - The `wrappers/` shim directory and the `scripts/management/{reorganize,fix_paths,test_scripts,test_clips_wrapper,set_paths,find_path_references}.sh` migration scripts
+    - All preserved at their original-relative paths under `docs/deprecated_scripts/` so relative `source` and `exec` references continue to work.
 
 - DB schema snapshot: db/schema_dump.sql (pg_dump --schema-only)

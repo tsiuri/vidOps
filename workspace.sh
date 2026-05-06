@@ -85,10 +85,6 @@ EXTRA UTILITIES (use: ./workspace.sh extra-utils)
     scripts/utilities/quality_report.py
     scripts/utilities/map_ids_to_files.py
     scripts/utilities/sort_clips.py
-    scripts/video_processing/concat_filter_from_list.sh
-    scripts/video_processing/stitch_videos_batched_filter.sh
-    scripts/transcription/detect_dupe_hallu.py
-    scripts/transcription/watch_cuda_error.sh
 EOF
 }
 
@@ -294,18 +290,6 @@ cmd_extra_utils() {
             ;;
         sort_clips.py)
             python3 "$TOOL_ROOT/scripts/utilities/sort_clips.py" "$@"
-            ;;
-        concat_filter_from_list.sh)
-            "$TOOL_ROOT/scripts/video_processing/concat_filter_from_list.sh" "$@"
-            ;;
-        stitch_videos_batched_filter.sh)
-            "$TOOL_ROOT/scripts/video_processing/stitch_videos_batched_filter.sh" "$@"
-            ;;
-        detect_dupe_hallu.py)
-            python3 "$TOOL_ROOT/scripts/transcription/detect_dupe_hallu.py" "$@"
-            ;;
-        watch_cuda_error.sh)
-            "$TOOL_ROOT/scripts/transcription/watch_cuda_error.sh" "$@"
             ;;
         *)
             echo "Error: Unknown extra utility: $tool"
