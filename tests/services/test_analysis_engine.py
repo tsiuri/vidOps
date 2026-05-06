@@ -221,3 +221,184 @@ def test_run_task_hot_targets_pattern_mode(engine_no_db, mock_ollama):
     assert "politics" in targets[0]["matches"]
     # Pattern path; LLM runner should not have been touched
     fake_runner.run_targets.assert_not_called()
+
+
+def test_process_job_end_to_end(engine_no_db):
+    """process_job runs all tasks for a job, marks them, aggregates."""
+    fake_tasks = [
+        AnalysisTask(
+            task_id=1,
+            job_id="job-3001",
+            ytid="testytid",
+            chunk_id=0,
+            pass_id="chunk_analysis",
+            chunk_text="hello world",
+            chunk_metadata={"config_id": "cfg-1", "total_chunks": 3},
+            status=TaskStatus.PENDING,
+            model_profile_id=1,
+        ),
+        AnalysisTask(
+            task_id=2,
+            job_id="job-3001",
+            ytid="testytid",
+            chunk_id=1,
+            pass_id="chunk_analysis",
+            chunk_text="more text",
+            chunk_metadata={"config_id": "cfg-1", "total_chunks": 3},
+            status=TaskStatus.PENDING,
+            model_profile_id=1,
+        ),
+        # An already-completed task — process_job should skip it
+        AnalysisTask(
+            task_id=3,
+            job_id="job-3001",
+            ytid="testytid",
+            chunk_id=2,
+            pass_id="chunk_analysis",
+            chunk_text="extra text",
+            chunk_metadata={"config_id": "cfg-1", "total_chunks": 3},
+            status=TaskStatus.COMPLETED,
+            model_profile_id=1,
+        ),
+        AnalysisTask(
+            task_id=4,
+            job_id="job-3001",
+            ytid="testytid",
+            chunk_id=-1,
+            pass_id="aggregate_results",
+            chunk_text="",
+            chunk_metadata={"config_id": "cfg-1", "is_job_level": True, "total_chunks": 3},
+            status=TaskStatus.PENDING,
+            model_profile_id=1,
+        ),
+    ]
+    engine_no_db.task_repo = MagicMock()
+    engine_no_db.task_repo.get_job_tasks.return_value = fake_tasks
+    engine_no_db.task_repo.mark_completed = MagicMock(return_value=True)
+    engine_no_db.task_repo.mark_failed = MagicMock(return_value=True)
+    # Stub aggregate_results so we don't go through results_repo
+    engine_no_db.aggregate_results = MagicMock(return_value={"summary": "ok"})
+
+    # Force every run_task to "ok"
+    fake_run_task = MagicMock(
+        return_value=MagicMock(status="ok", payload={"pass_id": "stub", "status": "completed"}, error_message=None)
+    )
+    engine_no_db.run_task = fake_run_task
+
+    result = engine_no_db.process_job("job-3001", worker_id="test-worker-1")
+
+    assert result.job_id == "job-3001"
+    assert result.tasks_total == 4
+    # Task 3 was already completed, so 1 ok from skip + 3 ok from run_task
+    assert result.tasks_ok == 4
+    assert result.tasks_failed == 0
+    assert result.aggregate_status == "ok"
+    # mark_completed should have been called for the 3 non-completed tasks
+    assert engine_no_db.task_repo.mark_completed.call_count == 3
+    engine_no_db.aggregate_results.assert_called_once_with("job-3001")
+    # chunk_analysis tasks should run before aggregate_results
+    pass_order = [call.args[0].pass_id for call in fake_run_task.call_args_list]
+    assert pass_order.index("aggregate_results") == len(pass_order) - 1
+
+
+def test_process_job_failed_aggregate_status(engine_no_db):
+    """If every task fails, aggregate_status is 'failed' and aggregate_results not called."""
+    fake_tasks = [
+        AnalysisTask(
+            task_id=1,
+            job_id="job-3003",
+            ytid="testytid",
+            chunk_id=0,
+            pass_id="chunk_analysis",
+            chunk_text="x",
+            chunk_metadata={"config_id": "cfg-1", "total_chunks": 1},
+            status=TaskStatus.PENDING,
+            model_profile_id=1,
+        ),
+    ]
+    engine_no_db.task_repo = MagicMock()
+    engine_no_db.task_repo.get_job_tasks.return_value = fake_tasks
+    engine_no_db.task_repo.mark_completed = MagicMock(return_value=True)
+    engine_no_db.task_repo.mark_failed = MagicMock(return_value=True)
+    engine_no_db.aggregate_results = MagicMock()
+    engine_no_db.run_task = MagicMock(
+        return_value=MagicMock(status="failed", payload=None, error_message="boom")
+    )
+
+    result = engine_no_db.process_job("job-3003", worker_id="test-worker-1")
+
+    assert result.tasks_total == 1
+    assert result.tasks_ok == 0
+    assert result.tasks_failed == 1
+    assert result.aggregate_status == "failed"
+    engine_no_db.aggregate_results.assert_not_called()
+    engine_no_db.task_repo.mark_failed.assert_called_once()
+
+
+def test_aggregate_results_groups_by_pass(engine_no_db):
+    """aggregate_results groups completed task results by pass_id and upserts."""
+    fake_tasks = [
+        AnalysisTask(
+            task_id=1,
+            job_id="job-3002",
+            ytid="testytid",
+            chunk_id=0,
+            pass_id="chunk_analysis",
+            chunk_text="t0",
+            chunk_metadata={"config_id": "cfg-2", "total_chunks": 2},
+            status=TaskStatus.COMPLETED,
+            result_json={"analysis": {"summary": "s0"}},
+            model_profile_id=1,
+        ),
+        AnalysisTask(
+            task_id=2,
+            job_id="job-3002",
+            ytid="testytid",
+            chunk_id=1,
+            pass_id="chunk_analysis",
+            chunk_text="t1",
+            chunk_metadata={"config_id": "cfg-2", "total_chunks": 2},
+            status=TaskStatus.COMPLETED,
+            result_json={"analysis": {"summary": "s1"}},
+            model_profile_id=1,
+        ),
+        AnalysisTask(
+            task_id=3,
+            job_id="job-3002",
+            ytid="testytid",
+            chunk_id=-1,
+            pass_id="aggregate_results",
+            chunk_text="",
+            chunk_metadata={"config_id": "cfg-2", "is_job_level": True, "total_chunks": 2},
+            status=TaskStatus.COMPLETED,
+            result_json={"analysis_summary": {"summary": "agg"}},
+            model_profile_id=1,
+        ),
+    ]
+    engine_no_db.task_repo = MagicMock()
+    engine_no_db.task_repo.get_job_tasks.return_value = fake_tasks
+    engine_no_db.task_repo.get_job_progress.return_value = {
+        "total": 3,
+        "pending": 0,
+        "claimed": 0,
+        "completed": 3,
+        "failed": 0,
+    }
+    engine_no_db.results_repo = MagicMock()
+
+    output = engine_no_db.aggregate_results("job-3002")
+
+    assert output is not None
+    engine_no_db.results_repo.upsert_results.assert_called_once()
+    kwargs = engine_no_db.results_repo.upsert_results.call_args.kwargs
+    assert kwargs["job_id"] == "job-3002"
+    assert kwargs["ytid"] == "testytid"
+    assert kwargs["config_id"] == "cfg-2"
+    assert kwargs["status"] == "completed"
+    assert kwargs["total_tasks"] == 3
+    assert kwargs["completed_tasks"] == 3
+    assert kwargs["failed_tasks"] == 0
+    by_pass = kwargs["results_by_pass"]
+    assert "chunk_analysis" in by_pass
+    assert len(by_pass["chunk_analysis"]) == 2
+    assert "aggregate_results" in by_pass

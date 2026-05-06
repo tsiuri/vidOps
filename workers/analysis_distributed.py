@@ -20,10 +20,6 @@ import signal
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 import logging
-try:
-    import torch  # Optional, for GPU cleanup
-except Exception:
-    torch = None
 
 try:
     import psutil
@@ -33,7 +29,7 @@ except Exception:
 from configuration import load_config
 from dal.analysis_task_repository import AnalysisDatabase, AnalysisTaskRepository
 from models import AnalysisTask, Worker, WorkerStatus
-from dal import AnalysisResultsRepository, WorkerRepository
+from dal import WorkerRepository
 from workers.heartbeat import WorkerHeartbeat
 from services.analysis_engine import AnalysisEngine
 from web.monitoring.exporter import start_metrics_server, stop_metrics_server
@@ -137,7 +133,6 @@ class AnalysisWorker:
         )
         self.db.connect()
         self.task_repo = AnalysisTaskRepository(self.db)
-        self.results_repo = AnalysisResultsRepository(self.db)
 
         # Resolve model profile options if available (passed to engine)
         profile_options: Dict[str, Any] = {}
@@ -229,100 +224,6 @@ class AnalysisWorker:
                 worker_type=self.worker_type,
             )
 
-    # ------------------------------------------------------------------
-    # Single-job execution (for GenericWorker bridge)
-    # ------------------------------------------------------------------
-
-    def process_analysis_job(self, analysis_job_id: str, force_job_level_passes: bool = False) -> bool:
-        """
-        Run all tasks for a specific analysis_job_id once (no worker loop).
-
-        Used by GenericWorker/DistributedAnalysisService so both paths share the
-        same pass implementations and DB store behavior.
-        """
-        tasks = self.task_repo.get_job_tasks(analysis_job_id)
-        if not tasks:
-            logger.warning("No analysis_tasks found for job %s", analysis_job_id)
-            return False
-        if self.heartbeat:
-            self.heartbeat.set_current_job(analysis_job_id)
-        self._update_worker_status(WorkerStatus.BUSY, analysis_job_id)
-
-        # Prime contexts using any completed chunk_analysis tasks so job-level passes can run
-        for task in tasks:
-            if task.pass_id == "chunk_analysis" and task.result_json and task.status.value == "completed":
-                self.engine._hydrate_chunk_context(task)
-
-        pass_priority = {
-            "chunk_analysis": 0,
-            "sentiment_pass": 1,
-            "categories_pass": 1,
-            "subchunks": 2,
-            "aggregate_results": 3,
-            "hot_targets": 4,
-            "drills": 5,
-            "db_store": 6,
-            "local_json": 7,
-            "markdown_report": 8,
-        }
-
-        job_level_passes = set(
-            ["aggregate_results", "hot_targets", "drills", "db_store", "local_json", "markdown_report"]
-        )
-
-        ordered = sorted(
-            tasks,
-            key=lambda t: (pass_priority.get(t.pass_id, 99), int(t.chunk_id or 0), t.task_id),
-        )
-
-        for task in ordered:
-            should_run = task.status.value not in ("completed", "failed")
-            if task.pass_id in job_level_passes and force_job_level_passes:
-                should_run = True
-
-            if not should_run:
-                continue
-
-            task_result = self.engine.run_task(task, worker_id=self.worker_id)
-            if task_result.status == "ok" and task_result.payload is not None:
-                result_meta = dict(task_result.payload)
-                result_meta.setdefault("worker_id", self.worker_id)
-                result_meta.setdefault("completed_at", datetime.now(timezone.utc).isoformat())
-                if task.pass_id == "drills":
-                    drill_results = result_meta.get("drill_results") or {}
-                    span_count = result_meta.get("drill_span_count") or 0
-                    result_meta["drill_count"] = len(drill_results)
-                    result_meta["drill_span_count"] = span_count
-                ok = self.task_repo.mark_completed(task.task_id, result_meta)
-                if ok:
-                    logger.info("✓ Task %s completed via process_analysis_job", task.task_id)
-                else:
-                    logger.error("Failed to mark task %s as completed", task.task_id)
-            else:
-                error_msg = (
-                    task_result.error_message
-                    or f"Pass execution failed for pass_id={task.pass_id}"
-                )
-                ok = self.task_repo.mark_failed(task.task_id, error_msg)
-                if ok:
-                    logger.error("Task %s failed: %s", task.task_id, error_msg)
-                else:
-                    logger.error("Failed to mark task %s as failed", task.task_id)
-
-        try:
-            if self.task_repo.is_job_complete(analysis_job_id):
-                logger.info("Job %s complete after bridge execution; aggregating", analysis_job_id)
-                self._aggregate_job_results(analysis_job_id)
-                return True
-            logger.warning("Job %s not complete after bridge execution", analysis_job_id)
-            return False
-        finally:
-            self.current_task = None
-            if self.heartbeat:
-                self.heartbeat.set_current_job(None)
-            self._update_worker_status(WorkerStatus.IDLE)
-            self._cleanup_vram()
-
     def shutdown(self) -> None:
         """Clean up resources when used outside the long-running loop."""
         if self.heartbeat:
@@ -341,15 +242,29 @@ class AnalysisWorker:
             self.db.disconnect()
         except Exception:
             pass
-        self._cleanup_vram()
 
-    def _cleanup_vram(self) -> None:
-        """Best-effort GPU memory cleanup after a job/run."""
+    def _is_job_complete(self, analysis_job_id: str) -> bool:
+        """True iff every analysis_tasks row for this job_id is terminal.
+
+        Mirrors the canonical AnalysisTaskRepository.is_job_complete contract
+        (tasks in pending/claimed are still running). Used after a single
+        successful task completion to decide whether to trigger aggregation.
+        """
+        cur = self.db.cursor
+        cur.execute(
+            "SELECT COUNT(*) FROM analysis_tasks "
+            "WHERE job_id = %s AND status NOT IN ('completed', 'failed')",
+            (analysis_job_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return False
+        # cursor returns dict-like rows when configured; fall back to index
         try:
-            if torch and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+            count = int(row[0])
+        except (KeyError, TypeError):
+            count = int(list(row.values())[0])
+        return count == 0
 
     # ------------------------------------------------------------------
     # Main loop
@@ -473,12 +388,18 @@ class AnalysisWorker:
 
                     # After finishing the task, check if we can aggregate the job
                     try:
-                        if self.task_repo.is_job_complete(task.job_id):
+                        if self._is_job_complete(task.job_id):
                             logger.info("Job %s appears complete – aggregating results", task.job_id)
                             agg_start = datetime.now(timezone.utc)
-                            agg_success = self._aggregate_job_results(task.job_id)
+                            try:
+                                self.engine.aggregate_results(task.job_id)
+                                agg_status = "success"
+                            except Exception as agg_exc:
+                                logger.error(
+                                    "Aggregation failed for job %s: %s", task.job_id, agg_exc
+                                )
+                                agg_status = "failed"
                             agg_duration = (datetime.now(timezone.utc) - agg_start).total_seconds()
-                            agg_status = "success" if agg_success else "failed"
                             jobs_aggregated_total.labels(
                                 worker_id=self.worker_id,
                                 status=agg_status,
@@ -607,90 +528,6 @@ class AnalysisWorker:
 
         except Exception as e:
             logger.debug("Error updating health metrics: %s", e)
-
-    # ------------------------------------------------------------------
-    # Aggregation
-    # ------------------------------------------------------------------
-
-    def _aggregate_job_results(self, job_id: str) -> bool:
-        """
-        Aggregate all task results for a job into analysis_results.
-
-        Groups results by pass_id, with a list of {chunk_id, result} per pass.
-        """
-        context = self.engine.job_contexts.get(job_id)
-        tasks = self.task_repo.get_job_tasks(job_id)
-        if not tasks:
-            logger.warning("No tasks found for job %s; nothing to aggregate", job_id)
-            return False
-
-        # Derive ytid and config_id from the first task's metadata/job_id
-        first = tasks[0]
-        ytid = first.ytid
-        meta0 = first.chunk_metadata or {}
-        config_id = meta0.get("config_id")
-
-        if not config_id:
-            # Fallback: parse from job_id pattern "ytid:config_id:timestamp"
-            parts = job_id.split(":")
-            if len(parts) >= 2:
-                config_id = parts[1]
-            else:
-                config_id = "unknown"
-
-        # Group results by pass
-        results_by_pass: Dict[str, List[Dict[str, Any]]] = {}
-        for t in tasks:
-            if t.result_json is None:
-                continue
-            results_by_pass.setdefault(t.pass_id, []).append(
-                {
-                    "chunk_id": t.chunk_id,
-                    "result": t.result_json,
-                }
-            )
-
-        try:
-            progress = self.task_repo.get_job_progress(job_id)
-            total = progress.get("total", len(tasks))
-            completed = progress.get("completed", 0)
-            failed = progress.get("failed", 0)
-        except Exception as exc:
-            logger.warning("Failed to read job progress for %s: %s", job_id, exc)
-            total = len(tasks)
-            completed = len(results_by_pass)
-            failed = 0
-
-        status = "completed"
-        if total == 0 or completed + failed < total:
-            status = "processing"
-        elif failed > 0:
-            status = "failed"
-
-        logger.info(
-            "Storing aggregated results for job %s (ytid=%s, config_id=%s, total=%s, completed=%s, failed=%s, status=%s)",
-            job_id,
-            ytid,
-            config_id,
-            total,
-            completed,
-            failed,
-            status,
-        )
-
-        self.results_repo.upsert_results(
-            job_id=job_id,
-            ytid=ytid,
-            config_id=config_id,
-            results_by_pass=results_by_pass,
-            total_tasks=total,
-            completed_tasks=completed,
-            failed_tasks=failed,
-            status=status,
-        )
-        if context:
-            self.engine.job_contexts.pop(job_id, None)
-        return True
 
     # ------------------------------------------------------------------
     # Signals

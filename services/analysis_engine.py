@@ -22,6 +22,7 @@ from configuration import load_config
 from dal import AnalysisResultsRepository
 from dal.analysis_task_repository import AnalysisDatabase, AnalysisTaskRepository
 from models import AnalysisTask
+from scripts.analysis.analysis_task import TaskStatus
 from scripts.analysis.analysis_config import AnalysisConfig, Drill
 from scripts.analysis.analyze_transcript import AnalysisAggregator, OllamaAnalyzer
 from scripts.analysis.drills import DrillExecutor
@@ -177,15 +178,238 @@ class AnalysisEngine:
 
     def process_job(
         self,
-        analysis_job_id: int,
+        analysis_job_id: str,
         *,
         worker_id: str,
         force_job_level: bool = False,
     ) -> JobResult:
-        raise NotImplementedError("Implemented in Task 4")
+        """
+        One-shot full-job runner used by the bridge.
 
-    def aggregate_results(self, analysis_job_id: int) -> dict:
-        raise NotImplementedError("Implemented in Task 4")
+        Lists all tasks for ``analysis_job_id``, sorts by pass priority, runs
+        each via ``run_task``, and aggregates if any tasks succeeded. Returns
+        a :class:`JobResult` summarizing the run.
+        """
+        started = time.monotonic()
+        tasks = self.task_repo.get_job_tasks(analysis_job_id)
+        if not tasks:
+            logger.warning("No analysis_tasks found for job %s", analysis_job_id)
+            return JobResult(
+                job_id=analysis_job_id,
+                tasks_total=0,
+                tasks_ok=0,
+                tasks_failed=0,
+                aggregate_status="failed",
+                duration_s=time.monotonic() - started,
+            )
+
+        # Hydrate context from any chunk_analysis tasks already completed before
+        # this invocation, so job-level passes can run without re-doing work.
+        for task in tasks:
+            if (
+                task.pass_id == "chunk_analysis"
+                and task.result_json
+                and task.status == TaskStatus.COMPLETED
+            ):
+                self._hydrate_chunk_context(task)
+
+        pass_priority = self._pass_priority_map()
+        job_level_passes = {
+            "aggregate_results",
+            "hot_targets",
+            "drills",
+            "db_store",
+            "local_json",
+            "markdown_report",
+        }
+
+        ordered = sorted(
+            tasks,
+            key=lambda t: (
+                pass_priority.get(t.pass_id, 99),
+                int(t.chunk_id or 0),
+                t.task_id,
+            ),
+        )
+
+        ok = 0
+        failed = 0
+        for task in ordered:
+            already_done = task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
+            if force_job_level and task.pass_id in job_level_passes:
+                already_done = False
+
+            if already_done:
+                if task.status == TaskStatus.COMPLETED:
+                    ok += 1
+                else:
+                    failed += 1
+                continue
+
+            result = self.run_task(task, worker_id=worker_id)
+            if result.status == "ok" and result.payload is not None:
+                payload = dict(result.payload)
+                payload.setdefault("worker_id", worker_id)
+                payload.setdefault(
+                    "completed_at",
+                    datetime.now(timezone.utc).isoformat(),
+                )
+                if task.pass_id == "drills":
+                    drill_results = payload.get("drill_results") or {}
+                    span_count = payload.get("drill_span_count") or 0
+                    payload["drill_count"] = len(drill_results)
+                    payload["drill_span_count"] = span_count
+                if self.task_repo.mark_completed(task.task_id, payload):
+                    logger.info("Task %s completed via process_job", task.task_id)
+                else:
+                    logger.error("Failed to mark task %s as completed", task.task_id)
+                ok += 1
+            else:
+                error_msg = (
+                    result.error_message
+                    or f"Pass execution failed for pass_id={task.pass_id}"
+                )
+                if self.task_repo.mark_failed(task.task_id, error_msg):
+                    logger.error("Task %s failed: %s", task.task_id, error_msg)
+                else:
+                    logger.error("Failed to mark task %s as failed", task.task_id)
+                failed += 1
+
+        if ok and failed == 0:
+            agg_status: Literal["ok", "partial", "failed"] = "ok"
+        elif ok and failed:
+            agg_status = "partial"
+        else:
+            agg_status = "failed"
+
+        if agg_status in ("ok", "partial"):
+            try:
+                self.aggregate_results(analysis_job_id)
+            except Exception as exc:
+                logger.error(
+                    "aggregate_results failed for job %s: %s", analysis_job_id, exc
+                )
+
+        return JobResult(
+            job_id=analysis_job_id,
+            tasks_total=len(tasks),
+            tasks_ok=ok,
+            tasks_failed=failed,
+            aggregate_status=agg_status,
+            duration_s=time.monotonic() - started,
+        )
+
+    def aggregate_results(self, analysis_job_id: str) -> dict:
+        """
+        Aggregate all task results for a job into ``analysis_results``.
+
+        Groups task results by ``pass_id``, with a list of ``{chunk_id, result}``
+        per pass. Idempotent: a re-aggregation overwrites the previous row via
+        ``results_repo.upsert_results``.
+        """
+        tasks = self.task_repo.get_job_tasks(analysis_job_id)
+        if not tasks:
+            logger.warning(
+                "No tasks found for job %s; nothing to aggregate", analysis_job_id
+            )
+            return {}
+
+        # Derive ytid + config_id from the first task's metadata/job_id
+        first = tasks[0]
+        ytid = first.ytid
+        meta0 = first.chunk_metadata or {}
+        config_id = meta0.get("config_id")
+
+        if not config_id:
+            # Fallback: parse from job_id pattern "ytid:config_id:timestamp"
+            parts = analysis_job_id.split(":")
+            if len(parts) >= 2:
+                config_id = parts[1]
+            else:
+                config_id = "unknown"
+
+        # Group results by pass_id
+        results_by_pass: Dict[str, List[Dict[str, Any]]] = {}
+        for t in tasks:
+            if t.result_json is None:
+                continue
+            results_by_pass.setdefault(t.pass_id, []).append(
+                {
+                    "chunk_id": t.chunk_id,
+                    "result": t.result_json,
+                }
+            )
+
+        try:
+            progress = self.task_repo.get_job_progress(analysis_job_id)
+            total = progress.get("total", len(tasks))
+            completed = progress.get("completed", 0)
+            failed = progress.get("failed", 0)
+        except Exception as exc:
+            logger.warning(
+                "Failed to read job progress for %s: %s", analysis_job_id, exc
+            )
+            total = len(tasks)
+            completed = len(results_by_pass)
+            failed = 0
+
+        status = "completed"
+        if total == 0 or completed + failed < total:
+            status = "processing"
+        elif failed > 0:
+            status = "failed"
+
+        logger.info(
+            "Storing aggregated results for job %s (ytid=%s, config_id=%s, "
+            "total=%s, completed=%s, failed=%s, status=%s)",
+            analysis_job_id,
+            ytid,
+            config_id,
+            total,
+            completed,
+            failed,
+            status,
+        )
+
+        self.results_repo.upsert_results(
+            job_id=analysis_job_id,
+            ytid=ytid,
+            config_id=config_id,
+            results_by_pass=results_by_pass,
+            total_tasks=total,
+            completed_tasks=completed,
+            failed_tasks=failed,
+            status=status,
+        )
+
+        # Drop the in-memory context now that the aggregate is durable
+        self.job_contexts.pop(analysis_job_id, None)
+
+        return {
+            "job_id": analysis_job_id,
+            "ytid": ytid,
+            "config_id": config_id,
+            "results_by_pass": results_by_pass,
+            "total_tasks": total,
+            "completed_tasks": completed,
+            "failed_tasks": failed,
+            "status": status,
+        }
+
+    def _pass_priority_map(self) -> Dict[str, int]:
+        """Pass-priority map used by ``process_job`` to order task execution."""
+        return {
+            "chunk_analysis": 0,
+            "sentiment_pass": 1,
+            "categories_pass": 1,
+            "subchunks": 2,
+            "aggregate_results": 3,
+            "hot_targets": 4,
+            "drills": 5,
+            "db_store": 6,
+            "local_json": 7,
+            "markdown_report": 8,
+        }
 
     def shutdown(self) -> None:
         """Disconnect DB, free CUDA cache. Idempotent."""

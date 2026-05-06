@@ -60,11 +60,24 @@ def test_generic_worker_can_get_distributed_analysis_service():
 
 def test_distributed_analysis_job_handling(test_analysis_job):
     """Test that a distributed analysis job is properly handled by the service."""
+    from services.analysis_engine import JobResult
+
     service = get_distributed_analysis_service()
+    fake_result = JobResult(
+        job_id="test_ytid:test_config:1234567890",
+        tasks_total=3,
+        tasks_ok=3,
+        tasks_failed=0,
+        aggregate_status="ok",
+        duration_s=0.42,
+    )
 
     # Mock the database operations
     with patch.object(service, "job_repo") as mock_job_repo:
-        with patch("services.distributed_analysis.AnalysisWorker.process_analysis_job", return_value=True) as mock_process:
+        with patch(
+            "services.analysis_engine.AnalysisEngine.process_job",
+            return_value=fake_result,
+        ) as mock_process:
             with patch("services.distributed_analysis.AnalysisWorker.shutdown"):
                 service.process_job(test_analysis_job)
 

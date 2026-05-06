@@ -111,15 +111,22 @@ class DistributedAnalysisService:
 
             self.job_repo.update_status(job.job_id, JobStatus.RUNNING)
 
-            success = worker.process_analysis_job(
-                analysis_job_id=analysis_job_id,
-                force_job_level_passes=True,
+            job_result = worker.engine.process_job(
+                analysis_job_id,
+                worker_id=worker.worker_id,
+                force_job_level=True,
             )
+            success = job_result.aggregate_status in ("ok", "partial")
 
             result = {
                 "analysis_job_id": analysis_job_id,
                 "config_id": config_id,
                 "status": "completed" if success else "incomplete",
+                "aggregate_status": job_result.aggregate_status,
+                "tasks_total": job_result.tasks_total,
+                "tasks_ok": job_result.tasks_ok,
+                "tasks_failed": job_result.tasks_failed,
+                "duration_s": job_result.duration_s,
                 "processed_at": datetime.now(timezone.utc).isoformat(),
             }
 
