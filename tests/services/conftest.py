@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Iterator
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -47,3 +47,37 @@ def mock_ollama() -> MagicMock:
     m.summarize_speaker.return_value = "stub speaker summary"
     m.options = {"num_ctx": 8192}
     return m
+
+
+@pytest.fixture
+def engine_no_db(mock_ollama):
+    """An AnalysisEngine with OllamaAnalyzer mocked and DB-reads stubbed.
+
+    Tests using this fixture should NOT seed analysis_tasks or query the
+    DB; they should construct AnalysisTask objects in-memory and pass
+    them directly to engine.run_task().
+    """
+    from services.analysis_engine import AnalysisEngine, JobContext
+    from scripts.analysis.analysis_config import AnalysisConfig
+
+    default_ctx = JobContext(
+        job_id="test_yt:test_cfg:123",
+        ytid="test_yt",
+        config_id="test_cfg",
+        config=AnalysisConfig(id="test_cfg", name="Test", passes=[]),
+        total_chunks=1,
+    )
+
+    with patch("services.analysis_engine.OllamaAnalyzer", return_value=mock_ollama):
+        engine = AnalysisEngine(
+            model_name="qwen2.5:7b-instruct",
+            model_url="http://localhost:11434",
+            model_profile_id=1,
+        )
+        # Tests can override the JobContext per-call by reassigning
+        # engine._get_job_context = MagicMock(return_value=...) inside the test.
+        engine._get_job_context = MagicMock(return_value=default_ctx)
+        try:
+            yield engine
+        finally:
+            engine.shutdown()

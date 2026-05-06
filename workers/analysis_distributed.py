@@ -41,7 +41,7 @@ from scripts.analysis.analyze_transcript import AnalysisAggregator
 from workers.heartbeat import WorkerHeartbeat
 from scripts.analysis.analysis_config import AnalysisConfig, Drill
 from scripts.analysis.drills import DrillExecutor
-from services.analysis_engine import AnalysisEngine, JobContext, TaskResult
+from services.analysis_engine import AnalysisEngine, JobContext, TaskResult, _to_float
 from web.monitoring.exporter import start_metrics_server, stop_metrics_server
 from web.monitoring.metrics import (
     tasks_claimed_total,
