@@ -465,7 +465,7 @@ vo pipeline enqueue <YTID_OR_URL> \
 
 ## See Also
 
-- `docs/REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md` - System architecture overview
+- `docs/ARCHITECTURE.md` - System architecture overview
 - `config.yaml` - Default configuration for all stages
 - `cli/pipeline.py` - CLI implementation
 - `dal/jobs.py` - Dependency enforcement in claim_next()

@@ -811,6 +811,4 @@ def test_job_vs_worker_error():
 
 ---
 
-**Last Updated:** 2024-12-09
-**Author:** Claude (Anthropic)
 **Status:** Implemented (cleanup features pending)

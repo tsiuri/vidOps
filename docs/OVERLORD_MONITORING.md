@@ -425,5 +425,5 @@ LIMIT 20;
 - `vidops/services/overlord.py` - Overlord implementation
 - `vidops/dal/jobs.py` - Job repository with helper methods
 - `vidops/cli/status.py` - CLI status commands
-- `SOURCE_OF_TRUTH.md` - Current system status
+- `ARCHITECTURE.md` - Current system status
 - `STORAGE_INTERFACE.md` - Storage manager guide

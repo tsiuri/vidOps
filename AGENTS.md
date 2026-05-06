@@ -1,6 +1,6 @@
 # AGENTS.md — VidOps coding conventions
 
-Conventions for AI agents and human contributors working on VidOps. For project overview and quick start see [README.md](README.md). For ongoing change history see [CHANGELOG.md](CHANGELOG.md). For the canonical architecture state see [docs/REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md](docs/REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md).
+Conventions for AI agents and human contributors working on VidOps. For project overview and quick start see [README.md](README.md). For ongoing change history see [CHANGELOG.md](CHANGELOG.md). For the canonical architecture state see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Project Structure & Modules
 - Core code lives under `services/`, `workers/`, `cli/`, and `dal/` (entrypoint `vo_cli.py`). Web bits sit in `web/`. Shared utilities are in `utils/`, `wrappers/`, and `scripts/`.

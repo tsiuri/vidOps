@@ -51,7 +51,6 @@ CLI equivalents:
 python3 vo_cli.py status jobs --job-type transcription
 python3 vo_cli.py status workers
 ```
-(Claude is enhancing the CLI output as part of his current tasks.)
 
 ## 3. Resetting the Queue (Test Environments Only)
 
@@ -74,7 +73,7 @@ These cover:
 - WorkerRepository registration/heartbeat/stale purge on `workers_test`
 - FilesystemCache pull/write/cleanup operations using temporary storage paths
 
-For end-to-end smoke tests (download→transcribe→verify), see Gemini’s instructions (`docs/REFACTOR_ARCHITECTURE/GEMINI_STARTER.md`) once his integration lands.
+For end-to-end smoke tests, see `scripts/smoke/run_smoke_suite.sh` and `tests/smoke/`.
 
 ## 5. Quick Reference
 
@@ -84,4 +83,3 @@ For end-to-end smoke tests (download→transcribe→verify), see Gemini’s inst
 | Inspect jobs | `SELECT * FROM jobs WHERE ...` or `vo_cli.py status jobs --job-type ...` |
 | Clear test tables | `TRUNCATE jobs_test; TRUNCATE workers_test;` |
 | Run DAL/storage tests | `pytest tests/dal/test_jobs_repo.py tests/dal/test_worker_repo.py tests/dal/test_filesystem_cache.py` |
-| Agent ownership overview | `docs/REFACTOR_ARCHITECTURE/AGENT_ROLES.md` |

@@ -66,13 +66,13 @@ For the complete CLI surface see [`docs/CLI_COMMANDS.md`](docs/CLI_COMMANDS.md).
 
 Postgres is the source of truth. The schema covers `jobs`, `workers`, `videos`, `transcripts`, `words`, `assets`, `analysis_*`, `quickclip_*`, `hc_*`, `diarization_references`, and `analysis_model_profiles`. Storage is two-tier: central (`/mnt/...`) is authoritative; local (`~/vidops_cache` or `tmp/`) is per-worker scratch. `FilesystemCache` shuttles files between them. CLI commands and the web UI both call into `services/*.py`, which enqueue jobs. `GenericWorker` (`workers/general.py`) claims any job type from the queue and dispatches to the matching service factory; the `overlord` service detects stale leases and releases them. A few legacy flows (`analyze`, `dates`, `extra-utils`, `convert-captions`) still shell into `workspace.sh` as a transitional bridge — everything else is native Python.
 
-For the full picture see [`docs/REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md`](docs/REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md).
+For the full picture see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Where to look next
 
 | Topic | Doc |
 |---|---|
-| Full architecture (deep dive) | `docs/REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md` |
+| Full architecture (deep dive) | `docs/ARCHITECTURE.md` |
 | All CLI commands | `docs/CLI_COMMANDS.md` |
 | Pipeline workflow | `docs/PIPELINE_CLI.md` |
 | Storage interface (FilesystemCache) | `docs/STORAGE_INTERFACE.md` |

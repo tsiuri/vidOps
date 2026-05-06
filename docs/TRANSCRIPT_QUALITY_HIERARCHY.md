@@ -238,6 +238,6 @@ print(f"Best: {best.kind}")
 
 ## See Also
 
-- [Diarization Documentation](REFACTOR_ARCHITECTURE/SOURCE_OF_TRUTH.md) - Full diarization workflow
+- [Diarization Documentation](ARCHITECTURE.md) - Full diarization workflow
 - [Transcription Documentation](README.md) - Transcript generation
 - [Database Schema](DB_README.md) - Transcripts table structure
