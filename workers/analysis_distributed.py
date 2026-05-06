@@ -19,7 +19,6 @@ import sys
 import signal
 import json
 import re
-from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple, Set
 import logging
@@ -38,11 +37,11 @@ from configuration import load_config
 from dal.analysis_task_repository import AnalysisDatabase, AnalysisTaskRepository
 from models import AnalysisTask, Worker, WorkerStatus
 from dal import AnalysisResultsRepository, WorkerRepository
-from scripts.analysis.analyze_transcript import OllamaAnalyzer, AnalysisAggregator, VTTParser, TranscriptChunker
+from scripts.analysis.analyze_transcript import AnalysisAggregator
 from workers.heartbeat import WorkerHeartbeat
-from scripts.analysis.analysis_config import AnalysisConfig, HotTargetRule, Drill
+from scripts.analysis.analysis_config import AnalysisConfig, Drill
 from scripts.analysis.drills import DrillExecutor
-from scripts.analysis.llm.hot_targets import HotTargetRunner
+from services.analysis_engine import AnalysisEngine, JobContext, TaskResult
 from web.monitoring.exporter import start_metrics_server, stop_metrics_server
 from web.monitoring.metrics import (
     tasks_claimed_total,
@@ -64,42 +63,12 @@ from web.monitoring.metrics import (
 )
 
 
-def _to_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger("AnalysisWorker")
-
-
-@dataclass
-class JobContext:
-    """Caches per-job state so aggregation/hot-target passes can use chunk outputs."""
-
-    job_id: str
-    ytid: str
-    config_id: str
-    config: AnalysisConfig
-    total_chunks: int
-    chunk_results: Dict[int, Dict[str, Any]] = field(default_factory=dict)
-    aggregated_result: Optional[Dict[str, Any]] = None
-    metadata_template: Dict[str, Any] = field(default_factory=dict)
-    chunk_texts: Dict[int, str] = field(default_factory=dict)
-    chunk_metadata_map: Dict[int, Dict[str, Any]] = field(default_factory=dict)
-    drill_results_map: Dict[str, Any] = field(default_factory=dict)
-    drill_summary: List[Dict[str, Any]] = field(default_factory=list)
-    drill_spans: List[Dict[str, Any]] = field(default_factory=list)
-
-    def is_ready_for_aggregation(self) -> bool:
-        return len(self.chunk_results) >= self.total_chunks
 
 
 class AnalysisWorker:
@@ -175,9 +144,8 @@ class AnalysisWorker:
         self.db.connect()
         self.task_repo = AnalysisTaskRepository(self.db)
         self.results_repo = AnalysisResultsRepository(self.db)
-        self.job_contexts: Dict[str, JobContext] = {}
 
-        # Resolve model profile options if available
+        # Resolve model profile options if available (passed to engine)
         profile_options: Dict[str, Any] = {}
         if self.model_profile_id:
             profile = self.db.get_analysis_model_profile(self.model_profile_id)
@@ -194,31 +162,18 @@ class AnalysisWorker:
                 if isinstance(opts, dict):
                     profile_options = opts
 
-        # Single OllamaAnalyzer instance for chunk_analysis
-        self.analyzer = OllamaAnalyzer(
-            model=model_name,
-            base_url=model_url,
-            options=profile_options,
-            custom_request="",
-            log_mode="quiet",
-            category_suggestions=[],
-            category_map={},
+        # AnalysisEngine owns the OllamaAnalyzer + HotTargetRunner + per-job context cache.
+        self.engine = AnalysisEngine(
+            model_name=self.model_name,
+            model_url=self.model_url,
+            model_profile_id=self.model_profile_id,
+            ollama_options=profile_options,
         )
-
-        try:
-            logger.info("Checking connection to Ollama server at %s...", self.analyzer.base_url)
-            self.analyzer.check_connection()
-            logger.info("Ollama connection successful.")
-        except ConnectionError as e:
-            logger.fatal("Ollama connection check failed: %s", e)
-            sys.exit(1)
-
-        self.hot_target_runner = HotTargetRunner(
-            model=model_name,
-            base_url=model_url,
-            options=getattr(self.analyzer, "options", {}) or {},
-            log_mode="quiet",
-        )
+        # Re-expose analyzer / hot_target_runner / job_contexts for the worker-level
+        # job-level passes that still live here (Task 3 will move them).
+        self.analyzer = self.engine.analyzer
+        self.hot_target_runner = self.engine.hot_target_runner
+        self.job_contexts = self.engine.job_contexts
 
         try:
             logger.info("Checking connection to Ollama server at %s...", self.analyzer.base_url)
@@ -281,6 +236,77 @@ class AnalysisWorker:
             )
 
     # ------------------------------------------------------------------
+    # Pass dispatch helpers
+    # ------------------------------------------------------------------
+
+    _JOB_LEVEL_PASSES = {
+        "aggregate_results",
+        "hot_targets",
+        "drills",
+        "db_store",
+        "local_json",
+        "markdown_report",
+    }
+
+    def _dispatch_pass(self, task: AnalysisTask) -> "TaskResult":
+        """
+        Bridge between worker and engine pass implementations.
+
+        Chunk-level passes go through ``engine.run_task``. Job-level passes still
+        live on the worker until Task 3; for those we call the worker's
+        ``_handle_job_level_pass`` directly. This collapses in Task 5 once both
+        layers are unified. The return type mirrors ``TaskResult`` so callers
+        can branch uniformly on ``status``.
+        """
+        if task.pass_id not in self._JOB_LEVEL_PASSES:
+            return self.engine.run_task(task, worker_id=self.worker_id)
+
+        start = time.monotonic()
+        start_time = datetime.now(timezone.utc)
+        try:
+            context = self.engine._get_job_context(task)
+            chunk_text = task.chunk_text or ""
+            chunk_metadata = task.chunk_metadata or {}
+            payload = self._handle_job_level_pass(
+                task, task.pass_id, chunk_text, chunk_metadata, context
+            )
+            duration_s = time.monotonic() - start
+            duration_dt = (datetime.now(timezone.utc) - start_time).total_seconds()
+            if payload is None:
+                return TaskResult(
+                    status="failed",
+                    duration_s=duration_s,
+                    pass_id=task.pass_id,
+                    job_id=task.job_id,
+                    error_category="internal",
+                    error_message=f"Pass execution returned None for pass_id={task.pass_id}",
+                )
+            payload = dict(payload)
+            payload.setdefault("duration_sec", duration_dt)
+            payload.setdefault("pass_id", task.pass_id)
+            return TaskResult(
+                status="ok",
+                duration_s=duration_s,
+                pass_id=task.pass_id,
+                job_id=task.job_id,
+                payload=payload,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Error executing job-level pass %s for task %s",
+                task.pass_id,
+                task.task_id,
+            )
+            return TaskResult(
+                status="failed",
+                duration_s=time.monotonic() - start,
+                pass_id=task.pass_id,
+                job_id=task.job_id,
+                error_category="internal",
+                error_message=str(exc)[:500],
+            )
+
+    # ------------------------------------------------------------------
     # Single-job execution (for GenericWorker bridge)
     # ------------------------------------------------------------------
 
@@ -302,7 +328,7 @@ class AnalysisWorker:
         # Prime contexts using any completed chunk_analysis tasks so job-level passes can run
         for task in tasks:
             if task.pass_id == "chunk_analysis" and task.result_json and task.status.value == "completed":
-                self._hydrate_chunk_context(task)
+                self.engine._hydrate_chunk_context(task)
 
         pass_priority = {
             "chunk_analysis": 0,
@@ -334,9 +360,9 @@ class AnalysisWorker:
             if not should_run:
                 continue
 
-            result = self._execute_pass(task)
-            if result is not None:
-                result_meta = dict(result)
+            task_result = self._dispatch_pass(task)
+            if task_result.status == "ok" and task_result.payload is not None:
+                result_meta = dict(task_result.payload)
                 result_meta.setdefault("worker_id", self.worker_id)
                 result_meta.setdefault("completed_at", datetime.now(timezone.utc).isoformat())
                 if task.pass_id == "drills":
@@ -350,7 +376,10 @@ class AnalysisWorker:
                 else:
                     logger.error("Failed to mark task %s as completed", task.task_id)
             else:
-                error_msg = f"Pass execution returned None for pass_id={task.pass_id}"
+                error_msg = (
+                    task_result.error_message
+                    or f"Pass execution failed for pass_id={task.pass_id}"
+                )
                 ok = self.task_repo.mark_failed(task.task_id, error_msg)
                 if ok:
                     logger.error("Task %s failed: %s", task.task_id, error_msg)
@@ -382,6 +411,10 @@ class AnalysisWorker:
             except Exception:
                 pass
         try:
+            self.engine.shutdown()
+        except Exception as exc:
+            logger.warning("Engine shutdown error: %s", exc)
+        try:
             self.db.disconnect()
         except Exception:
             pass
@@ -395,99 +428,9 @@ class AnalysisWorker:
         except Exception:
             pass
 
-    def _get_job_context(self, task: AnalysisTask) -> JobContext:
-        ctx = self.job_contexts.get(task.job_id)
-        if ctx:
-            return ctx
-
-        metadata = task.chunk_metadata or {}
-        config_id = metadata.get("config_id") or "default"
-        config = self._load_analysis_config(config_id)
-        total_chunks = int(metadata.get("total_chunks") or metadata.get("chunk_count") or 1)
-        template = {
-            "video_id": task.ytid,
-            "title": metadata.get("title") or task.ytid,
-            "date": metadata.get("date") or metadata.get("recorded_date") or "unknown",
-            "duration": metadata.get("duration"),
-        }
-        ctx = JobContext(
-            job_id=task.job_id,
-            ytid=task.ytid,
-            config_id=config_id,
-            config=config,
-            total_chunks=total_chunks,
-            metadata_template=template,
-        )
-        self.job_contexts[task.job_id] = ctx
-        return ctx
-
-    def _load_analysis_config(self, config_id: str) -> AnalysisConfig:
-        row = None
-        try:
-            row = self.db.get_analysis_config(config_id)
-        except Exception:
-            row = None
-
-        if not row:
-            # Fallback to default AnalysisConfig skeleton
-            config = AnalysisConfig(
-                id=config_id,
-                name=f"default-{config_id}",
-                passes=[
-                    {"id": "chunk_analysis", "phase": "chunk", "enabled": True},  # type: ignore[arg-type]
-                ],
-            )
-        else:
-            payload = row.get("config_json") if isinstance(row, dict) else None
-            if not payload:
-                payload = {}
-            config = AnalysisConfig.model_validate(payload)
-
-        # Attach drills managed via the dedicated drills table.
-        try:
-            drill_rows = self.db.list_drills_for_config(config_id)
-        except Exception as exc:
-            logger.warning("Failed to load drills for config %s: %s", config_id, exc)
-            drill_rows = []
-        if drill_rows:
-            normalized_drills: List[Drill] = []
-            for d in drill_rows:
-                try:
-                    drill_payload = {
-                        "id": d.get("id"),
-                        "name": d["name"],
-                        "description": d.get("description", ""),
-                        "prompt": d.get("prompt", ""),
-                        "scope": d.get("scope", "chunks"),
-                        "depends_on": d.get("depends_on") or [],
-                        "output_shape": d.get("output_shape", "span"),
-                        "always": bool(d.get("always")),
-                        "min_hits": int(d.get("min_hits") or 0),
-                        "keywords": d.get("keywords") or [],
-                        "match": d.get("match") or [],
-                        "category": d.get("category"),
-                        "cooldown": int(d.get("cooldown") or 0),
-                        "detail_pass": d.get("detail_pass") or {},
-                    }
-                    normalized_drills.append(Drill.model_validate(drill_payload))
-                except Exception as exc:
-                    logger.warning("Failed to normalize drill %s: %s", d.get("name"), exc)
-            if normalized_drills:
-                config.drills = normalized_drills
-
-        return config
-
-        logger.info("Worker initialized: %s", self.worker_id)
-        logger.info("  Type: %s", worker_type)
-        logger.info("  Model: %s @ %s", model_name, model_url)
-        logger.info("  Capabilities (legacy): %s", ", ".join(capabilities))
-        logger.info("  Available VRAM (GB): %s", self.available_vram_gb)
-        if self.model_profile_id:
-            logger.info("  Model profile id: %s", self.model_profile_id)
-        if self.metrics_server:
-            logger.info("  Metrics: http://0.0.0.0:%d/metrics", self.metrics_port)
-        logger.info("  Configuration: http://127.0.0.1:5000/ (analysis configuration website)")
-        logger.info("  Documentation: See docs/ANALYSIS.md for setup and troubleshooting")
+    # _get_job_context and _load_analysis_config now live on AnalysisEngine.
+    # Worker code that still needs them (job-level passes, _hydrate_chunk_context
+    # callers in process_analysis_job) reaches through self.engine.
 
     # ------------------------------------------------------------------
     # Main loop
@@ -549,11 +492,11 @@ class AnalysisWorker:
                         task.chunk_id,
                     )
 
-                    result = self._execute_pass(task)
+                    task_result = self._dispatch_pass(task)
 
-                    if result is not None:
+                    if task_result.status == "ok" and task_result.payload is not None:
                         # Attach worker metadata
-                        result_meta = dict(result)
+                        result_meta = dict(task_result.payload)
                         result_meta.setdefault("worker_id", self.worker_id)
                         result_meta.setdefault(
                             "completed_at",
@@ -562,41 +505,49 @@ class AnalysisWorker:
                         ok = self.task_repo.mark_completed(task.task_id, result_meta)
                         if ok:
                             # Record successful task completion
-                            duration = result.get("duration_sec", 0)
+                            duration = task_result.duration_s
                             tasks_completed_total.labels(
                                 worker_id=self.worker_id,
-                                pass_id=task.pass_id,
+                                pass_id=task_result.pass_id,
                                 status="ok",
                             ).inc()
                             task_processing_duration_seconds.labels(
                                 worker_id=self.worker_id,
-                                pass_id=task.pass_id,
+                                pass_id=task_result.pass_id,
                             ).observe(duration)
                             task_processing_duration_summary.labels(
                                 worker_id=self.worker_id,
-                                pass_id=task.pass_id,
+                                pass_id=task_result.pass_id,
                             ).observe(duration)
                             logger.info("✓ Task %s completed", task.task_id)
                         else:
                             logger.error("Failed to mark task %s as completed", task.task_id)
                     else:
-                        error_msg = f"Pass execution returned None for pass_id={task.pass_id}"
+                        error_msg = (
+                            task_result.error_message
+                            or f"Pass execution failed for pass_id={task.pass_id}"
+                        )
+                        error_category = task_result.error_category or "pass_execution_failed"
                         ok = self.task_repo.mark_failed(task.task_id, error_msg)
                         if ok:
                             # Record failed task
                             tasks_failed_total.labels(
                                 worker_id=self.worker_id,
-                                pass_id=task.pass_id,
-                                error_type="none_result",
+                                pass_id=task_result.pass_id,
+                                error_type=error_category,
                             ).inc()
                             errors_total.labels(
                                 worker_id=self.worker_id,
-                                error_category="pass_execution_failed",
+                                error_category=error_category,
                             ).inc()
                             last_error_timestamp.labels(
                                 worker_id=self.worker_id,
-                                error_category="pass_execution_failed",
+                                error_category=error_category,
                             ).set(datetime.now(timezone.utc).timestamp())
+                            task_processing_duration_seconds.labels(
+                                worker_id=self.worker_id,
+                                pass_id=task_result.pass_id,
+                            ).observe(task_result.duration_s)
                             logger.error("Task %s failed: %s", task.task_id, error_msg)
                         else:
                             logger.error("Failed to mark task %s as failed", task.task_id)
@@ -677,219 +628,8 @@ class AnalysisWorker:
     # ------------------------------------------------------------------
     # Pass execution
     # ------------------------------------------------------------------
-
-    def _execute_pass(self, task: AnalysisTask) -> Optional[Dict[str, Any]]:
-        """
-        Execute the LLM pass on the chunk.
-
-        Currently:
-        - chunk_analysis is wired to OllamaAnalyzer.analyze_chunk
-        - sentiment_pass and categories_pass are lightweight stubs
-        - other passes are simple placeholders
-        """
-        start_time = datetime.now(timezone.utc)
-
-        chunk_text = task.chunk_text or ""
-        chunk_metadata = task.chunk_metadata or {}
-        pass_id = task.pass_id
-        context = self._get_job_context(task)
-
-        logger.info(
-            "Executing pass %s on job %s (task_id=%s, chunk_id=%s)",
-            pass_id,
-            task.job_id,
-            task.task_id,
-            task.chunk_id,
-        )
-
-        try:
-            if not chunk_text.strip():
-                logger.warning("Task %s has empty chunk_text; marking as failed", task.task_id)
-                return None
-
-            if pass_id == "chunk_analysis":
-                result = self._pass_chunk_analysis(task, chunk_text, chunk_metadata, context)
-            elif pass_id == "sentiment_pass":
-                result = self._pass_sentiment(task, chunk_text, chunk_metadata, context)
-            elif pass_id == "categories_pass":
-                result = self._pass_categories(task, chunk_text, chunk_metadata, context)
-            elif pass_id == "subchunks":
-                result = self._pass_subchunks(task, chunk_text, chunk_metadata, context)
-            elif pass_id in (
-                "aggregate_results",
-                "hot_targets",
-                "drills",
-                "db_store",
-                "local_json",
-                "markdown_report",
-            ):
-                result = self._handle_job_level_pass(task, pass_id, chunk_text, chunk_metadata, context)
-            else:
-                result = {
-                    "pass_id": pass_id,
-                    "status": "unknown_pass",
-                    "metadata": chunk_metadata,
-                }
-
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-            result.setdefault("duration_sec", duration)
-            result.setdefault("pass_id", pass_id)
-            return result
-        except Exception as exc:
-            logger.error("Error executing pass %s for task %s: %s", pass_id, task.task_id, exc)
-            import traceback
-
-            traceback.print_exc()
-            return None
-
-    def _pass_chunk_analysis(
-        self,
-        task: AnalysisTask,
-        chunk_text: str,
-        metadata: Dict[str, Any],
-        context: JobContext,
-    ) -> Dict[str, Any]:
-        """
-        Real implementation of chunk_analysis using OllamaAnalyzer.
-        """
-        # Use the existing single-chunk helper
-        chunk_idx = int(task.chunk_id)
-        analysis = self.analyzer.analyze_chunk(chunk_text, chunk_idx)
-        self._ensure_chunk_defaults(analysis, chunk_text)
-        # Attach bookkeeping / metadata
-        context.chunk_results[chunk_idx] = analysis
-        context.chunk_texts[chunk_idx] = chunk_text
-        context.chunk_metadata_map[chunk_idx] = metadata or {}
-        return {
-            "pass_id": "chunk_analysis",
-            "status": "completed",
-            "analysis": analysis,
-            "metadata": metadata,
-            "model_used": self.model_name,
-        }
-
-    def _ensure_chunk_defaults(self, analysis: Dict[str, Any], chunk_text: str) -> None:
-        text = (chunk_text or "").strip()
-        if text and not analysis.get("summary"):
-            analysis["summary"] = text[:600]
-        if text and not analysis.get("key_points"):
-            summary_src = analysis.get("summary") or text
-            words = summary_src.split()
-            trimmed = " ".join(words[:50]).strip()
-            if len(words) > 50:
-                trimmed = f"{trimmed}…"
-            analysis["key_points"] = [trimmed] if trimmed else []
-        if text and not analysis.get("notable_quotes"):
-            quotes = re.findall(r'"([^"]{10,})"', text)
-            if quotes:
-                analysis["notable_quotes"] = quotes[:3]
-        if not analysis.get("topics"):
-            cats = analysis.get("categories")
-            if isinstance(cats, list) and cats:
-                analysis["topics"] = cats[:5]
-
-    def _hydrate_chunk_context(self, task: AnalysisTask) -> None:
-        """Hydrate in-memory context from an already-completed chunk task."""
-        try:
-            chunk_idx = int(task.chunk_id)
-        except Exception:
-            return
-        context = self._get_job_context(task)
-        analysis = {}
-        if isinstance(task.result_json, dict):
-            analysis = task.result_json.get("analysis") or task.result_json
-        self._ensure_chunk_defaults(analysis, task.chunk_text or "")
-        context.chunk_results[chunk_idx] = analysis
-        context.chunk_texts[chunk_idx] = task.chunk_text or ""
-        context.chunk_metadata_map[chunk_idx] = task.chunk_metadata or {}
-
-    def _load_all_chunk_texts(self, context: JobContext) -> None:
-        """
-        Ensure context.chunk_texts is populated for all chunks in the job.
-        Useful for job-level passes like hot_targets that need to scan the whole video.
-        """
-        # If we already have enough chunks, skip DB query
-        if len(context.chunk_texts) >= context.total_chunks:
-            return
-
-        tasks = self.task_repo.get_job_tasks(context.job_id)
-        for t in tasks:
-            if not t.chunk_text:
-                continue
-            
-            try:
-                cid = int(t.chunk_id)
-            except (ValueError, TypeError):
-                continue
-
-            # Prioritize chunk-level tasks (usually pass_id='chunk_analysis') for the text source
-            # as they are guaranteed to correspond to that specific chunk.
-            # However, any task with matching chunk_id should theoretically have the same text.
-            if cid not in context.chunk_texts:
-                context.chunk_texts[cid] = t.chunk_text
-            elif t.pass_id == "chunk_analysis":
-                # Overwrite with authoritative source if available
-                context.chunk_texts[cid] = t.chunk_text
-
-    def _pass_sentiment(
-        self,
-        task: AnalysisTask,
-        chunk_text: str,
-        metadata: Dict[str, Any],
-        context: JobContext,
-    ) -> Dict[str, Any]:
-        analysis = context.chunk_results.get(int(task.chunk_id))
-        if not analysis:
-            analysis = self.analyzer.analyze_chunk(chunk_text, int(task.chunk_id))
-            context.chunk_results[int(task.chunk_id)] = analysis
-        label, score = self._score_sentiment(chunk_text)
-        sentiment = analysis.get("sentiment") or label
-        return {
-            "pass_id": "sentiment_pass",
-            "status": "completed",
-            "sentiment": sentiment,
-            "details": {
-                "heuristic_score": score,
-                "chunks_considered": len(chunk_text.split()),
-            },
-            "metadata": metadata,
-        }
-
-    def _pass_categories(
-        self,
-        task: AnalysisTask,
-        chunk_text: str,
-        metadata: Dict[str, Any],
-        context: JobContext,
-    ) -> Dict[str, Any]:
-        analysis = context.chunk_results.get(int(task.chunk_id))
-        categories = []
-        if analysis:
-            categories = analysis.get("categories") or []
-        else:
-            categories = self._extract_categories_from_text(chunk_text)
-        normalized = sorted({c.strip().lower() for c in categories if isinstance(c, str) and c.strip()})
-        return {
-            "pass_id": "categories_pass",
-            "status": "completed",
-            "categories": normalized,
-            "metadata": metadata,
-        }
-
-    def _pass_subchunks(
-        self,
-        task: AnalysisTask,
-        chunk_text: str,
-        metadata: Dict[str, Any],
-        context: JobContext,
-    ) -> Dict[str, Any]:
-        subchunks = self._generate_subchunks(chunk_text)
-        return {
-            "pass_id": "subchunks",
-            "status": "completed",
-            "subchunks": subchunks,
-            "metadata": metadata,
-        }
+    # Per-pass dispatch lives on AnalysisEngine; the worker now delegates via
+    # self.engine.run_task(...). Job-level passes still live below until Task 3.
 
     def _handle_job_level_pass(
         self,
@@ -936,7 +676,7 @@ class AnalysisWorker:
             if is_job_level_task:
                 # This is a single task meant to cover the whole video.
                 # We need all chunk texts.
-                self._load_all_chunk_texts(context)
+                self.engine._load_all_chunk_texts(context)
 
                 all_detections = []
                 all_llm_spans = []
@@ -986,7 +726,7 @@ class AnalysisWorker:
             
             if is_job_level_task:
                 # Load all texts for the global pass
-                self._load_all_chunk_texts(context)
+                self.engine._load_all_chunk_texts(context)
             else:
                 # Legacy: only run on this specific chunk
                 # Also ensure we have the text for this chunk (should be hydrated but safe to check)
@@ -1430,55 +1170,8 @@ class AnalysisWorker:
                 artifacts["markdown"] = str(md_path)
         return artifacts
 
-    def _generate_subchunks(self, chunk_text: str) -> List[Dict[str, Any]]:
-        parser = VTTParser()
-        # Convert chunk into faux VTT by splitting sentences
-        sentences = re.split(r"(?<=[.!?])\s+", chunk_text.strip())
-        subchunks: List[Dict[str, Any]] = []
-        for idx, sentence in enumerate(sentences, start=1):
-            if not sentence:
-                continue
-            subchunks.append(
-                {
-                    "subchunk_id": idx,
-                    "text": sentence,
-                    "word_count": len(sentence.split()),
-                }
-            )
-            if len(subchunks) >= 5:
-                break
-        if not subchunks:
-            subchunks.append({"subchunk_id": 1, "text": chunk_text[:200], "word_count": len(chunk_text.split())})
-        return subchunks
-
-    def _score_sentiment(self, chunk_text: str) -> tuple[str, float]:
-        positive = {"great", "good", "improve", "excellent", "optimistic", "win", "positive"}
-        negative = {"bad", "terrible", "worse", "concern", "issue", "problem", "negative", "angry"}
-        words = [w.lower().strip(".,!?") for w in chunk_text.split()]
-        pos_hits = sum(1 for w in words if w in positive)
-        neg_hits = sum(1 for w in words if w in negative)
-        score = (pos_hits - neg_hits) / max(1, len(words))
-        if score > 0.01:
-            label = "optimistic"
-        elif score < -0.01:
-            label = "concerned"
-        else:
-            label = "neutral"
-        return label, score
-
-    def _extract_categories_from_text(self, chunk_text: str) -> List[str]:
-        mapping = {
-            "politics": ["election", "senate", "policy", "politics"],
-            "finance": ["market", "stocks", "economy", "inflation"],
-            "technology": ["software", "ai", "technology", "startup"],
-            "conflict": ["attack", "war", "conflict", "fight"],
-        }
-        lower_text = chunk_text.lower()
-        categories: List[str] = []
-        for label, keywords in mapping.items():
-            if any(kw in lower_text for kw in keywords):
-                categories.append(label)
-        return categories
+    # _generate_subchunks, _score_sentiment, _extract_categories_from_text
+    # moved to AnalysisEngine.
 
     def _excerpt_for_matches(self, text: str, keyword: str) -> str:
         if not keyword:
