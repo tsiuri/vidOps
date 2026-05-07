@@ -43,7 +43,7 @@ The job queue uses a single `jobs` table with a `job_type` discriminator. Worker
 
 A shared background heartbeat thread updates `workers.last_heartbeat` and touches `updated_at` on the active job, so the overlord doesn't release a long-running job as stale.
 
-Worker error handling distinguishes two failure modes via `exceptions.py`:
+Worker error handling distinguishes two failure modes via `workers/exceptions.py`:
 
 - `WorkerLocalError` (subclasses: `DiskSpaceError`, `GPUUnavailableError`, `MountUnavailableError`, `LocalPermissionError`) — releases the job back to PENDING and shuts the worker down. Another worker can retry.
 - `JobDataError` — marks the job FAILED and continues processing other jobs.
@@ -153,7 +153,7 @@ Three layers, highest precedence first:
 2. **Environment variables** — `VIDOPS_DB_*`, `VIDOPS_PROJECT_ROOT`, `HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`, `DIARIZATION_*`, `VIDOPS_GPU_INDEX_MAP`, `VIDOPS_FAKE_VOICE`, `VIDOPS_FAKE_DIARIZATION`, etc.
 3. **`config.yaml`** — primary config. Sections include `paths.*` (central storage, local cache, path_map for cross-platform), `download.*`, `transcription.*`, `diarization.*`, `analysis.*`, `workers.*`, `workspace.tmp_cleanup.*`, `storage_broker.*`.
 
-Per-machine overrides via `config.local.json` / `config.local.cfg`. When adding new keys, sync to every worker host before relying on the new value — workers diverge silently if their configs differ.
+Per-machine overrides via `config/config.local.json` / `config/config.local.cfg`. When adding new keys, sync to every worker host before relying on the new value — workers diverge silently if their configs differ.
 
 ## Operational decisions
 

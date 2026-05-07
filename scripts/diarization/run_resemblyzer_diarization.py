@@ -91,17 +91,29 @@ def _require_psycopg2():
     return psycopg2
 
 
-def load_db_config(candidates: List[Path]) -> Dict[str, object]:
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            data = json.loads(path.read_text())
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            continue
-    return {}
+def load_db_config() -> Dict[str, object]:
+    """Load DB connection settings from `config.yaml` via configuration.load_config().
+
+    Returns a dict using the historical `db_*` key shape so the call site below
+    keeps working unchanged. The legacy `db.cfg` JSON file is no longer read;
+    `paths.path_prefix` in config.yaml plays the role of the old `db_path_prefix`.
+    """
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    try:
+        from configuration import load_config  # type: ignore
+    except Exception:
+        return {}
+    cfg = load_config()
+    return {
+        "db_host": cfg.database.host,
+        "db_port": cfg.database.port,
+        "db_name": cfg.database.name,
+        "db_user": cfg.database.user,
+        "db_password": cfg.database.password,
+        "db_path_prefix": cfg.paths.path_prefix or None,
+    }
 
 
 def resolve_db_path(path_str: str, prefix: Optional[str]) -> Path:
@@ -1021,11 +1033,11 @@ def main():
     parser.add_argument("--words", type=Path, help="Override words TSV path")
     parser.add_argument("--use-db-words", action="store_true", help="Fetch words from Postgres instead of local TSVs")
     parser.add_argument("--db-words-source", help="Preferred words.source (whisper|yt) when pulling from DB")
-    parser.add_argument("--db-name", default=None, help="Postgres database name (fallback: db.cfg/db.local.json, DB_NAME, default transcripts)")
-    parser.add_argument("--db-host", default=None, help="Postgres host (fallback: db.cfg/db.local.json, DB_HOST, default 192.168.0.187)")
-    parser.add_argument("--db-port", type=int, default=None, help="Postgres port (fallback: db.cfg/db.local.json, DB_PORT, default 5432)")
-    parser.add_argument("--db-user", default=None, help="Postgres user (fallback: db.cfg/db.local.json or DB_USER)")
-    parser.add_argument("--db-password", default=None, help="Postgres password (fallback: db.cfg/db.local.json or DB_PASSWORD)")
+    parser.add_argument("--db-name", default=None, help="Postgres database name (fallback: config.yaml database.name, DB_NAME, default transcripts)")
+    parser.add_argument("--db-host", default=None, help="Postgres host (fallback: config.yaml database.host, DB_HOST, default 192.168.0.187)")
+    parser.add_argument("--db-port", type=int, default=None, help="Postgres port (fallback: config.yaml database.port, DB_PORT, default 5432)")
+    parser.add_argument("--db-user", default=None, help="Postgres user (fallback: config.yaml database.user or DB_USER)")
+    parser.add_argument("--db-password", default=None, help="Postgres password (fallback: config.yaml database.password or DB_PASSWORD)")
     parser.add_argument("--db-path-prefix", default=None, help="Prefix to prepend to transcript paths stored in DB (e.g., /mnt)")
     parser.add_argument("--write-db", action="store_true", help="Insert diarized spans into diarized_timestamps")
     parser.add_argument("--db-append", action="store_true", help="Keep existing diarized spans instead of replacing them")
@@ -1082,18 +1094,7 @@ def main():
     db_params: Optional[Dict[str, object]] = None
     db_config: Dict[str, object] = {}
     if args.use_db_words or args.write_db:
-        db_config = load_db_config(
-            [
-                root / "db.cfg",
-                root / "db.local.json",
-                root / "db.json",
-                root / "config" / "db.cfg",
-                root / "config" / "db.local.json",
-                root / "config" / "db.json",
-                DEFAULT_PROJECT_ROOT / "db.cfg",
-                DEFAULT_PROJECT_ROOT / "config" / "db.cfg",
-            ]
-        )
+        db_config = load_db_config()
         db_host = args.db_host or db_config.get("db_host") or os.environ.get("DB_HOST") or DEFAULT_DB_HOST
         db_port_val = args.db_port or db_config.get("db_port") or os.environ.get("DB_PORT") or DEFAULT_DB_PORT
         try:

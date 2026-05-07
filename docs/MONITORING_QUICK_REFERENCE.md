@@ -23,7 +23,7 @@
 ### Quick Start (All in Docker)
 ```bash
 cd /home/billie/bq_netservices/vidops
-docker-compose -f docker-compose.monitoring.yml up -d
+docker-compose -f web/monitoring/docker-compose.monitoring.yml up -d
 ```
 
 ### Individual Services
@@ -84,7 +84,7 @@ python3 vo_cli.py worker start analysis-distributed \
 ### View Logs
 ```bash
 # All services
-docker-compose -f docker-compose.monitoring.yml logs -f
+docker-compose -f web/monitoring/docker-compose.monitoring.yml logs -f
 
 # Single service
 docker logs -f prometheus
@@ -95,7 +95,7 @@ docker logs -f alertmanager
 ### Stop Services
 ```bash
 # Stop all
-docker-compose -f docker-compose.monitoring.yml down
+docker-compose -f web/monitoring/docker-compose.monitoring.yml down
 
 # Stop single
 docker stop prometheus
@@ -106,7 +106,7 @@ docker stop alertmanager
 ### Restart Services
 ```bash
 # Restart all
-docker-compose -f docker-compose.monitoring.yml restart
+docker-compose -f web/monitoring/docker-compose.monitoring.yml restart
 
 # Restart single
 docker restart prometheus
@@ -115,7 +115,7 @@ docker restart prometheus
 ### Check Service Status
 ```bash
 # All services
-docker-compose -f docker-compose.monitoring.yml ps
+docker-compose -f web/monitoring/docker-compose.monitoring.yml ps
 
 # Single service
 docker ps -f name=prometheus
@@ -411,8 +411,8 @@ python3 test_distributed_analysis.py \
 | Action | Command |
 |--------|---------|
 | Check all containers | `docker ps` |
-| Follow all logs | `docker-compose -f docker-compose.monitoring.yml logs -f` |
-| Restart stack | `docker-compose -f docker-compose.monitoring.yml restart` |
+| Follow all logs | `docker-compose -f web/monitoring/docker-compose.monitoring.yml logs -f` |
+| Restart stack | `docker-compose -f web/monitoring/docker-compose.monitoring.yml restart` |
 | View Prometheus targets | `curl http://localhost:9090/api/v1/targets` |
 | Query top metrics | `curl http://localhost:8888/metrics \| head -30` |
 | Check worker process | `ps aux \| grep analysis-distributed` |
@@ -444,7 +444,7 @@ python3 test_distributed_analysis.py \
 
 ```bash
 # Stop containers
-docker-compose -f docker-compose.monitoring.yml down
+docker-compose -f web/monitoring/docker-compose.monitoring.yml down
 
 # Remove volumes
 docker volume rm vidops_prometheus_data vidops_grafana_data vidops_alertmanager_data
@@ -463,7 +463,7 @@ docker rm prometheus grafana alertmanager
 | `vidops/web/monitoring/exporter.py` | HTTP metrics server |
 | `config/prometheus.yml` | Scrape configuration |
 | `config/alert_rules.yml` | Alert definitions |
-| `docker-compose.monitoring.yml` | Full stack compose |
+| `web/monitoring/docker-compose.monitoring.yml` | Full stack compose |
 | `docs/MONITORING_SETUP.md` | Full documentation |
 
 ---

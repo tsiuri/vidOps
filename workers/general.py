@@ -22,7 +22,7 @@ except Exception:
 from configuration import load_config
 from dal import JobRepository, WorkerRepository
 from models import JobStatus, Worker, WorkerStatus
-from exceptions import WorkerLocalError, DiskSpaceError
+from .exceptions import WorkerLocalError, DiskSpaceError
 from services import (
     get_distributed_analysis_service,
     get_clipping_service,

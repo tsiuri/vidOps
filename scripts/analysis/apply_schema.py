@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Apply schema.sql using connection details from config.local.json/config.json or env vars.
+Apply schema.sql using connection details from config/config.local.json or env vars.
 
 Env vars override config file; config overrides defaults.
 """

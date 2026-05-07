@@ -10,7 +10,7 @@ child processes alive until you press Ctrl+C.
 Examples:
   python scripts/run_webui.py
   python scripts/run_webui.py --skip monitoring
-  python scripts/run_webui.py --monitoring-cmd "docker-compose -f docker-compose.monitoring.yml up" --monitoring-port 8000
+  python scripts/run_webui.py --monitoring-cmd "docker-compose -f web/monitoring/docker-compose.monitoring.yml up" --monitoring-port 8000
   python scripts/run_webui.py --status-only
 """
 

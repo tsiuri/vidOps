@@ -7,14 +7,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
-# Search order: prefer INI/.cfg (config/ subdir first), then JSON (legacy)
+# Search order: prefer INI/.cfg, then JSON. All paths live under config/.
 CONFIG_CANDIDATES: List[Path] = [
     Path("config/config.local.cfg"),
     Path("config/config.cfg"),
-    Path("config.local.cfg"),
-    Path("config.cfg"),
-    Path("config.local.json"),
-    Path("config.json"),
+    Path("config/config.local.json"),
+    Path("config/config.json"),
 ]
 
 
@@ -90,10 +88,8 @@ def load_local_config() -> Dict[str, Any]:
     Search order (stop at first readable file):
     - config/config.local.cfg
     - config/config.cfg
-    - config.local.cfg
-    - config.cfg
-    - config.local.json
-    - config.json
+    - config/config.local.json
+    - config/config.json
     """
     for path in CONFIG_CANDIDATES:
         if not path.exists():

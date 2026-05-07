@@ -7,7 +7,7 @@ This guide covers the minimal Windows setup to run the core VidOps workers (down
 - Python 3.10+ on PATH
 - Git
 - FFmpeg and yt-dlp on PATH
-- PostgreSQL reachable (set via env or `db.cfg`)
+- PostgreSQL reachable (set via `config.yaml` `database.*` or `VIDOPS_DB_*` env vars)
 - Ollama for Windows installed (https://ollama.com/download)
 
 ## Install steps

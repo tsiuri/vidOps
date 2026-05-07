@@ -1,4 +1,4 @@
-# vidops/exceptions.py
+# vidops/workers/exceptions.py
 """
 Custom exceptions for VidOps worker system.
 

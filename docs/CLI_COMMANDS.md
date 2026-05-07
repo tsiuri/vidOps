@@ -24,7 +24,7 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 - `monitor` — `cli/monitor.py`
 - Monitoring/ops scripts (non-Click)
   - `scripts/management/watch_jobs.py` — curses TUI to watch `jobs` table (q to quit)
-  - Prometheus/Grafana: `docker-compose.monitoring.yml`; metrics emitted from workers via `web/monitoring/metrics.py` and exposed by `web/monitoring/exporter.py` (see `docs/MONITORING_QUICK_REFERENCE.md`)
+  - Prometheus/Grafana: `web/monitoring/docker-compose.monitoring.yml`; metrics emitted from workers via `web/monitoring/metrics.py` and exposed by `web/monitoring/exporter.py` (see `docs/MONITORING_QUICK_REFERENCE.md`)
   - Deployment helpers: `docs/deprecated_scripts/scripts/deploy/*.sh` (storage broker certs/nginx, config setup)
   - Analysis TUI: `scripts/analysis/analysis_tui.py` (curses config browser)
   - Web drill helpers: `scripts/web_app/*.py` (drill APIs/views)
@@ -119,7 +119,7 @@ Structured list of Click commands exposed by `vo_cli.py`, with file references.
 
 ## Monitoring & Utilities (manual)
 - `vo monitor` — Live DB queue TUI (preferred); or run directly: `PYTHONPATH=. python scripts/management/watch_jobs.py`
-- Metrics: start Prometheus/Grafana via `docker-compose -f docker-compose.monitoring.yml up -d`; workers expose metrics on `--metrics-port` (default 8888) using `web/monitoring/exporter.py` + `web/monitoring/metrics.py`.
+- Metrics: start Prometheus/Grafana via `docker-compose -f web/monitoring/docker-compose.monitoring.yml up -d`; workers expose metrics on `--metrics-port` (default 8888) using `web/monitoring/exporter.py` + `web/monitoring/metrics.py`.
 - Deploy/ops: storage broker & worker trust scripts under `docs/deprecated_scripts/scripts/deploy/` (nginx TLS, cert reissue, broker diagnostics).
 - Analysis/UI: `scripts/analysis/analysis_tui.py`, `scripts/web_app/` (drill APIs/views)
 - Unified web UI launcher: `python scripts/run_webui.py` (starts analysis/QuickClip UI on :5000 plus optional monitoring UI on :8000; supports `--skip/--only` and custom commands via `--monitoring-cmd`)

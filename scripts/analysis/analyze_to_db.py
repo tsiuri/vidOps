@@ -496,7 +496,7 @@ def main():
         gpu_scheduler_config = gpu_scheduler_config_loaded
     else:
         # Default to in-memory queue to avoid consuming stale tasks from a shared Postgres table.
-        # Use a custom config (config.local.json -> shared.gpu_scheduler_config) to enable Postgres.
+        # Use a custom config (config/config.local.json -> shared.gpu_scheduler_config) to enable Postgres.
         gpu_scheduler_config = {
             "queue": {"backend": "memory"},
             "rate_limit": {"delay_between_targets": 0},

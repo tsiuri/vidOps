@@ -39,7 +39,7 @@ Conventions for AI agents and human contributors working on VidOps. For project 
 - PRs: describe intent, key commands run (e.g., `pytest`, worker smoke), and any config/env requirements (DB host, HF tokens). Include screenshots for UI tweaks in `web/`.
 
 ## Security & Configuration Tips
-- Secrets: set tokens via env (`HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`, DB creds); never commit them. Check `db.cfg` for DB defaults.
+- Secrets: set tokens via env (`HF_TOKEN`, `PYANNOTE_AUTH_TOKEN`, DB creds); never commit them. DB defaults live in `config.yaml` under `database.*`.
 - GPU/CPU: diarization pins `torch/torchaudio 2.8.0+cu128` (Linux) / `2.4.1+cu121` (Windows); rerun `scripts/setup_diarization_venv.sh` if the venv drifts. For CPU runs, use `--cpu`.
 - Paths: don't write under the repo except `tmp/` and generated logs/tests. Honor `VIDOPS_PROJECT_ROOT` (or the current working dir) for runtime caches.
 - Config propagation: when adding new `config.yaml` keys or env-driven defaults, sync the updated config onto every worker host (and any per-machine overrides) before relying on the new settings — otherwise workers will diverge on model/VRAM defaults and job eligibility.

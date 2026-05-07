@@ -5,7 +5,7 @@ by returning them to `pending`. This is a direct DB operation on `public.jobs`.
 
 ## Prereqs
 - DB access to the VidOps Postgres instance.
-- Connection settings from `config.yaml` (preferred) or `db.cfg`.
+- Connection settings from `config.yaml` (`database.*`).
 - `psql` installed locally.
 
 ## Step 1: Inspect counts
@@ -71,4 +71,4 @@ expected amount.
 - Prefer filtering by day using `date_trunc('day', COALESCE(updated_at, created_at))`
   to match operator expectations.
 - Local access may be via `127.0.0.1`; remote hosts are defined in `config.yaml`
-  (`database.host`) or `db.cfg`.
+  (`database.host`).

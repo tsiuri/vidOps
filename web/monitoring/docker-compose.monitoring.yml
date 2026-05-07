@@ -4,8 +4,11 @@ version: '3.8'
 # monitoring stack for the distributed analysis worker
 #
 # Usage:
-#   docker-compose -f docker-compose.monitoring.yml up -d
-#   docker-compose -f docker-compose.monitoring.yml down
+#   docker-compose -f web/monitoring/docker-compose.monitoring.yml up -d
+#   docker-compose -f web/monitoring/docker-compose.monitoring.yml down
+#
+# Run from the repo root; volume paths below are resolved relative to this
+# compose file (../../config/...) which is the repo's `config/` directory.
 #
 # Access:
 #   Prometheus: http://localhost:9090
@@ -23,8 +26,8 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./config/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - ../../config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../config/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -62,7 +65,7 @@ services:
       TZ: UTC
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../config/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
     networks:
@@ -84,7 +87,7 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ../../config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'

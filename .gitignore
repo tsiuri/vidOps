@@ -31,6 +31,17 @@ tmp/
 .vidops_deploy_marker
 .vidops-project
 
+# Runtime data directories — these are now symlinks pointing at
+# ../vidops-data/<name>/ on each host. Ignore the symlinks themselves
+# so a fresh clone doesn't end up with broken pointers.
+/cuts
+/data
+/generated
+/logs
+/media
+/pull
+/results
+/tmp
 
 # Ignore the virtual environment directory
 venv/

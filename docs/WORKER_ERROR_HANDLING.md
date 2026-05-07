@@ -45,10 +45,10 @@ A two-tier exception system:
 
 ## Exception Classes
 
-### Location: `vidops/exceptions.py`
+### Location: `vidops/workers/exceptions.py`
 
 ```python
-from vidops.exceptions import (
+from vidops.workers.exceptions import (
     WorkerLocalError,      # Base class for local failures
     DiskSpaceError,        # Disk full
     GPUUnavailableError,   # GPU not available
@@ -266,7 +266,7 @@ Services should raise appropriate exceptions when detecting failures.
 #### Example 1: Check Disk Space Before Large Operations
 
 ```python
-from vidops.exceptions import DiskSpaceError
+from vidops.workers.exceptions import DiskSpaceError
 from vidops.utils.local_health import check_disk_space
 
 def process_job(self, job: Job):
@@ -608,7 +608,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from vidops.exceptions import (
+from vidops.workers.exceptions import (
     DiskSpaceError,
     GPUUnavailableError,
     JobDataError,
@@ -751,7 +751,7 @@ class MyService:
 # test_error_handling.py
 
 from pathlib import Path
-from vidops.exceptions import DiskSpaceError, JobDataError
+from vidops.workers.exceptions import DiskSpaceError, JobDataError
 from vidops.utils.local_health import check_disk_space
 
 def test_disk_space_check():
@@ -791,7 +791,7 @@ def test_job_vs_worker_error():
 ### Quick Reference
 
 **For service developers:**
-1. Import exceptions and health checks from `vidops.exceptions` and `vidops.utils.local_health`
+1. Import exceptions and health checks from `vidops.workers.exceptions` and `vidops.utils.local_health`
 2. Add pre-flight checks before resource-intensive operations
 3. Raise `WorkerLocalError` subclasses for worker issues
 4. Raise `JobDataError` for job issues
@@ -804,7 +804,7 @@ def test_job_vs_worker_error():
 4. Adjust thresholds based on job requirements
 
 **Key files:**
-- `vidops/exceptions.py` - Exception classes
+- `vidops/workers/exceptions.py` - Exception classes
 - `vidops/utils/local_health.py` - Health check utilities
 - `vidops/workers/general.py` - Worker exception handling
 - `config.yaml` - Configuration
